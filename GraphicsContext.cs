@@ -1,8 +1,12 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Text;
 using System.Threading;
+using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.StaticMesh;
+using CUE4Parse.UE4.Objects.Core.Math;
 using Veldrid;
 using Veldrid.Sdl2;
 using Veldrid.SPIRV;
@@ -15,197 +19,282 @@ public class GraphicsContext : IDisposable
     private Thread RenderThread;
     private bool Exit = false;
 
-    private readonly Sdl2Window Window;
-    private readonly GraphicsDevice GraphicsDevice;
-    private readonly Swapchain Swapchain;
-    private readonly CommandList CommandList;
-    private readonly DeviceBuffer VertexBuffer;
-    private readonly DeviceBuffer IndexBuffer;
-    private readonly Shader[] Shaders;
-    private readonly Pipeline Pipeline;
+    private List<Model> Models;
+
+    private Camera.Camera Camera;
+
+    private Sdl2Window Window;
+
+    private GraphicsDevice GraphicsDevice;
+    private ResourceFactory Factory;
+    private Swapchain Swapchain;
     
+    private readonly CommandList CommandList;
+    private readonly List<ResourceLayout> ResourceLayouts = new();
+
+    private DeviceBuffer CameraBuffer;
+    private ResourceSet CameraResourceSet;
+    
+    private Shader[] Shaders;
+    private Pipeline Pipeline;
+
     private const string VertexCode = @"
-    #version 450
+      #version 450
 
-    layout(location = 0) in vec2 Position;
-    layout(location = 1) in vec4 Color;
+    // Vertex attributes
+    layout(location = 0) in vec3 position;
+    layout(location = 1) in vec3 color;
+    layout(location = 2) in vec3 normal;
 
-    layout(location = 0) out vec4 fsin_Color;
+    // Instance attributes
+    layout(location = 3) in vec4 transformRow0;
+    layout(location = 4) in vec4 transformRow1;
+    layout(location = 5) in vec4 transformRow2;
+    layout(location = 6) in vec4 transformRow3;
 
-    void main()
+    // Vertex shader outputs
+    layout(location = 0) out vec3 fragColor;
+    layout(location = 1) out vec3 fragNormalWorld;
+
+    // Uniform buffer
+    layout(set = 0, binding = 0) uniform cameraUbo
     {
-        gl_Position = vec4(Position, 0, 1);
-        fsin_Color = Color;
-    }";
+        mat4 projection;
+        mat4 view;
+        vec4 front;
+    } ubo;
+
+    void main() {
+        mat4 instanceTransform = mat4(transformRow0, transformRow1, transformRow2, transformRow3);
+        vec4 worldPosition = instanceTransform * vec4(position, 1.0);
+
+        gl_Position = ubo.projection * ubo.view * worldPosition;
+
+        mat3 normalWorldMatrix = transpose(inverse(mat3(instanceTransform)));
+        fragNormalWorld = normalize(normalWorldMatrix * normal);
+        fragColor = color;
+    }
+    ";
 
     private const string FragmentCode = @"
     #version 450
 
-    layout(location = 0) in vec4 fsin_Color;
-    layout(location = 0) out vec4 fsout_Color;
+    // Fragment shader inputs
+    layout(location = 0) in vec3 fragColor;
+    layout(location = 1) in vec3 fragNormalWorld;
 
-    void main()
+    // Fragment shader output
+    layout(location = 0) out vec4 outColor;
+
+    // Uniform buffer
+    layout(set = 0, binding = 0) uniform cameraUbo
     {
-        fsout_Color = fsin_Color;
-    }";
-    
-    public GraphicsContext(out IntPtr controlHandle, IntPtr instanceHandle)
+        mat4 projection;
+        mat4 view;
+        vec4 front;
+    } ubo;
+
+    void main() {
+        vec3 viewDirection = normalize(ubo.front.xyz);
+
+        float ambientContribution = 0.3;
+        float diffuseContribution = max(dot(-viewDirection, fragNormalWorld), 0.0);
+
+        vec3 finalColor = (ambientContribution + diffuseContribution) * fragColor;
+        outColor = vec4(finalColor, 1.0);
+    }
+    ";
+
+    public GraphicsContext(out IntPtr windowlHandle, IntPtr instanceHandle)
+    {
+        windowlHandle = InitializeWindow();
+        InitializeGraphicsDevice();
+        CreateSwapchain(windowlHandle, instanceHandle);
+        CreateBuffers();
+        CreateShaders();
+        CreatePipeline();
+
+        CommandList = Factory.CreateCommandList();
+        
+        Camera = new Camera.Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)16 / 9);
+        Models = new List<Model>();
+    }
+
+    private IntPtr InitializeWindow()
+    {
+        var windowOptions = new WindowCreateInfo
+        {
+            X = 0, Y = 0, WindowWidth = 960, WindowHeight = 540, 
+            WindowTitle = "UniversalUmap Preview",
+            WindowInitialState = WindowState.Hidden
+        };
+        Window = VeldridStartup.CreateWindow(windowOptions);
+        Window.Visible = false;
+        Window.WindowState = WindowState.Normal;
+        NativeWindowExtensions.MakeBorderless(Window.Handle);
+        Sdl2Native.SDL_SetRelativeMouseMode(true);
+
+        return Window.Handle;
+    }
+
+    private void InitializeGraphicsDevice()
     {
         GraphicsDeviceOptions options = new GraphicsDeviceOptions
         {
             PreferStandardClipSpaceYDirection = true,
             PreferDepthRangeZeroToOne = true
         };
-        
-        Window = VeldridStartup.CreateWindow(
-            new WindowCreateInfo { X = 0, Y = 0, WindowWidth = 960, WindowHeight = 540, WindowTitle = "UniversalUmap Preview", WindowInitialState = WindowState.Hidden }
-        );
-        controlHandle = Window.Handle; //out
-        Window.Visible = false;
-        Window.WindowState = WindowState.Normal;
-        NativeWindowExtensions.MakeBorderless(Window.Handle);
-        Sdl2Native.SDL_SetRelativeMouseMode(true);
-        
         GraphicsDevice = GraphicsDevice.CreateD3D11(options);
-        
+        Factory = GraphicsDevice.ResourceFactory;
+    }
+
+    private void CreateSwapchain(IntPtr controlHandle, IntPtr instanceHandle)
+    {
         var swapchainSource = SwapchainSource.CreateWin32(controlHandle, instanceHandle);
         var swapchainDescription = new SwapchainDescription(swapchainSource, 960, 540, PixelFormat.R32_Float, true);
-        
-        Swapchain = GraphicsDevice.ResourceFactory.CreateSwapchain(swapchainDescription);
-        
-        ResourceFactory factory = GraphicsDevice.ResourceFactory;
-        
-        VertexPositionColor[] quadVertices =
-        {
-            new VertexPositionColor(new Vector2(-0.75f, 0.75f), RgbaFloat.Red),
-            new VertexPositionColor(new Vector2(0.75f, 0.75f), RgbaFloat.Green),
-            new VertexPositionColor(new Vector2(-0.75f, -0.75f), RgbaFloat.Blue),
-            new VertexPositionColor(new Vector2(0.75f, -0.75f), RgbaFloat.Yellow)
-        };
+        Swapchain = Factory.CreateSwapchain(ref swapchainDescription);
+    }
 
-        ushort[] quadIndices = { 0, 1, 2, 3 };
+    private void CreateBuffers()
+    {
+        //Create and add resource layouts
+        var cameraResourceLayout = Factory.CreateResourceLayout(
+            new ResourceLayoutDescription(
+                new ResourceLayoutElementDescription("cameraUbo", ResourceKind.UniformBuffer, ShaderStages.Vertex | ShaderStages.Fragment)));
+        ResourceLayouts.Add(cameraResourceLayout);
 
-        VertexBuffer = factory.CreateBuffer(new BufferDescription(4 * VertexPositionColor.SizeInBytes, BufferUsage.VertexBuffer));
-        IndexBuffer = factory.CreateBuffer(new BufferDescription(4 * sizeof(ushort), BufferUsage.IndexBuffer));
+        //Create uniform buffer
+        CameraBuffer = Factory.CreateBuffer(new BufferDescription(CameraUniform.SizeOf(), BufferUsage.UniformBuffer));
+        // Create the resource set
+        CameraResourceSet = Factory.CreateResourceSet(new ResourceSetDescription(cameraResourceLayout, CameraBuffer));
+    }
 
-        GraphicsDevice.UpdateBuffer(VertexBuffer, 0, quadVertices);
-        GraphicsDevice.UpdateBuffer(IndexBuffer, 0, quadIndices);
-
-        VertexLayoutDescription vertexLayout = new VertexLayoutDescription(
-            new VertexElementDescription("Position", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float2),
-            new VertexElementDescription("Color", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4));
-
-        ShaderDescription vertexShaderDesc = new ShaderDescription(
+    private void CreateShaders()
+    {
+        var vertexShaderDesc = new ShaderDescription(
             ShaderStages.Vertex,
             Encoding.UTF8.GetBytes(VertexCode),
-            "main");
-        ShaderDescription fragmentShaderDesc = new ShaderDescription(
+            "main"
+        );
+        var fragmentShaderDesc = new ShaderDescription(
             ShaderStages.Fragment,
             Encoding.UTF8.GetBytes(FragmentCode),
-            "main");
+            "main"
+        );
+        Shaders = Factory.CreateFromSpirv(vertexShaderDesc, fragmentShaderDesc);
+    }
 
-        Shaders = factory.CreateFromSpirv(vertexShaderDesc, fragmentShaderDesc);
-
-        GraphicsPipelineDescription pipelineDescription = new GraphicsPipelineDescription();
-        pipelineDescription.BlendState = BlendStateDescription.SingleOverrideBlend;
-
-        pipelineDescription.DepthStencilState = new DepthStencilStateDescription(
-            depthTestEnabled: true,
-            depthWriteEnabled: true,
-            comparisonKind: ComparisonKind.LessEqual);
-
-        pipelineDescription.RasterizerState = new RasterizerStateDescription(
+    private void CreatePipeline()
+    {
+        VertexLayoutDescription vertexLayout = new VertexLayoutDescription(
+            new VertexElementDescription("position", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3),
+            new VertexElementDescription("color", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3),
+            new VertexElementDescription("normal", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3)
+        );
+        
+        //instance info layout
+        var instanceLayout = new VertexLayoutDescription(
+            new VertexElementDescription("transformRow0", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
+            new VertexElementDescription("transformRow1", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
+            new VertexElementDescription("transformRow2", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
+            new VertexElementDescription("transformRow3", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4)
+        );
+        instanceLayout.InstanceStepRate = 1;
+        
+        var shaderSet = new ShaderSetDescription(
+            vertexLayouts: [vertexLayout, instanceLayout],
+            shaders: Shaders
+        );
+        var rasterizerStateDescription = new RasterizerStateDescription(
             cullMode: FaceCullMode.Back,
             fillMode: PolygonFillMode.Solid,
-            frontFace: FrontFace.Clockwise,
+            frontFace: FrontFace.CounterClockwise,
             depthClipEnabled: true,
-            scissorTestEnabled: false);
-
-        pipelineDescription.PrimitiveTopology = PrimitiveTopology.TriangleStrip;
-        pipelineDescription.ResourceLayouts = Array.Empty<ResourceLayout>();
-
-        pipelineDescription.ShaderSet = new ShaderSetDescription(
-            vertexLayouts: new VertexLayoutDescription[] { vertexLayout },
-            shaders: Shaders);
-
-        pipelineDescription.Outputs = Swapchain.Framebuffer.OutputDescription;
-        Pipeline = factory.CreateGraphicsPipeline(pipelineDescription);
-
-        CommandList = factory.CreateCommandList();
+            scissorTestEnabled: false
+        );
+        Pipeline = Factory.CreateGraphicsPipeline(
+            new GraphicsPipelineDescription(
+                BlendStateDescription.SingleOverrideBlend,
+                DepthStencilStateDescription.DepthOnlyLessEqual,
+                rasterizerStateDescription,
+                PrimitiveTopology.TriangleList,
+                shaderSet,
+                ResourceLayouts.ToArray(),
+                Swapchain.Framebuffer.OutputDescription
+            )
+        );
     }
-    
+
     public void Initialize()
     {
         RenderThread = new Thread(RenderLoop) { IsBackground = true };
         RenderThread.Start();
     }
-    
+
     private void RenderLoop()
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
-        long previousTime = stopwatch.ElapsedMilliseconds;
+        long previousTicks = stopwatch.ElapsedTicks;
         while (!Exit)
         {
-            long currentTime = stopwatch.ElapsedMilliseconds;
-            Window.PumpEvents();
-            Console.WriteLine(Window.MouseDelta);
-            Draw();
-            long deltaTime = currentTime - previousTime;
-            previousTime = currentTime;
+            long currentTicks = stopwatch.ElapsedTicks;
+            double deltaTime = (currentTicks - previousTicks) / (double)Stopwatch.Frequency;
+            
+            UpdateCamera(deltaTime);
+            Render(deltaTime);
+
+            previousTicks = currentTicks;
         }
     }
 
-    public void Resize(uint w, uint h)
+    private void UpdateCamera(double deltaTime)
     {
-        if(Swapchain != null)
-            Swapchain.Resize(w, h);
+        GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime, Window));
     }
 
-    private void Draw()
+    private void Render(double deltaTime)
     {
         CommandList.Begin();
         CommandList.SetFramebuffer(Swapchain.Framebuffer);
-        CommandList.ClearColorTarget(0, RgbaFloat.Black);
+        CommandList.ClearColorTarget(0, RgbaFloat.White);
+        CommandList.ClearDepthStencil(1);
         
-        CommandList.SetVertexBuffer(0, VertexBuffer);
-        CommandList.SetIndexBuffer(IndexBuffer, IndexFormat.UInt16);
         CommandList.SetPipeline(Pipeline);
-        CommandList.DrawIndexed(4, 1, 0, 0, 0);
-        CommandList.End();
+        CommandList.SetGraphicsResourceSet(0, CameraResourceSet);
         
+        foreach (var model in Models)
+            model.Render();
+
+        CommandList.End();
         GraphicsDevice.SubmitCommands(CommandList);
         GraphicsDevice.SwapBuffers(Swapchain);
+    }
+    
+    public void Resize(uint w, uint h)
+    {
+        Swapchain.Resize(w, h);
     }
 
     public void Dispose()
     {
         Exit = true;
         RenderThread.Join();
-        
+
         Window.Close();
         Swapchain.Dispose();
-        GraphicsDevice.Dispose();
         CommandList.Dispose();
-        VertexBuffer.Dispose();
-        IndexBuffer.Dispose();
+        CameraBuffer.Dispose();
         Pipeline.Dispose();
         foreach (var shader in Shaders)
             shader.Dispose();
+        foreach (var model in Models)
+            model.Dispose();
+        GraphicsDevice.Dispose();
     }
 
-    public void Update(string[] modelPaths)
+    public void Load(Dictionary<UStaticMesh, List<FTransform>> models)
     {
+        foreach (var model in models)
+            Models.Add(new Model(GraphicsDevice, CommandList, model.Key, model.Value));
     }
-}
-
-struct VertexPositionColor
-{
-    public Vector2 Position; // This is the position, in normalized device coordinates.
-    public RgbaFloat Color; // This is the color of the vertex.
-    public VertexPositionColor(Vector2 position, RgbaFloat color)
-    {
-        Position = position;
-        Color = color;
-    }
-    public const uint SizeInBytes = 24;
 }
