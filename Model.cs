@@ -29,9 +29,11 @@ public class Model : IDisposable
 
     private void InitializeBuffers(UStaticMesh staticMesh, List<FTransform> transforms)
     {
-        staticMesh.TryConvert(out var convertedMesh);
-        var lod = convertedMesh.LODs[0];
+        if (!staticMesh.TryConvert(out var convertedMesh))
+            throw new InvalidOperationException("Failed to convert the static mesh.");
 
+        var lod = convertedMesh.LODs[0];
+        
         var vertices = new Vertex[lod.Verts.Length];
         for (var i = 0; i < lod.Verts.Length; i++)
         {
@@ -45,15 +47,26 @@ public class Model : IDisposable
 
             vertices[i] = new Vertex(position, color, normal);
         }
-
+        
         var indices = new ushort[lod.Indices.Value.Length];
         for (var i = 0; i < lod.Indices.Value.Length; i++)
-            indices[i] = (ushort)lod.Indices.Value[i];
+        {
+            var index = lod.Indices.Value[i];
+            
+            if (index >= lod.Verts.Length)
+                throw new InvalidOperationException($"Invalid index {index} at position {i}, exceeds the number of vertices {lod.Verts.Length}.");
+            
+            indices[i] = (ushort)index;
+        }
+        
+        if (indices.Length < 3)
+            throw new InvalidOperationException("The mesh must have at least 3 indices.");
+        if (vertices.Length < 3)
+            throw new InvalidOperationException("The mesh must have at least 3 vertices.");
         
         var instanceInfo = new InstanceInfo[transforms.Count];
         for (int i = 0; i < transforms.Count; i++)
             instanceInfo[i] = new InstanceInfo(transforms[i]);
-
         
         //vertex buffer
         VertexBuffer = GraphicsDevice.ResourceFactory.CreateBuffer(new BufferDescription((uint)(vertices.Length * Vertex.SizeOf()), BufferUsage.VertexBuffer));
@@ -72,10 +85,13 @@ public class Model : IDisposable
     
     public void Render()
     {
-        CommandList.SetVertexBuffer(0, VertexBuffer);
-        CommandList.SetIndexBuffer(IndexBuffer, IndexFormat.UInt16);
-        CommandList.SetVertexBuffer(1, InstanceBuffer);
-        CommandList.DrawIndexed(IndexCount, InstanceCount, 0, 0, 0);
+        if (VertexBuffer != null) //mesh is brokey
+        {
+            CommandList.SetVertexBuffer(0, VertexBuffer);
+            CommandList.SetIndexBuffer(IndexBuffer, IndexFormat.UInt16);
+            CommandList.SetVertexBuffer(1, InstanceBuffer);
+            CommandList.DrawIndexed(IndexCount, InstanceCount, 0, 0, 0);
+        }
     }
 
     public void Dispose()

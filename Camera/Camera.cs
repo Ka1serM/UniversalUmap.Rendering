@@ -15,21 +15,20 @@ public class Camera
     }
     
     private Vector3 Up => Vector3.UnitY;
-
-    public Vector3 Position;
+    private Vector3 Position;
     private Vector3 PositionArc => Position - Direction;
-    public Vector3 Direction;
+    private Vector3 Direction;
     private Vector3 DirectionArc => Direction - Position;
 
     private float Fov = 90f;
     private float Far = 100000f;
-    private float Near = 1f;
+    private float Near = 10f;
     private float MouseSpeed = 1f;
     private float FlySpeed = 1f;
     
     private float AspectRatio;
 
-    private Vector4 FrontVector => new (Vector3.Normalize(DirectionArc), 0f);
+    private Vector4 FrontVector => new(Vector3.Normalize(DirectionArc), 0f);
     private Matrix4x4 ViewMatrix => Matrix4x4.CreateLookAt(Position, Direction, Up);
     private Matrix4x4 ProjectionMatrix => Matrix4x4.CreatePerspectiveFieldOfView(Fov * (float)Math.PI / 180f, AspectRatio, Near, Far);
     
@@ -40,18 +39,21 @@ public class Camera
         return new CameraUniform(ProjectionMatrix, ViewMatrix, FrontVector);
     }
     
+    
     private void Modify(double deltaTime)
     {
-        var mouseDelta = InputTracker.MouseDelta * (float)deltaTime * MouseSpeed;
+        //Mouse
+        var mouseDelta = InputTracker.MouseDelta * MouseSpeed * 0.01f;
+
+        var right = Vector3.Normalize(Vector3.Cross(DirectionArc, Up));
+
+        //Combine rotations
+        var rotation = Matrix4x4.CreateFromAxisAngle(right, -mouseDelta.Y) * Matrix4x4.CreateFromAxisAngle(-Up, mouseDelta.X);
+
+        Direction = Vector3.Transform(DirectionArc, rotation) + Position;
         
-        var rotationX = Matrix4x4.CreateFromAxisAngle(-Up, mouseDelta.X);
-        Direction = Vector3.Transform(DirectionArc, rotationX) + Position;
-        
-        var right = Vector3.Normalize(Vector3.Cross(Up, DirectionArc));
-        var rotationY = Matrix4x4.CreateFromAxisAngle(right, mouseDelta.Y);
-        Direction = Vector3.Transform(DirectionArc, rotationY) + Position;
-        
-        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 4000f : 500f * FlySpeed;
+        //Keyboard
+        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 3000f : 700f * FlySpeed;
         float moveSpeed = (float)(multiplier * deltaTime);
         var moveAxis = Vector3.Normalize(-PositionArc);
         var panAxis = Vector3.Normalize(Vector3.Cross(moveAxis, Up));
