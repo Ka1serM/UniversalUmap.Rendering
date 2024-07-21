@@ -17,4 +17,19 @@
       <ProjectReference Include="..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
     </ItemGroup>
   
+  <ItemGroup>
+    <ShaderSource Include="$(ProjectDir)Shaders\*.vert" />
+    <ShaderSource Include="$(ProjectDir)Shaders\*.frag" />
+    <CompiledShaders Include="$(ProjectDir)Shaders\*.spv" />
+  </ItemGroup>
+  
+  <Target Name="CompileShaders" BeforeTargets="ResolveReferences">
+    <Delete Files="@(CompiledShaders)" />
+    <Exec Command="glslc &quot;%(ShaderSource.FullPath)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename)%(ShaderSource.Extension).spv&quot;" Condition="'%(ShaderSource.Extension)' != '.spv'" />
+  </Target>
+  
+  <ItemGroup>
+    <EmbeddedResource Include="@(CompiledShaders)" />
+  </ItemGroup>
+  
 </Project>

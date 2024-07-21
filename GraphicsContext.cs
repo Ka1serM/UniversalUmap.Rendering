@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -166,16 +168,33 @@ public class GraphicsContext : IDisposable
         return cameraResourceLayout;
     }
 
-    private Shader[] CreateShaders(string vertexSource, string fragementSource)
+    private Shader[] CreateShaders(string name)
     {
+        byte[] vertexBytes, fragmentBytes;
+        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("UniversalUmap.Rendering.Shaders."+name+".vert.spv"))
+        {
+            using (MemoryStream ms = new MemoryStream())
+            {
+                stream.CopyTo(ms);
+                vertexBytes = ms.ToArray();
+            }
+        }
+        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("UniversalUmap.Rendering.Shaders."+name+".frag.spv"))
+        {
+            using (MemoryStream ms = new MemoryStream())
+            {
+                stream.CopyTo(ms);
+                fragmentBytes = ms.ToArray();
+            }
+        }
         var vertexShaderDesc = new ShaderDescription(
             ShaderStages.Vertex,
-            Encoding.UTF8.GetBytes(vertexSource),
+            vertexBytes,
             "main"
         );
         var fragmentShaderDesc = new ShaderDescription(
             ShaderStages.Fragment,
-            Encoding.UTF8.GetBytes(fragementSource),
+            fragmentBytes,
             "main"
         );
         var shaders = Factory.CreateFromSpirv(vertexShaderDesc, fragmentShaderDesc);
@@ -188,7 +207,7 @@ public class GraphicsContext : IDisposable
     {
         var resourceLayout = CreateMainResourceLayout();
         var vertexLayouts = CreateMainVertexLayouts();
-        var shaders = CreateShaders(Shaders.MainVertexSource, Shaders.MainFragmentSource);
+        var shaders = CreateShaders("main");
         var rasterizerStateDescription = new RasterizerStateDescription(
             cullMode: FaceCullMode.Back,
             fillMode: PolygonFillMode.Solid,
@@ -417,7 +436,7 @@ public class GraphicsContext : IDisposable
         CreateFullscreenQuadBuffers();
         
         var vertexLayouts = CreateFullscreenQuadVertexLayouts();
-        var shaders = CreateShaders(Shaders.FullscreenQuadVertexSource, Shaders.FullscreenQuadFragmentSource);
+        var shaders = CreateShaders("fullscreenQuad");
         CreateResolvedColorResourceSet();
         var pipelineDescription = new GraphicsPipelineDescription(
             BlendStateDescription.SingleAlphaBlend,
