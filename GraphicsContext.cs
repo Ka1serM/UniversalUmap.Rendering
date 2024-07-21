@@ -14,11 +14,12 @@ using Veldrid.StartupUtilities;
 
 namespace UniversalUmap.Rendering;
 
+//Host this in an Avalonia NativeControlHost
 public class GraphicsContext : IDisposable
 {
-    private readonly object Monitor = new();
+    private readonly object Monitor;
     private readonly Thread RenderThread;
-    private bool Exit = false;
+    private bool Exit;
 
     private readonly List<Model> Models;
     private readonly Camera.Camera Camera;
@@ -29,7 +30,7 @@ public class GraphicsContext : IDisposable
     
     private GraphicsDevice GraphicsDevice;
     private ResourceFactory Factory;
-    private Swapchain Swapchain;
+    private Swapchain SwapChain;
     private Pipeline MainPipeline;
     
     private readonly CommandList CommandList;
@@ -37,8 +38,8 @@ public class GraphicsContext : IDisposable
     private DeviceBuffer CameraBuffer;
     private ResourceSet CameraResourceSet;
 
-    private const TextureSampleCount SampleCount = TextureSampleCount.Count4; //MSAA
-    private const bool Vsync = false;
+    private readonly TextureSampleCount SampleCount;
+    private readonly bool Vsync;
 
     private Texture OffscreenColor;
     private Framebuffer OffscreenFramebuffer;
@@ -50,6 +51,9 @@ public class GraphicsContext : IDisposable
     private ResourceSet ResolvedColorResourceSet;
 
     private readonly List<IDisposable> Disposables;
+    private Texture OffscreenDepth;
+    private ResourceLayout ResolvedColorResourceLayout;
+    private TextureView ResolvedColorTextureView;
     
     public GraphicsContext(out IntPtr windowlHandle, IntPtr instanceHandle, uint width, uint height)
     {
@@ -57,6 +61,9 @@ public class GraphicsContext : IDisposable
         Models = [];
         Width = width;
         Height = height;
+        Monitor = new object();
+        SampleCount = TextureSampleCount.Count4; //MSAA
+        Vsync = true;
         
         windowlHandle = InitializeWindow();
         InitializeGraphicsDevice();
@@ -68,7 +75,7 @@ public class GraphicsContext : IDisposable
         CommandList = Factory.CreateCommandList();
         Disposables.Add(CommandList);
         
-        Camera = new Camera.Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)16 / 9);
+        Camera = new Camera.Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)Width / Height);
         
         Exit = false;
         RenderThread = new Thread(RenderLoop) { IsBackground = true };
@@ -77,9 +84,9 @@ public class GraphicsContext : IDisposable
     
     public void Load(UStaticMesh mesh, List<FTransform> transforms)
     {
+        var model = new Model(GraphicsDevice, CommandList, mesh, transforms);
         lock (Monitor)
         {
-            var model = new Model(GraphicsDevice, CommandList, mesh, transforms);
             Models.Add(model);
             Disposables.Add(model);
         }
@@ -89,7 +96,7 @@ public class GraphicsContext : IDisposable
     {
         var windowOptions = new WindowCreateInfo
         {
-            X = 0, Y = 0, WindowWidth = (int)Width, WindowHeight = (int)Height, 
+            WindowWidth = (int)Width, WindowHeight = (int)Height, 
             WindowTitle = "UniversalUmap Preview",
             WindowInitialState = WindowState.Hidden
         };
@@ -99,7 +106,19 @@ public class GraphicsContext : IDisposable
         NativeWindowExtensions.MakeBorderless(Window.Handle);
         Sdl2Native.SDL_SetRelativeMouseMode(true);
 
+        Window.Resized += OnResized;
+
         return Window.Handle;
+    }
+
+    private void OnResized()
+    {
+        Width = (uint)Window.Width;
+        Height = (uint)Window.Height;
+        SwapChain.Resize(Width, Height);
+        Camera.Resize(Width, Height);
+        CreateOffscreenFramebuffer(recreate: true);
+        CreateResolvedColorResourceSet(recreate: true);
     }
 
     private void InitializeGraphicsDevice()
@@ -110,7 +129,6 @@ public class GraphicsContext : IDisposable
             PreferDepthRangeZeroToOne = true
         };
         GraphicsDevice = GraphicsDevice.CreateD3D11(options);
-        Factory = GraphicsDevice.ResourceFactory;
         Factory = GraphicsDevice.ResourceFactory;
         Disposables.Add(GraphicsDevice);
     }
@@ -125,8 +143,8 @@ public class GraphicsContext : IDisposable
             PixelFormat.R32_Float,
             Vsync //v-Sync
         );
-        Swapchain = Factory.CreateSwapchain(ref swapchainDescription);
-        Disposables.Add(Swapchain);
+        SwapChain = Factory.CreateSwapchain(ref swapchainDescription);
+        Disposables.Add(SwapChain);
     }
     
     private ResourceLayout CreateMainResourceLayout()
@@ -196,13 +214,7 @@ public class GraphicsContext : IDisposable
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         long previousTicks = stopwatch.ElapsedTicks;
-        int frameCount = 0;
-        double fps = 0.0;
-        const int fpsUpdateInterval = 1000;
-
-        Stopwatch fpsStopwatch = new Stopwatch();
-        fpsStopwatch.Start();
-
+        
         while (!Exit)
         {
             long currentTicks = stopwatch.ElapsedTicks;
@@ -210,17 +222,8 @@ public class GraphicsContext : IDisposable
 
             UpdateCamera(deltaTime);
             Render(deltaTime);
-
-            previousTicks = currentTicks;
-            frameCount++;
             
-            if (fpsStopwatch.ElapsedMilliseconds >= fpsUpdateInterval)
-            {
-                fps = frameCount / (fpsStopwatch.ElapsedMilliseconds / 1000.0);
-                Console.WriteLine($"FPS: {fps:F2}");
-                fpsStopwatch.Restart();
-                frameCount = 0;
-            }
+            previousTicks = currentTicks;
         }
     }
 
@@ -235,7 +238,7 @@ public class GraphicsContext : IDisposable
 
         //Render to offscreen framebuffer
         CommandList.SetFramebuffer(OffscreenFramebuffer);
-        //CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
+        CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
         CommandList.ClearDepthStencil(1);
         CommandList.ClearColorTarget(0, RgbaFloat.Clear);
         
@@ -249,9 +252,9 @@ public class GraphicsContext : IDisposable
                 model.Render();
         }
         
-        //Render to swapchain framebuffer
-        CommandList.SetFramebuffer(Swapchain.Framebuffer);
-        //CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
+        //Render to SwapChain framebuffer
+        CommandList.SetFramebuffer(SwapChain.Framebuffer);
+        CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
         CommandList.ClearDepthStencil(1);
         CommandList.ClearColorTarget(0, RgbaFloat.Clear);
         
@@ -268,15 +271,8 @@ public class GraphicsContext : IDisposable
         
         CommandList.End();
         GraphicsDevice.SubmitCommands(CommandList);
-        GraphicsDevice.SwapBuffers(Swapchain);
+        GraphicsDevice.SwapBuffers(SwapChain);
         //GraphicsDevice.WaitForIdle();
-    }
-    
-    public void Resize(uint width, uint height)
-    {
-        Width = width;
-        Height = height;
-        Swapchain.Resize(Width, Height);
     }
     
     public void Dispose()
@@ -288,7 +284,8 @@ public class GraphicsContext : IDisposable
         
         Disposables.Reverse();
         foreach (var disposable in Disposables)
-            disposable.Dispose();
+            if(disposable != null)
+                disposable.Dispose();
     }
     
     private VertexLayoutDescription[] CreateFullscreenQuadVertexLayouts()
@@ -316,9 +313,14 @@ public class GraphicsContext : IDisposable
         return [vertexLayout, instanceLayout];
     }
     
-    private void CreateOffscreenFramebuffer()
+    private void CreateOffscreenFramebuffer(bool recreate = false)
     {
-        var offscreenDepth = Factory.CreateTexture(new TextureDescription
+        if (recreate)
+        {
+            Disposables.Remove(OffscreenDepth);
+            OffscreenDepth.Dispose();
+        }
+        OffscreenDepth = Factory.CreateTexture(new TextureDescription
         {
             Width = Width,
             Height = Height,
@@ -330,8 +332,13 @@ public class GraphicsContext : IDisposable
             SampleCount = SampleCount,
             Usage = TextureUsage.DepthStencil | TextureUsage.Sampled,
         });
-        Disposables.Add(offscreenDepth);
+        Disposables.Add(OffscreenDepth);
         
+        if (recreate)
+        {
+            Disposables.Remove(OffscreenColor);
+            OffscreenColor.Dispose();
+        }
         OffscreenColor = Factory.CreateTexture(new TextureDescription
         {
             Width = Width,
@@ -346,18 +353,33 @@ public class GraphicsContext : IDisposable
         });
         Disposables.Add(OffscreenColor);
         
-        OffscreenFramebuffer = Factory.CreateFramebuffer(new FramebufferDescription(offscreenDepth, OffscreenColor));
+        if (recreate)
+        {
+            Disposables.Remove(OffscreenFramebuffer);
+            OffscreenFramebuffer.Dispose();
+        }
+        OffscreenFramebuffer = Factory.CreateFramebuffer(new FramebufferDescription(OffscreenDepth, OffscreenColor));
         Disposables.Add(OffscreenFramebuffer);
     }
     
-    private ResourceLayout CreateResolvedColorResourceSet()
+    private void CreateResolvedColorResourceSet(bool recreate = false)
     {
-        var resourceLayout = Factory.CreateResourceLayout(new ResourceLayoutDescription(
+        if (recreate)
+        {
+            Disposables.Remove(ResolvedColorResourceLayout);
+            ResolvedColorResourceLayout.Dispose();
+        }
+        ResolvedColorResourceLayout = Factory.CreateResourceLayout(new ResourceLayoutDescription(
             new ResourceLayoutElementDescription("TextureColor", ResourceKind.TextureReadOnly, ShaderStages.Fragment),
             new ResourceLayoutElementDescription("SamplerColor", ResourceKind.Sampler, ShaderStages.Fragment)
         ));
-        Disposables.Add(resourceLayout);
+        Disposables.Add(ResolvedColorResourceLayout);
         
+        if (recreate)
+        {
+            Disposables.Remove(ResolvedColor);
+            ResolvedColor.Dispose();
+        }
         ResolvedColor = Factory.CreateTexture(new TextureDescription
         {
             Width = Width,
@@ -372,13 +394,21 @@ public class GraphicsContext : IDisposable
         });
         Disposables.Add(ResolvedColor);
         
-        var resolvedColorTextureView = Factory.CreateTextureView(ResolvedColor);
-        Disposables.Add(resolvedColorTextureView);
+        if (recreate)
+        {
+            Disposables.Remove(ResolvedColorTextureView);
+            ResolvedColorTextureView.Dispose();
+        }
+        ResolvedColorTextureView = Factory.CreateTextureView(ResolvedColor);
+        Disposables.Add(ResolvedColorTextureView);
         
-        ResolvedColorResourceSet = Factory.CreateResourceSet(new ResourceSetDescription(resourceLayout, resolvedColorTextureView, GraphicsDevice.PointSampler));
+        if (recreate)
+        {
+            Disposables.Remove(ResolvedColorResourceSet);
+            ResolvedColorResourceSet.Dispose();
+        }
+        ResolvedColorResourceSet = Factory.CreateResourceSet(new ResourceSetDescription(ResolvedColorResourceLayout, ResolvedColorTextureView, GraphicsDevice.PointSampler));
         Disposables.Add(ResolvedColorResourceSet);
-        
-        return resourceLayout;
     }
 
     private void CreateFullscreenQuadPipeline()
@@ -388,7 +418,7 @@ public class GraphicsContext : IDisposable
         
         var vertexLayouts = CreateFullscreenQuadVertexLayouts();
         var shaders = CreateShaders(Shaders.FullscreenQuadVertexSource, Shaders.FullscreenQuadFragmentSource);
-        var resourceLayout = CreateResolvedColorResourceSet();
+        CreateResolvedColorResourceSet();
         var pipelineDescription = new GraphicsPipelineDescription(
             BlendStateDescription.SingleAlphaBlend,
             new DepthStencilStateDescription
@@ -407,8 +437,8 @@ public class GraphicsContext : IDisposable
             },
             PrimitiveTopology.TriangleStrip,
             new ShaderSetDescription(vertexLayouts, shaders),
-            new[] { resourceLayout },
-            Swapchain.Framebuffer.OutputDescription
+            [ResolvedColorResourceLayout],
+            SwapChain.Framebuffer.OutputDescription
         );
         FullscreenQuadPipeline = Factory.CreateGraphicsPipeline(pipelineDescription);
         Disposables.Add(FullscreenQuadPipeline);
@@ -446,5 +476,4 @@ public class GraphicsContext : IDisposable
         Disposables.Add(FullscreenQuadTextureCoordinates);
         GraphicsDevice.UpdateBuffer(FullscreenQuadTextureCoordinates, 0, fullscreenQuadTextureCoordinates);
     }
-
 }

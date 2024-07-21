@@ -21,7 +21,7 @@ public class Camera
     private Vector3 DirectionArc => Direction - Position;
 
     private float Fov = 90f;
-    private float Far = 100000f;
+    private float Far = 1000000f;
     private float Near = 10f;
     private float MouseSpeed = 1f;
     private float FlySpeed = 1f;
@@ -44,20 +44,18 @@ public class Camera
     {
         //Mouse
         var mouseDelta = InputTracker.MouseDelta * MouseSpeed * 0.01f;
-
         var right = Vector3.Normalize(Vector3.Cross(DirectionArc, Up));
-
         //Combine rotations
         var rotation = Matrix4x4.CreateFromAxisAngle(right, -mouseDelta.Y) * Matrix4x4.CreateFromAxisAngle(-Up, mouseDelta.X);
-
-        Direction = Vector3.Transform(DirectionArc, rotation) + Position;
         
         //Keyboard
-        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 3000f : 700f * FlySpeed;
-        float moveSpeed = (float)(multiplier * deltaTime);
         var moveAxis = Vector3.Normalize(-PositionArc);
         var panAxis = Vector3.Normalize(Vector3.Cross(moveAxis, Up));
         
+        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 4000f : 700f * FlySpeed;
+        var moveSpeed = (float)(multiplier * deltaTime);
+        
+        Direction = Vector3.Transform(DirectionArc, rotation) + Position;
         if (InputTracker.GetKey(Key.W)) // forward
         {
             var d = moveSpeed * moveAxis;
@@ -96,19 +94,19 @@ public class Camera
         }
 
         if (InputTracker.GetKey(Key.C)) // zoom in
-            ZoomAmount(+0.5f);
+            Zoom(+50, deltaTime);
         if (InputTracker.GetKey(Key.X)) // zoom out
-            ZoomAmount(-0.5f);
+            Zoom(-50, deltaTime);
     }
 
-    private void ZoomAmount(float amount)
+    private void Zoom(double amount, double deltaTime)
     {
-        Fov = Math.Clamp(Fov - amount, 25f, 120f);
+        Fov = (float)Math.Clamp(Fov - (amount * deltaTime), 25d, 120d);
     }
 
-    public void Resize(float aspectRatio)
+    public void Resize(uint width, uint height)
     {
-        AspectRatio = aspectRatio;
+        AspectRatio = (float)width/height;
     }
 }
 
