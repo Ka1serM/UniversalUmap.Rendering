@@ -1,21 +1,18 @@
 #version 450
 
-// Vertex attributes
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 color;
 layout(location = 2) in vec3 normal;
 
-// Instance attributes
+//Instance attributes
 layout(location = 3) in vec4 transformRow0;
 layout(location = 4) in vec4 transformRow1;
 layout(location = 5) in vec4 transformRow2;
 layout(location = 6) in vec4 transformRow3;
 
-// Vertex shader outputs
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec3 fragNormalWorld;
 
-// Uniform buffer
 layout(set = 0, binding = 0) uniform cameraUbo
 {
     mat4 projection;

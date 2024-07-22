@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Numerics;
 using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Meshes.PSK;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Veldrid;
@@ -20,24 +21,19 @@ public class Model : IDisposable
     private DeviceBuffer InstanceBuffer;
     private uint InstanceCount;
     
-    public Model(GraphicsDevice graphicsDevice, CommandList commandList, UStaticMesh staticMesh, List<FTransform> transforms)
+    public Model(GraphicsDevice graphicsDevice, CommandList commandList, CStaticMeshLod staticMesh, List<FTransform> transforms)
     {
         GraphicsDevice = graphicsDevice;
         CommandList = commandList;
         InitializeBuffers(staticMesh, transforms);
     }
 
-    private void InitializeBuffers(UStaticMesh staticMesh, List<FTransform> transforms)
+    private void InitializeBuffers(CStaticMeshLod staticMesh, List<FTransform> transforms)
     {
-        if (!staticMesh.TryConvert(out var convertedMesh))
-            throw new InvalidOperationException("Failed to convert the static mesh.");
-
-        var lod = convertedMesh.LODs[0];
-        
-        var vertices = new Vertex[lod.Verts.Length];
-        for (var i = 0; i < lod.Verts.Length; i++)
+        var vertices = new Vertex[staticMesh.Verts.Length];
+        for (var i = 0; i < staticMesh.Verts.Length; i++)
         {
-            var vert = lod.Verts[i];
+            var vert = staticMesh.Verts[i];
 
             var position = new Vector3(vert.Position.X, vert.Position.Z, vert.Position.Y);
             var color = new Vector3(0.5f, 0.5f, 0.5f);
@@ -48,13 +44,13 @@ public class Model : IDisposable
             vertices[i] = new Vertex(position, color, normal);
         }
         
-        var indices = new ushort[lod.Indices.Value.Length];
-        for (var i = 0; i < lod.Indices.Value.Length; i++)
+        var indices = new ushort[staticMesh.Indices.Value.Length];
+        for (var i = 0; i < staticMesh.Indices.Value.Length; i++)
         {
-            var index = lod.Indices.Value[i];
+            var index = staticMesh.Indices.Value[i];
             
-            if (index >= lod.Verts.Length)
-                throw new InvalidOperationException($"Invalid index {index} at position {i}, exceeds the number of vertices {lod.Verts.Length}.");
+            if (index >= staticMesh.Verts.Length)
+                throw new InvalidOperationException($"Invalid index {index} at position {i}, exceeds the number of vertices {staticMesh.Verts.Length}.");
             
             indices[i] = (ushort)index;
         }

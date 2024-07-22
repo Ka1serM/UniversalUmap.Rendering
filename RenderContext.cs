@@ -5,10 +5,10 @@ using System.IO;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
-using CUE4Parse.UE4.Assets.Exports.StaticMesh;
+using CUE4Parse_Conversion.Meshes.PSK;
 using CUE4Parse.UE4.Objects.Core.Math;
+using UniversalUmap.Rendering.Input;
 using Veldrid;
 using Veldrid.Sdl2;
 using Veldrid.SPIRV;
@@ -17,14 +17,14 @@ using Veldrid.StartupUtilities;
 namespace UniversalUmap.Rendering;
 
 //Host this in an Avalonia NativeControlHost
-public class GraphicsContext : IDisposable
+public class RenderContext : IDisposable
 {
     private readonly object Monitor;
-    private readonly Thread RenderThread;
+    private Thread RenderThread;
     private bool Exit;
 
     private readonly List<Model> Models;
-    private readonly Camera.Camera Camera;
+    private readonly Camera Camera;
     
     private Sdl2Window Window;
     private uint Width;
@@ -35,7 +35,7 @@ public class GraphicsContext : IDisposable
     private Swapchain SwapChain;
     private Pipeline MainPipeline;
     
-    private readonly CommandList CommandList;
+    private CommandList CommandList;
 
     private DeviceBuffer CameraBuffer;
     private ResourceSet CameraResourceSet;
@@ -57,19 +57,30 @@ public class GraphicsContext : IDisposable
     private ResourceLayout ResolvedColorResourceLayout;
     private TextureView ResolvedColorTextureView;
     
-    public GraphicsContext(out IntPtr windowlHandle, IntPtr instanceHandle, uint width, uint height)
+    
+    private static RenderContext instance;
+    public static RenderContext GetInstance()
+    {
+        return instance ??= new RenderContext();
+    }
+    
+    private RenderContext()
     {
         Disposables = [];
         Models = [];
-        Width = width;
-        Height = height;
+        Width = 960;
+        Height = 540;
         Monitor = new object();
         SampleCount = TextureSampleCount.Count4; //MSAA
         Vsync = true;
-        
-        windowlHandle = InitializeWindow();
-        InitializeGraphicsDevice();
-        CreateSwapchain(windowlHandle, instanceHandle);
+        Exit = false;
+        Camera = new Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)Width / Height);
+    }
+
+    public IntPtr Initialize(IntPtr instanceHandle)
+    {
+        CreateGraphicsDevice();
+        var windowHandle = CreateWindowSwapChain(instanceHandle);
 
         CreateFullscreenQuadPipeline();
         CreateMainPipeline();
@@ -77,14 +88,13 @@ public class GraphicsContext : IDisposable
         CommandList = Factory.CreateCommandList();
         Disposables.Add(CommandList);
         
-        Camera = new Camera.Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)Width / Height);
-        
-        Exit = false;
         RenderThread = new Thread(RenderLoop) { IsBackground = true };
         RenderThread.Start();
+
+        return windowHandle;
     }
     
-    public void Load(UStaticMesh mesh, List<FTransform> transforms)
+    public void Load(CStaticMeshLod mesh, List<FTransform> transforms)
     {
         var model = new Model(GraphicsDevice, CommandList, mesh, transforms);
         lock (Monitor)
@@ -94,7 +104,7 @@ public class GraphicsContext : IDisposable
         }
     }
 
-    private IntPtr InitializeWindow()
+    private IntPtr CreateWindowSwapChain(IntPtr instanceHandle)
     {
         var windowOptions = new WindowCreateInfo
         {
@@ -109,6 +119,17 @@ public class GraphicsContext : IDisposable
         Sdl2Native.SDL_SetRelativeMouseMode(true);
 
         Window.Resized += OnResized;
+        
+        var swapchainSource = SwapchainSource.CreateWin32(Window.Handle, instanceHandle);
+        var swapchainDescription = new SwapchainDescription(
+            swapchainSource, 
+            Width,
+            Height,
+            PixelFormat.R32_Float,
+            Vsync //v-Sync
+        );
+        SwapChain = Factory.CreateSwapchain(ref swapchainDescription);
+        Disposables.Add(SwapChain);
 
         return Window.Handle;
     }
@@ -123,7 +144,7 @@ public class GraphicsContext : IDisposable
         CreateResolvedColorResourceSet(recreate: true);
     }
 
-    private void InitializeGraphicsDevice()
+    private void CreateGraphicsDevice()
     {
         GraphicsDeviceOptions options = new GraphicsDeviceOptions
         {
@@ -133,20 +154,6 @@ public class GraphicsContext : IDisposable
         GraphicsDevice = GraphicsDevice.CreateD3D11(options);
         Factory = GraphicsDevice.ResourceFactory;
         Disposables.Add(GraphicsDevice);
-    }
-
-    private void CreateSwapchain(IntPtr controlHandle, IntPtr instanceHandle)
-    {
-        var swapchainSource = SwapchainSource.CreateWin32(controlHandle, instanceHandle);
-        var swapchainDescription = new SwapchainDescription(
-            swapchainSource, 
-            Width,
-            Height,
-            PixelFormat.R32_Float,
-            Vsync //v-Sync
-        );
-        SwapChain = Factory.CreateSwapchain(ref swapchainDescription);
-        Disposables.Add(SwapChain);
     }
     
     private ResourceLayout CreateMainResourceLayout()
@@ -275,7 +282,7 @@ public class GraphicsContext : IDisposable
         CommandList.SetFramebuffer(SwapChain.Framebuffer);
         CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
         CommandList.ClearDepthStencil(1);
-        CommandList.ClearColorTarget(0, RgbaFloat.Clear);
+        CommandList.ClearColorTarget(0, new RgbaFloat(0.08f, 0.08f, 0.08f, 0));
         
         //Set fullscreen quad pipeline
         CommandList.SetPipeline(FullscreenQuadPipeline);
@@ -291,7 +298,6 @@ public class GraphicsContext : IDisposable
         CommandList.End();
         GraphicsDevice.SubmitCommands(CommandList);
         GraphicsDevice.SwapBuffers(SwapChain);
-        //GraphicsDevice.WaitForIdle();
     }
     
     public void Dispose()
@@ -303,8 +309,9 @@ public class GraphicsContext : IDisposable
         
         Disposables.Reverse();
         foreach (var disposable in Disposables)
-            if(disposable != null)
-                disposable.Dispose();
+            disposable?.Dispose();
+        
+        instance = null;
     }
     
     private VertexLayoutDescription[] CreateFullscreenQuadVertexLayouts()

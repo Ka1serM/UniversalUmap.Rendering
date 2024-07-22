@@ -3,7 +3,7 @@ using System.Numerics;
 using Veldrid;
 using Veldrid.Sdl2;
 
-namespace UniversalUmap.Rendering.Camera;
+namespace UniversalUmap.Rendering.Input;
 
 public class Camera
 {
