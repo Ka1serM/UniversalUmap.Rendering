@@ -1,13 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <LangVersion>latest</LangVersion>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>UniversalUmap.Rendering</RootNamespace>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>none</DebugType>
   </PropertyGroup>
     <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.0.10" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="Veldrid" Version="4.9.0" />
     <PackageReference Include="Veldrid.SPIRV" Version="1.0.15" />
     <PackageReference Include="Veldrid.StartupUtilities" Version="4.9.0" />
@@ -18,18 +22,18 @@
     </ItemGroup>
   
   <ItemGroup>
-    <ShaderSource Include="$(ProjectDir)Shaders\*.vert" />
-    <ShaderSource Include="$(ProjectDir)Shaders\*.frag" />
-    <CompiledShaders Include="$(ProjectDir)Shaders\*.spv" />
+    <ShaderSource Include="$(ProjectDir)Assets\Shaders\*.vert" />
+    <ShaderSource Include="$(ProjectDir)Assets\Shaders\*.frag" />
+    <CompiledShaders Include="$(ProjectDir)Assets\Shaders\*.spv" />
   </ItemGroup>
   
   <Target Name="CompileShaders" BeforeTargets="ResolveReferences">
     <Delete Files="@(CompiledShaders)" />
     <Exec Command="glslc &quot;%(ShaderSource.FullPath)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename)%(ShaderSource.Extension).spv&quot;" Condition="'%(ShaderSource.Extension)' != '.spv'" />
   </Target>
-  
+
   <ItemGroup>
-    <EmbeddedResource Include="@(CompiledShaders)" />
+    <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
   
 </Project>

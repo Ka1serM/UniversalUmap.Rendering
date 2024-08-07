@@ -1,18 +1,19 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
+﻿using System.Diagnostics;
 using System.Numerics;
-using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Threading;
 using CUE4Parse_Conversion.Meshes.PSK;
+using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.StaticMesh;
+using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Objects.Core.Math;
+using UniversalUmap.Rendering.Extensions;
 using UniversalUmap.Rendering.Input;
+using UniversalUmap.Rendering.Models;
+using UniversalUmap.Rendering.Resources;
 using Veldrid;
 using Veldrid.Sdl2;
-using Veldrid.SPIRV;
 using Veldrid.StartupUtilities;
+using Texture = Veldrid.Texture;
 
 namespace UniversalUmap.Rendering;
 
@@ -23,8 +24,12 @@ public class RenderContext : IDisposable
     private Thread RenderThread;
     private bool Exit;
 
-    private readonly List<Model> Models;
+    private ModelPipeline ModelPipeline;
+    private readonly List<IRenderable> Models;
+    
     private readonly Camera Camera;
+    private Skybox Skybox;
+    
     
     private Sdl2Window Window;
     private uint Width;
@@ -33,12 +38,15 @@ public class RenderContext : IDisposable
     private GraphicsDevice GraphicsDevice;
     private ResourceFactory Factory;
     private Swapchain SwapChain;
-    private Pipeline MainPipeline;
-    
     private CommandList CommandList;
 
     private DeviceBuffer CameraBuffer;
+    private ResourceLayout CameraResourceLayout;
     private ResourceSet CameraResourceSet;
+
+    private ResourceLayout TextureResourceLayout;
+    
+    private DeviceBuffer AutoTextureBuffer;
 
     private readonly TextureSampleCount SampleCount;
     private readonly bool Vsync;
@@ -57,8 +65,12 @@ public class RenderContext : IDisposable
     private ResourceLayout ResolvedColorResourceLayout;
     private TextureView ResolvedColorTextureView;
     
+    //do this because UniversalUmap.Rendering is seperate
+    public static ETexturePlatform TexturePlatform;
+    public static AutoTextureItem[] AutoTextureItems;
     
     private static RenderContext instance;
+
     public static RenderContext GetInstance()
     {
         return instance ??= new RenderContext();
@@ -74,7 +86,7 @@ public class RenderContext : IDisposable
         SampleCount = TextureSampleCount.Count4; //MSAA
         Vsync = true;
         Exit = false;
-        Camera = new Camera(new Vector3(0, 0, 0), -Vector3.UnitZ, (float)Width / Height);
+        Camera = new Camera(new Vector3(0, 0, 100), new Vector3(0f, 0f, 0f), (float)Width/Height);
     }
 
     public IntPtr Initialize(IntPtr instanceHandle)
@@ -83,33 +95,96 @@ public class RenderContext : IDisposable
         var windowHandle = CreateWindowSwapChain(instanceHandle);
 
         CreateFullscreenQuadPipeline();
-        CreateMainPipeline();
         
         CommandList = Factory.CreateCommandList();
         Disposables.Add(CommandList);
+
+        AutoTextureBuffer = GraphicsDevice.ResourceFactory.CreateBuffer(new BufferDescription(AutoTextureMasks.SizeOf(), BufferUsage.UniformBuffer));
+        Disposables.Add(AutoTextureBuffer);
+        
+        TextureResourceLayout = CreateTextureResourceLayout();
+        Disposables.Add(TextureResourceLayout);
+        
+        CreateCameraLayoutBufferResourceSet();
+
+        ModelPipeline = new ModelPipeline(GraphicsDevice, CameraResourceLayout, TextureResourceLayout, OffscreenFramebuffer.OutputDescription, AutoTextureBuffer);
+        Disposables.Add(ModelPipeline);
+        
+        Skybox = new Skybox(GraphicsDevice, CommandList, TextureResourceLayout, OffscreenFramebuffer.OutputDescription, CameraBuffer);
+        Disposables.Add(Skybox);
         
         RenderThread = new Thread(RenderLoop) { IsBackground = true };
         RenderThread.Start();
 
         return windowHandle;
     }
-    
-    public void Load(CStaticMeshLod mesh, List<FTransform> transforms)
+
+    public void LoadAutoTexture(AutoTextureItem[] autoTextureItems)
     {
-        var model = new Model(GraphicsDevice, CommandList, mesh, transforms);
+        AutoTextureItems = autoTextureItems;
+        var autoTextureMasks = new AutoTextureMasks();
+        foreach (var item in AutoTextureItems)
+        {
+            var mask = new Vector4(item.R ? 1.0f : 0.0f, item.G ? 1.0f : 0.0f, item.B ? 1.0f : 0.0f, item.A ? 1.0f : 0.0f);
+            switch (item.Parameter)
+            {
+                case "Color":
+                    autoTextureMasks.Color = mask;
+                    break;
+                case "Metallic":
+                    autoTextureMasks.Metallic = mask;
+                    break;
+                case "Specular":
+                    autoTextureMasks.Specular = mask;
+                    break;
+                case "Roughness":
+                    autoTextureMasks.Roughness = mask;
+                    break;
+                case "AO":
+                    autoTextureMasks.AO = mask;
+                    break;
+                case "Normal":
+                    autoTextureMasks.Normal = mask;
+                    break;
+                case "Emissive":
+                    autoTextureMasks.Emissive = mask;
+                    break;
+                case "Alpha":
+                    autoTextureMasks.Alpha = mask;
+                    break;
+            }
+        }
+        GraphicsDevice.UpdateBuffer(AutoTextureBuffer, 0, autoTextureMasks);
+    }
+    
+    public void Load(UObject mesh, FTransform[] transforms, UObject[] overrideMaterials)
+    {
+        if (mesh is not UStaticMesh staticMesh)
+            return;
+        var model = new Model(ModelPipeline, GraphicsDevice, CommandList, TextureResourceLayout, CameraResourceSet, staticMesh, transforms, overrideMaterials);
         lock (Monitor)
         {
             Models.Add(model);
             Disposables.Add(model);
         }
     }
-
+    
+    public void Load(CStaticMesh mesh)
+    {
+        var model = new Model(ModelPipeline, GraphicsDevice, CommandList, TextureResourceLayout, CameraResourceSet, mesh);
+        lock (Monitor)
+        {
+            Models.Add(model);
+            Disposables.Add(model);
+        }
+    }
+    
     private IntPtr CreateWindowSwapChain(IntPtr instanceHandle)
     {
         var windowOptions = new WindowCreateInfo
         {
             WindowWidth = (int)Width, WindowHeight = (int)Height, 
-            WindowTitle = "UniversalUmap Preview",
+            WindowTitle = "UniversalUmap 3D Viewer",
             WindowInitialState = WindowState.Hidden
         };
         Window = VeldridStartup.CreateWindow(windowOptions);
@@ -126,7 +201,7 @@ public class RenderContext : IDisposable
             Width,
             Height,
             PixelFormat.R32_Float,
-            Vsync //v-Sync
+            Vsync
         );
         SwapChain = Factory.CreateSwapchain(ref swapchainDescription);
         Disposables.Add(SwapChain);
@@ -146,7 +221,7 @@ public class RenderContext : IDisposable
 
     private void CreateGraphicsDevice()
     {
-        GraphicsDeviceOptions options = new GraphicsDeviceOptions
+        var options = new GraphicsDeviceOptions
         {
             PreferStandardClipSpaceYDirection = true,
             PreferDepthRangeZeroToOne = true
@@ -156,141 +231,90 @@ public class RenderContext : IDisposable
         Disposables.Add(GraphicsDevice);
     }
     
-    private ResourceLayout CreateMainResourceLayout()
+
+    private void CreateCameraLayoutBufferResourceSet()
     {
-        //Create and add camera resource layout
-        var cameraResourceLayout = Factory.CreateResourceLayout(
-            new ResourceLayoutDescription(
-                new ResourceLayoutElementDescription("cameraUbo", ResourceKind.UniformBuffer, ShaderStages.Vertex | ShaderStages.Fragment)));
-        Disposables.Add(cameraResourceLayout);
-        
+        //camera resource layout
+        CameraResourceLayout = Factory.CreateResourceLayout(new ResourceLayoutDescription(
+                new ResourceLayoutElementDescription("cameraUbo", ResourceKind.UniformBuffer, ShaderStages.Vertex | ShaderStages.Fragment)
+            )
+        );
+        Disposables.Add(CameraResourceLayout);
         //Create uniform buffer
         CameraBuffer = Factory.CreateBuffer(new BufferDescription(CameraUniform.SizeOf(), BufferUsage.UniformBuffer));
         Disposables.Add(CameraBuffer);
-        
         // Create the resource set
-        CameraResourceSet = Factory.CreateResourceSet(new ResourceSetDescription(cameraResourceLayout, CameraBuffer));
+        CameraResourceSet = Factory.CreateResourceSet(new ResourceSetDescription(CameraResourceLayout, CameraBuffer));
         Disposables.Add(CameraResourceSet);
-        
-        return cameraResourceLayout;
-    }
-
-    private Shader[] CreateShaders(string name)
-    {
-        byte[] vertexBytes, fragmentBytes;
-        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("UniversalUmap.Rendering.Shaders."+name+".vert.spv"))
-        {
-            using (MemoryStream ms = new MemoryStream())
-            {
-                stream.CopyTo(ms);
-                vertexBytes = ms.ToArray();
-            }
-        }
-        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("UniversalUmap.Rendering.Shaders."+name+".frag.spv"))
-        {
-            using (MemoryStream ms = new MemoryStream())
-            {
-                stream.CopyTo(ms);
-                fragmentBytes = ms.ToArray();
-            }
-        }
-        var vertexShaderDesc = new ShaderDescription(
-            ShaderStages.Vertex,
-            vertexBytes,
-            "main"
-        );
-        var fragmentShaderDesc = new ShaderDescription(
-            ShaderStages.Fragment,
-            fragmentBytes,
-            "main"
-        );
-        var shaders = Factory.CreateFromSpirv(vertexShaderDesc, fragmentShaderDesc);
-        foreach (var shader in shaders)
-            Disposables.Add(shader);
-        return shaders;
     }
     
-    private void CreateMainPipeline()
+    private ResourceLayout CreateTextureResourceLayout()
     {
-        var resourceLayout = CreateMainResourceLayout();
-        var vertexLayouts = CreateMainVertexLayouts();
-        var shaders = CreateShaders("main");
-        var rasterizerStateDescription = new RasterizerStateDescription(
-            cullMode: FaceCullMode.Back,
-            fillMode: PolygonFillMode.Solid,
-            frontFace: FrontFace.CounterClockwise,
-            depthClipEnabled: true,
-            scissorTestEnabled: false
-        );
-        MainPipeline = Factory.CreateGraphicsPipeline(
-            new GraphicsPipelineDescription(
-                BlendStateDescription.SingleOverrideBlend,
-                DepthStencilStateDescription.DepthOnlyLessEqual,
-                rasterizerStateDescription,
-                PrimitiveTopology.TriangleList,
-                new ShaderSetDescription(vertexLayouts, shaders),
-                resourceLayout,
-                OffscreenFramebuffer.OutputDescription
-            )
-        );
-        Disposables.Add(MainPipeline);
+        return Factory.CreateResourceLayout(new ResourceLayoutDescription(
+            new ResourceLayoutElementDescription("texture", ResourceKind.TextureReadOnly, ShaderStages.Fragment)
+        ));
     }
     
     private void RenderLoop()
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         long previousTicks = stopwatch.ElapsedTicks;
-        
+    
+        int frameCount = 0;
+        double elapsedTime = 0;
         while (!Exit)
         {
             long currentTicks = stopwatch.ElapsedTicks;
             double deltaTime = (currentTicks - previousTicks) / (double)Stopwatch.Frequency;
-
-            UpdateCamera(deltaTime);
+            previousTicks = currentTicks;
+            
             Render(deltaTime);
             
-            previousTicks = currentTicks;
+            frameCount++;
+            elapsedTime += deltaTime;
+            // Check if 5 seconds have passed
+            if (elapsedTime >= 5.0)
+            {
+                double fps = frameCount / elapsedTime;
+                Console.WriteLine($"FPS: {fps:F2}");
+                frameCount = 0;
+                elapsedTime = 0;
+            }
         }
     }
 
-    private void UpdateCamera(double deltaTime)
-    {
-        GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime, Window));
-    }
-
+    
     private void Render(double deltaTime)
     {
-        CommandList.Begin();
+        //update Camera
+        GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime, Window));
+        
+       CommandList.Begin();
 
         //Render to offscreen framebuffer
         CommandList.SetFramebuffer(OffscreenFramebuffer);
-        CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
         CommandList.ClearDepthStencil(1);
         CommandList.ClearColorTarget(0, RgbaFloat.Clear);
         
-        CommandList.SetPipeline(MainPipeline);
-        CommandList.SetGraphicsResourceSet(0, CameraResourceSet);
-
         //Draw models
+        Skybox.Render();
+
         lock (Monitor)
-        {
             foreach (var model in Models)
-                model.Render();
-        }
+                model.Render(Camera.FrustumPlanes);
         
         //Render to SwapChain framebuffer
         CommandList.SetFramebuffer(SwapChain.Framebuffer);
-        CommandList.SetViewport(0, new Viewport(0, 0, Width, Height, 0, 1));
         CommandList.ClearDepthStencil(1);
-        CommandList.ClearColorTarget(0, new RgbaFloat(0.08f, 0.08f, 0.08f, 0));
+        CommandList.ClearColorTarget(0, RgbaFloat.Clear);
         
         //Set fullscreen quad pipeline
         CommandList.SetPipeline(FullscreenQuadPipeline);
         CommandList.SetVertexBuffer(0, FullscreenQuadPositions);
         CommandList.SetVertexBuffer(1, FullscreenQuadTextureCoordinates);
-        CommandList.SetGraphicsResourceSet(0, ResolvedColorResourceSet);
         
         CommandList.ResolveTexture(OffscreenColor, ResolvedColor);
+        CommandList.SetGraphicsResourceSet(0, ResolvedColorResourceSet);
         
         //Draw fullscreen quad
         CommandList.Draw(4);
@@ -309,7 +333,14 @@ public class RenderContext : IDisposable
         
         Disposables.Reverse();
         foreach (var disposable in Disposables)
-            disposable?.Dispose();
+            disposable.Dispose();
+
+        foreach (var materialKvp in ResourceCache.Materials)
+            materialKvp.Value.Dispose();
+        ResourceCache.Materials.Clear();
+        foreach (var textureKvp in ResourceCache.Textures)
+            textureKvp.Value.Dispose();
+        ResourceCache.Textures.Clear();
         
         instance = null;
     }
@@ -319,24 +350,6 @@ public class RenderContext : IDisposable
         var vertexLayoutPositions = new VertexLayoutDescription(new VertexElementDescription("Positions", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3));
         var vertexLayoutTextureCoordinates = new VertexLayoutDescription(new VertexElementDescription("TextureCoordinates", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float2));
         return [vertexLayoutPositions, vertexLayoutTextureCoordinates];
-    }
-    
-    private VertexLayoutDescription[] CreateMainVertexLayouts()
-    {
-        var vertexLayout = new VertexLayoutDescription(
-            new VertexElementDescription("position", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3),
-            new VertexElementDescription("color", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3),
-            new VertexElementDescription("normal", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float3)
-        );
-        //instance info layout
-        var instanceLayout = new VertexLayoutDescription(
-            new VertexElementDescription("transformRow0", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
-            new VertexElementDescription("transformRow1", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
-            new VertexElementDescription("transformRow2", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4),
-            new VertexElementDescription("transformRow3", VertexElementSemantic.TextureCoordinate, VertexElementFormat.Float4)
-        );
-        instanceLayout.InstanceStepRate = 1;
-        return [vertexLayout, instanceLayout];
     }
     
     private void CreateOffscreenFramebuffer(bool recreate = false)
@@ -372,7 +385,7 @@ public class RenderContext : IDisposable
             Depth = 1,
             MipLevels = 1,
             ArrayLayers = 1,
-            Format = PixelFormat.B8_G8_R8_A8_UNorm,
+            Format = PixelFormat.R16_G16_B16_A16_Float,
             Type = TextureType.Texture2D,
             SampleCount = SampleCount,
             Usage = TextureUsage.RenderTarget | TextureUsage.Sampled,
@@ -413,7 +426,7 @@ public class RenderContext : IDisposable
             Depth = 1,
             MipLevels = 1,
             ArrayLayers = 1,
-            Format = PixelFormat.B8_G8_R8_A8_UNorm,
+            Format = PixelFormat.R16_G16_B16_A16_Float,
             Type = TextureType.Texture2D,
             SampleCount = TextureSampleCount.Count1,
             Usage = TextureUsage.RenderTarget | TextureUsage.Sampled,
@@ -443,7 +456,9 @@ public class RenderContext : IDisposable
         CreateFullscreenQuadBuffers();
         
         var vertexLayouts = CreateFullscreenQuadVertexLayouts();
-        var shaders = CreateShaders("fullscreenQuad");
+        var shaders = ShaderLoader.Load(GraphicsDevice, "FullscreenQuad");
+        Disposables.Add(shaders[0]);
+        Disposables.Add(shaders[1]);
         CreateResolvedColorResourceSet();
         var pipelineDescription = new GraphicsPipelineDescription(
             BlendStateDescription.SingleAlphaBlend,

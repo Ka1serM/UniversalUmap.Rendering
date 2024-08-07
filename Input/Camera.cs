@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Numerics;
+using UniversalUmap.Rendering.Resources;
 using Veldrid;
 using Veldrid.Sdl2;
 
@@ -12,34 +13,89 @@ public class Camera
         Position = position;
         Direction = direction;
         AspectRatio = aspectRatio;
+        FrustumPlanes = new Plane[6];
+        Fov = 70f;
+        Far = 10000000f;
+        Near = 10f;
+        MouseSpeed = 1f;
+        FlySpeed = 1f;
+        Up = Vector3.UnitY;
     }
     
-    private Vector3 Up => Vector3.UnitY;
+    private Vector3 Up;
     private Vector3 Position;
     private Vector3 PositionArc => Position - Direction;
     private Vector3 Direction;
     private Vector3 DirectionArc => Direction - Position;
 
-    private float Fov = 90f;
-    private float Far = 1000000f;
-    private float Near = 10f;
-    private float MouseSpeed = 1f;
-    private float FlySpeed = 1f;
+    private float Fov;
+    private float Far;
+    private float Near;
+    private float MouseSpeed;
+    private float FlySpeed;
     
     private float AspectRatio;
-
     private Vector4 FrontVector => new(Vector3.Normalize(DirectionArc), 0f);
     private Matrix4x4 ViewMatrix => Matrix4x4.CreateLookAt(Position, Direction, Up);
     private Matrix4x4 ProjectionMatrix => Matrix4x4.CreatePerspectiveFieldOfView(Fov * (float)Math.PI / 180f, AspectRatio, Near, Far);
+    private Matrix4x4 ViewProjectionMatrix => ViewMatrix * ProjectionMatrix;
+
+    public readonly Plane[] FrustumPlanes;
     
     public CameraUniform Update(double deltaTime, Sdl2Window window)
     {
         InputTracker.UpdateFrameInput(window.PumpEvents(), window);
         Modify(deltaTime);
+        CalculateFrustum();
         return new CameraUniform(ProjectionMatrix, ViewMatrix, FrontVector);
     }
-    
-    
+
+    private void CalculateFrustum()
+    {
+        //Left plane
+        FrustumPlanes[0] = new Plane(
+            ViewProjectionMatrix.M14 + ViewProjectionMatrix.M11,
+            ViewProjectionMatrix.M24 + ViewProjectionMatrix.M21,
+            ViewProjectionMatrix.M34 + ViewProjectionMatrix.M31,
+            ViewProjectionMatrix.M44 + ViewProjectionMatrix.M41
+        );
+        //Right plane
+        FrustumPlanes[1] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M11,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M21,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M31,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M41
+        );
+        //Top plane
+        FrustumPlanes[2] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M12,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M22,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M32,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M42
+        );
+        //Bottom plane
+        FrustumPlanes[3] = new Plane(
+            ViewProjectionMatrix.M14 + ViewProjectionMatrix.M12,
+            ViewProjectionMatrix.M24 + ViewProjectionMatrix.M22,
+            ViewProjectionMatrix.M34 + ViewProjectionMatrix.M32,
+            ViewProjectionMatrix.M44 + ViewProjectionMatrix.M42
+        );
+        //Near plane
+        FrustumPlanes[4] = new Plane(
+            ViewProjectionMatrix.M13,
+            ViewProjectionMatrix.M23,
+            ViewProjectionMatrix.M33,
+            ViewProjectionMatrix.M43
+        );
+        //Far plane
+        FrustumPlanes[5] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M13,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M23,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M33,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M43
+        );
+    }
+            
     private void Modify(double deltaTime)
     {
         //Mouse
@@ -52,7 +108,7 @@ public class Camera
         var moveAxis = Vector3.Normalize(-PositionArc);
         var panAxis = Vector3.Normalize(Vector3.Cross(moveAxis, Up));
         
-        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 4000f : 700f * FlySpeed;
+        var multiplier = InputTracker.GetKey(Key.ShiftLeft) ? 8000f : 500f * FlySpeed;
         var moveSpeed = (float)(multiplier * deltaTime);
         
         Direction = Vector3.Transform(DirectionArc, rotation) + Position;

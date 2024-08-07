@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Runtime.InteropServices;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Extensions;
 
 public static class NativeWindowExtensions
 {
