@@ -6,14 +6,17 @@ namespace UniversalUmap.Rendering.Models;
 public class ModelPipeline : IDisposable
 {
     private readonly GraphicsDevice GraphicsDevice;
-    public Pipeline Pipeline;
+    public readonly Pipeline RegularPipeline;
+    public readonly Pipeline TwoSidedPipeline;
 
-    public ResourceSet TextureSamplerResourceSet;
     public ResourceSet AutoTextureResourceSet;
-
-    private List<IDisposable> Disposables;
+    public ResourceSet TextureSamplerResourceSet;
     
-    public ModelPipeline(GraphicsDevice graphicsDevice, ResourceLayout cameraResourceLayout, ResourceLayout textureResourceLayout, OutputDescription outputDescription, DeviceBuffer autoTextureBuffer)
+    public ResourceLayout TextureResourceLayout;
+
+    private readonly List<IDisposable> Disposables;
+    
+    public ModelPipeline(GraphicsDevice graphicsDevice, ResourceLayout cameraResourceLayout, OutputDescription outputDescription, DeviceBuffer autoTextureBuffer)
     {
         GraphicsDevice = graphicsDevice;
         Disposables = [];
@@ -21,6 +24,7 @@ public class ModelPipeline : IDisposable
         //Create main pipeline
         var autoTextureResourceLayout = CreateAutoTextureResourceLayout(autoTextureBuffer);
         var textureSamplerResourceLayout = CreateTextureSamplerResourceLayout();
+        var textureResourceLayout = CreateTextureResourceLayout();
         var combinedResourceLayout = new[]
         {
             autoTextureResourceLayout, cameraResourceLayout, textureSamplerResourceLayout, textureResourceLayout, 
@@ -35,6 +39,11 @@ public class ModelPipeline : IDisposable
         Disposables.Add(shaders[1]);
         var shaderSetDescription = new ShaderSetDescription(vertexLayouts, shaders);
         
+        var depthStencilState = new DepthStencilStateDescription(
+            depthTestEnabled: true,
+            depthWriteEnabled: true,
+            comparisonKind: ComparisonKind.LessEqual
+        );
         var mainRasterizerDescription = new RasterizerStateDescription(
             cullMode: FaceCullMode.Back,
             fillMode: PolygonFillMode.Solid,
@@ -42,12 +51,7 @@ public class ModelPipeline : IDisposable
             depthClipEnabled: true,
             scissorTestEnabled: false
         );
-        var depthStencilState = new DepthStencilStateDescription(
-            depthTestEnabled: true,
-            depthWriteEnabled: true,
-            comparisonKind: ComparisonKind.LessEqual
-        );
-        Pipeline = GraphicsDevice.ResourceFactory.CreateGraphicsPipeline(
+        RegularPipeline = GraphicsDevice.ResourceFactory.CreateGraphicsPipeline(
             new GraphicsPipelineDescription(
                 BlendStateDescription.SingleAlphaBlend,
                 depthStencilState,
@@ -58,7 +62,27 @@ public class ModelPipeline : IDisposable
                 outputDescription
             )
         );
-        Disposables.Add(Pipeline);
+        Disposables.Add(RegularPipeline);
+        //TWO SIDED PIPELINE
+        var twoSidedRasterizerDescription = new RasterizerStateDescription(
+            cullMode: FaceCullMode.None,
+            fillMode: PolygonFillMode.Solid,
+            frontFace: FrontFace.CounterClockwise,
+            depthClipEnabled: true,
+            scissorTestEnabled: false
+        );
+        TwoSidedPipeline = GraphicsDevice.ResourceFactory.CreateGraphicsPipeline(
+            new GraphicsPipelineDescription(
+                BlendStateDescription.SingleAlphaBlend,
+                depthStencilState,
+                twoSidedRasterizerDescription,
+                PrimitiveTopology.TriangleList,
+                shaderSetDescription,
+                combinedResourceLayout,
+                outputDescription
+            )
+        );
+        Disposables.Add(TwoSidedPipeline);
     }
     
     private VertexLayoutDescription[] CreateMainVertexLayouts()
@@ -104,6 +128,15 @@ public class ModelPipeline : IDisposable
         AutoTextureResourceSet = GraphicsDevice.ResourceFactory.CreateResourceSet(new ResourceSetDescription(autoTextureResourceLayout, autoTextureBuffer));
         Disposables.Add(AutoTextureResourceSet);
         return autoTextureResourceLayout;
+    }
+    
+    private ResourceLayout CreateTextureResourceLayout()
+    {
+        TextureResourceLayout = GraphicsDevice.ResourceFactory.CreateResourceLayout(new ResourceLayoutDescription(
+            new ResourceLayoutElementDescription("texture", ResourceKind.TextureReadOnly, ShaderStages.Fragment)
+        ));
+        Disposables.Add(TextureResourceLayout);
+        return TextureResourceLayout;
     }
     
     public void Dispose()

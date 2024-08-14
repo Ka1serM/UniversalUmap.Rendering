@@ -2,14 +2,14 @@
 
 public class Section
 {
-    public readonly uint MaterialIndex;
+    public readonly int MaterialIndex;
     public readonly uint IndexCount;
     public readonly uint FirstIndex;
     
-    public Section(int materialIndex, int faceCount, int firstIndex)
+    public Section(int materialIndex, int firstIndex, int faceCount)
     {
-        MaterialIndex = (uint)materialIndex;
-        IndexCount = (uint)faceCount * 3;
+        MaterialIndex = materialIndex;
         FirstIndex = (uint)firstIndex;
+        IndexCount = (uint)faceCount * 3;
     }
 }

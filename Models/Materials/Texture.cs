@@ -1,5 +1,4 @@
-﻿using System;
-using System.Numerics;
+﻿using System.Numerics;
 using Avalonia.Platform;
 using CUE4Parse_Conversion.Textures;
 using CUE4Parse.UE4.Assets.Exports.Texture;
@@ -20,7 +19,7 @@ namespace UniversalUmap.Rendering.Models.Materials
     {
         try
         {
-            var skBitmap = texture.Decode(texture.PlatformData.Mips[0], RenderContext.TexturePlatform);
+            var skBitmap = texture.Decode(RenderContext.TexturePlatform);
             InitializeTextureFromBitmap(graphicsDevice, resourceLayout, texture, skBitmap);
         }
         catch
@@ -68,7 +67,7 @@ namespace UniversalUmap.Rendering.Models.Materials
             Width = (uint)bitmaps[0].Width,
             Height = (uint)bitmaps[0].Height,
             Depth = 1,
-            MipLevels = 1, //TODO: Load all mips
+            MipLevels = 1,
             ArrayLayers = 1,
             Format = PixelFormat.B8_G8_R8_A8_UNorm_SRgb,
             Type = TextureType.Texture2D,

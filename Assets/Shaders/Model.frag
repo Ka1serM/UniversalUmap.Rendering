@@ -40,15 +40,15 @@ layout(set = 10, binding = 0) uniform texture2D emissiveTexture;
 const vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
 
 float getMaskedChannel(vec4 textureSample, vec4 mask) {
-    // Calculate the greyscale version of the texture sample
-    float greyscale = dot(textureSample.rgb, vec3(1.0 / 3.0)); // Average for greyscale
-    // Use the mask to select the appropriate channel or the greyscale value
+    //Calculate greyscale
+    float greyscale = dot(textureSample.rgb, vec3(1.0 / 3.0));
+    //Mask selects appropriate channel or greyscale value
     return dot(textureSample, mask) / max(dot(mask.rgb, vec3(1.0)), 0.001); // Avoid division by zero
 }
 
 void main() {
     vec4 color = texture(sampler2D(colorTexture, aniso4xSampler), fragUV) * autoTexture.colorMask;
-    float metallic = getMaskedChannel(texture(sampler2D(metallicTexture, aniso4xSampler), fragUV), autoTexture.metallicMask); //dot product returns channel
+    float metallic = getMaskedChannel(texture(sampler2D(metallicTexture, aniso4xSampler), fragUV), autoTexture.metallicMask);
     float specular = getMaskedChannel(texture(sampler2D(specularTexture, aniso4xSampler), fragUV), autoTexture.specularMask) * 2.0;
     float roughness = getMaskedChannel(texture(sampler2D(roughnessTexture, aniso4xSampler), fragUV), autoTexture.roughnessMask);
     float ao = getMaskedChannel(texture(sampler2D(aoTexture, aniso4xSampler), fragUV), autoTexture.aoMask);
@@ -68,9 +68,10 @@ void main() {
     //Diffuse (Half-Lambertian)
     float NdotL = dot(worldNormal, lightDir);
     vec3 diffuse = color.rgb * (NdotL * 0.5 + 0.5);
-
-    //Specular (Blinn-Phong)
-    float specularValue = pow(max(dot(worldNormal, halfWayDir), 0.0), mix(16.0, 4.0, roughness));
+    
+    // Specular (Blinn-Phong)
+    float specularPower = mix(8.0, 64.0, roughness);
+    float specularValue = pow(max(dot(worldNormal, halfWayDir), 0.0), specularPower);
     vec3 specularColor = mix(vec3(0.04), color.rgb, metallic);
     vec3 specularReflection = specularValue * specularColor * specular;
     

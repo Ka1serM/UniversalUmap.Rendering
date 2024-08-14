@@ -1,5 +1,4 @@
-﻿using System;
-using System.Numerics;
+﻿using System.Numerics;
 using UniversalUmap.Rendering.Resources;
 using Veldrid;
 using Veldrid.Sdl2;
@@ -14,7 +13,7 @@ public class Camera
         Direction = direction;
         AspectRatio = aspectRatio;
         FrustumPlanes = new Plane[6];
-        Fov = 70f;
+        Fov = 90f;
         Far = 10000000f;
         Near = 10f;
         MouseSpeed = 1f;

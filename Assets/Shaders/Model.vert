@@ -27,10 +27,12 @@ void main() {
     mat4 instanceTransform = mat4(matrixRow0, matrixRow1, matrixRow2, matrixRow3);
     
     vec4 worldPosition = instanceTransform * vec4(position, 1.0);
+
     gl_Position = (camera.projection * camera.view) * worldPosition;
     
     fragColor = color;
     mat3 normalWorldMatrix = transpose(inverse(mat3(instanceTransform)));
+
     fragNormal = normalize(normalWorldMatrix * normal);
     fragTangent = normalize(normalWorldMatrix * tangent);
     fragUV = uv;

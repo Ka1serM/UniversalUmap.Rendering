@@ -64,7 +64,7 @@ public class Skybox : IDisposable
                 FaceCullMode.None,
                 PolygonFillMode.Solid,
                 FrontFace.Clockwise,
-                depthClipEnabled: true,
+                depthClipEnabled: false,
                 scissorTestEnabled: false
             ),
             PrimitiveTopology.TriangleList,
@@ -77,7 +77,9 @@ public class Skybox : IDisposable
         );
         Pipeline = graphicsDevice.ResourceFactory.CreateGraphicsPipeline(ref pipelineDescription);
         Disposables.Add(Pipeline);
-        ResourceSet = graphicsDevice.ResourceFactory.CreateResourceSet(new ResourceSetDescription(resourceLayout, cameraBuffer, textureView, graphicsDevice.PointSampler));
+        ResourceSet = graphicsDevice.ResourceFactory.CreateResourceSet(
+            new ResourceSetDescription(resourceLayout, cameraBuffer, textureView, graphicsDevice.Aniso4xSampler)
+        );
         Disposables.Add(ResourceSet);
     }
 
@@ -93,35 +95,35 @@ public class Skybox : IDisposable
      private static readonly Vector3[] Vertices =
      [
          // Top
-            new Vector3(-20.0f,20.0f,-20.0f),
-            new Vector3(20.0f,20.0f,-20.0f),
-            new Vector3(20.0f,20.0f,20.0f),
-            new Vector3(-20.0f,20.0f,20.0f),
+            new Vector3(-100.0f,100.0f,-100.0f),
+            new Vector3(100.0f,100.0f,-100.0f),
+            new Vector3(100.0f,100.0f,100.0f),
+            new Vector3(-100.0f,100.0f,100.0f),
             // Bottom
-            new Vector3(-20.0f,-20.0f,20.0f),
-            new Vector3(20.0f,-20.0f,20.0f),
-            new Vector3(20.0f,-20.0f,-20.0f),
-            new Vector3(-20.0f,-20.0f,-20.0f),
+            new Vector3(-100.0f,-100.0f,100.0f),
+            new Vector3(100.0f,-100.0f,100.0f),
+            new Vector3(100.0f,-100.0f,-100.0f),
+            new Vector3(-100.0f,-100.0f,-100.0f),
             // Left
-            new Vector3(-20.0f,20.0f,-20.0f),
-            new Vector3(-20.0f,20.0f,20.0f),
-            new Vector3(-20.0f,-20.0f,20.0f),
-            new Vector3(-20.0f,-20.0f,-20.0f),
+            new Vector3(-100.0f,100.0f,-100.0f),
+            new Vector3(-100.0f,100.0f,100.0f),
+            new Vector3(-100.0f,-100.0f,100.0f),
+            new Vector3(-100.0f,-100.0f,-100.0f),
             // Right
-            new Vector3(20.0f,20.0f,20.0f),
-            new Vector3(20.0f,20.0f,-20.0f),
-            new Vector3(20.0f,-20.0f,-20.0f),
-            new Vector3(20.0f,-20.0f,20.0f),
+            new Vector3(100.0f,100.0f,100.0f),
+            new Vector3(100.0f,100.0f,-100.0f),
+            new Vector3(100.0f,-100.0f,-100.0f),
+            new Vector3(100.0f,-100.0f,100.0f),
             // Back
-            new Vector3(20.0f,20.0f,-20.0f),
-            new Vector3(-20.0f,20.0f,-20.0f),
-            new Vector3(-20.0f,-20.0f,-20.0f),
-            new Vector3(20.0f,-20.0f,-20.0f),
+            new Vector3(100.0f,100.0f,-100.0f),
+            new Vector3(-100.0f,100.0f,-100.0f),
+            new Vector3(-100.0f,-100.0f,-100.0f),
+            new Vector3(100.0f,-100.0f,-100.0f),
             // Front
-            new Vector3(-20.0f,20.0f,20.0f),
-            new Vector3(20.0f,20.0f,20.0f),
-            new Vector3(20.0f,-20.0f,20.0f),
-            new Vector3(-20.0f,-20.0f,20.0f)
+            new Vector3(-100.0f,100.0f,100.0f),
+            new Vector3(100.0f,100.0f,100.0f),
+            new Vector3(100.0f,-100.0f,100.0f),
+            new Vector3(-100.0f,-100.0f,100.0f)
      ];
         private static readonly ushort[] Indices =
         [
