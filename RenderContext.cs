@@ -81,7 +81,7 @@ public class RenderContext : IDisposable
         Width = 1280;
         Height = 720;
         Monitor = new object();
-        SampleCount = TextureSampleCount.Count4; //MSAA
+        SampleCount = TextureSampleCount.Count8; //MSAA
         Vsync = true;
         Exit = false;
         Camera = new Camera(new Vector3(0, 0, 100), new Vector3(0f, 0f, 0f), (float)Width/Height);
@@ -187,13 +187,23 @@ public class RenderContext : IDisposable
         Window.Visible = false;
         Window.WindowState = WindowState.Normal;
         NativeWindowExtensions.MakeBorderless(Window.Handle);
-        Sdl2Native.SDL_SetRelativeMouseMode(true);
+        
+        Window.MouseDown += @event =>
+        {
+            if(@event.MouseButton == MouseButton.Right)
+                Sdl2Native.SDL_SetRelativeMouseMode(true);
+        };
+        Window.MouseUp += @event =>
+        {
+            if (@event.MouseButton == MouseButton.Right)
+                Sdl2Native.SDL_SetRelativeMouseMode(false);
+        };
 
         Window.Resized += OnResized;
         
         var swapchainSource = SwapchainSource.CreateWin32(Window.Handle, instanceHandle);
         var swapchainDescription = new SwapchainDescription(
-            swapchainSource, 
+            swapchainSource,
             Width,
             Height,
             PixelFormat.R32_Float,
@@ -204,7 +214,7 @@ public class RenderContext : IDisposable
 
         return Window.Handle;
     }
-
+    
     private void OnResized()
     {
         Width = (uint)Window.Width;
@@ -275,8 +285,10 @@ public class RenderContext : IDisposable
     
     private void Render(double deltaTime)
     {
+        //update input
+        InputTracker.UpdateFrameInput(Window.PumpEvents(), Window);
         //update Camera
-        GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime, Window));
+        GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime));
         
        CommandList.Begin();
 
@@ -346,15 +358,15 @@ public class RenderContext : IDisposable
         }
         OffscreenDepth = Factory.CreateTexture(new TextureDescription
         {
-            Width = Width,
-            Height = Height,
+            Width = SwapChain.Framebuffer.Width,
+            Height = SwapChain.Framebuffer.Height,
             Depth = 1,
             MipLevels = 1,
             ArrayLayers = 1,
             Format = PixelFormat.R32_Float,
             Type = TextureType.Texture2D,
             SampleCount = SampleCount,
-            Usage = TextureUsage.DepthStencil | TextureUsage.Sampled,
+            Usage = TextureUsage.DepthStencil
         });
         Disposables.Add(OffscreenDepth);
         
@@ -365,15 +377,15 @@ public class RenderContext : IDisposable
         }
         OffscreenColor = Factory.CreateTexture(new TextureDescription
         {
-            Width = Width,
-            Height = Height,
+            Width = SwapChain.Framebuffer.Width,
+            Height = SwapChain.Framebuffer.Height,
             Depth = 1,
             MipLevels = 1,
             ArrayLayers = 1,
             Format = PixelFormat.R16_G16_B16_A16_Float,
             Type = TextureType.Texture2D,
             SampleCount = SampleCount,
-            Usage = TextureUsage.RenderTarget | TextureUsage.Sampled,
+            Usage = TextureUsage.RenderTarget | TextureUsage.Sampled
         });
         Disposables.Add(OffscreenColor);
         
@@ -406,8 +418,8 @@ public class RenderContext : IDisposable
         }
         ResolvedColor = Factory.CreateTexture(new TextureDescription
         {
-            Width = Width,
-            Height = Height,
+            Width = SwapChain.Framebuffer.Width,
+            Height = SwapChain.Framebuffer.Height,
             Depth = 1,
             MipLevels = 1,
             ArrayLayers = 1,

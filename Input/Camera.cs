@@ -41,9 +41,9 @@ public class Camera
 
     public readonly Plane[] FrustumPlanes;
     
-    public CameraUniform Update(double deltaTime, Sdl2Window window)
+    public CameraUniform Update(double deltaTime)
     {
-        InputTracker.UpdateFrameInput(window.PumpEvents(), window);
+
         Modify(deltaTime);
         CalculateFrustum();
         return new CameraUniform(ProjectionMatrix, ViewMatrix, FrontVector);
@@ -97,6 +97,9 @@ public class Camera
             
     private void Modify(double deltaTime)
     {
+        if(!InputTracker.GetMouseButton(MouseButton.Right))
+            return;
+        
         //Mouse
         var mouseDelta = InputTracker.MouseDelta * MouseSpeed * 0.01f;
         var right = Vector3.Normalize(Vector3.Cross(DirectionArc, Up));

@@ -1,17 +1,16 @@
-﻿using Veldrid;
-using System.Collections.Generic;
-using System.Numerics;
+﻿using System.Numerics;
+using Veldrid;
 using Veldrid.Sdl2;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Input;
 
 public static class InputTracker
 {
-    private static HashSet<Key> _currentlyPressedKeys = new();
-    private static HashSet<Key> _newKeysThisFrame = new();
+    private static readonly HashSet<Key> _currentlyPressedKeys = new();
+    private static readonly HashSet<Key> _newKeysThisFrame = new();
 
-    private static HashSet<MouseButton> _currentlyPressedMouseButtons = new();
-    private static HashSet<MouseButton> _newMouseButtonsThisFrame = new();
+    private static readonly HashSet<MouseButton> _currentlyPressedMouseButtons = new();
+    private static readonly HashSet<MouseButton> _newMouseButtonsThisFrame = new();
     
     public static Vector2 MouseDelta;
     public static InputSnapshot FrameSnapshot { get; private set; }
@@ -43,29 +42,19 @@ public static class InputTracker
         _newMouseButtonsThisFrame.Clear();
         
         MouseDelta = window.MouseDelta;
-        for (int i = 0; i < snapshot.KeyEvents.Count; i++)
+        foreach (var ke in snapshot.KeyEvents)
         {
-            KeyEvent ke = snapshot.KeyEvents[i];
             if (ke.Down)
-            {
                 KeyDown(ke.Key);
-            }
             else
-            {
                 KeyUp(ke.Key);
-            }
         }
-        for (int i = 0; i < snapshot.MouseEvents.Count; i++)
+        foreach (var me in snapshot.MouseEvents)
         {
-            MouseEvent me = snapshot.MouseEvents[i];
             if (me.Down)
-            {
                 MouseDown(me.MouseButton);
-            }
             else
-            {
                 MouseUp(me.MouseButton);
-            }
         }
     }
 
@@ -78,9 +67,7 @@ public static class InputTracker
     private static void MouseDown(MouseButton mouseButton)
     {
         if (_currentlyPressedMouseButtons.Add(mouseButton))
-        {
             _newMouseButtonsThisFrame.Add(mouseButton);
-        }
     }
 
     private static void KeyUp(Key key)
@@ -92,8 +79,6 @@ public static class InputTracker
     private static void KeyDown(Key key)
     {
         if (_currentlyPressedKeys.Add(key))
-        {
             _newKeysThisFrame.Add(key);
-        }
     }
 }

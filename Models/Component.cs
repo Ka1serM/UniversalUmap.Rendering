@@ -10,7 +10,7 @@ using Veldrid;
 
 namespace UniversalUmap.Rendering.Models;
 
-public class Component : IDisposable, IRenderable
+public class Component : IDisposable
 {
     private readonly ModelPipeline ModelPipeline;
     private readonly GraphicsDevice GraphicsDevice;
