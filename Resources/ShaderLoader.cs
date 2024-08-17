@@ -1,4 +1,4 @@
-﻿using Avalonia.Platform;
+﻿using System.Reflection;
 using Veldrid;
 using Veldrid.SPIRV;
 
@@ -9,7 +9,7 @@ public static class ShaderLoader
     public static Shader[] Load(GraphicsDevice graphicsDevice, string name)
     {
         byte[] vertexBytes, fragmentBytes;
-        using (Stream stream = AssetLoader.Open(new Uri($"avares://UniversalUmap.Rendering/Assets/Shaders/{name}.vert.spv")))
+        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"UniversalUmap.Rendering.Assets.Shaders.{name}.vert.spv"))
         {
             using (MemoryStream ms = new MemoryStream())
             {
@@ -17,7 +17,7 @@ public static class ShaderLoader
                 vertexBytes = ms.ToArray();
             }
         }
-        using (Stream stream = AssetLoader.Open(new Uri($"avares://UniversalUmap.Rendering/Assets/Shaders/{name}.frag.spv")))
+        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"UniversalUmap.Rendering.Assets.Shaders.{name}.frag.spv"))
         {
             using (MemoryStream ms = new MemoryStream())
             {

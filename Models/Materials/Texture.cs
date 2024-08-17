@@ -1,5 +1,5 @@
 ﻿using System.Numerics;
-using Avalonia.Platform;
+using System.Reflection;
 using CUE4Parse_Conversion.Textures;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using SkiaSharp;
@@ -55,7 +55,7 @@ namespace UniversalUmap.Rendering.Models.Materials
     {
         var bitmaps = new SKBitmap[6];
         for (uint i = 0; i < bitmaps.Length; i++)
-            bitmaps[i] = SKBitmap.Decode(AssetLoader.Open(new Uri($"avares://UniversalUmap.Rendering/Assets/Textures/{sourceNames[i]}.png")));
+            bitmaps[i] = SKBitmap.Decode(Assembly.GetExecutingAssembly().GetManifestResourceStream($"UniversalUmap.Rendering.Assets.Textures.{sourceNames[i]}.png"));
         InitializeTextureCubeFromBitmaps(graphicsDevice, resourceLayout, bitmaps);
     }
 

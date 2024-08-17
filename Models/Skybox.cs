@@ -40,7 +40,7 @@ public class Skybox : IDisposable
         );
         Disposables.Add(textureView);
         
-        var shaders = ShaderLoader.Load(graphicsDevice, "Skybox");
+        var shaders = ShaderLoader.Load(graphicsDevice, "SkyBox");
         Disposables.Add(shaders[0]);
         Disposables.Add(shaders[1]);
 

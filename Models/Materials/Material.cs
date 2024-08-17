@@ -42,7 +42,7 @@ public class Material
         
         LoadUMaterial(material);
         
-        Color = FindTexture(textureResourceLayout, nameof(Color), new Vector4(0.5f));
+        Color = FindTexture(textureResourceLayout, nameof(Color), new Vector4(0.18f));
         Metallic = FindTexture(textureResourceLayout, nameof(Metallic), Vector4.Zero);
         Specular = FindTexture(textureResourceLayout, nameof(Specular), new Vector4(0.5f));
         Roughness = FindTexture(textureResourceLayout, nameof(Roughness), new Vector4(0.5f));
