@@ -6,79 +6,86 @@ namespace UniversalUmap.Rendering.Input;
 
 public static class InputTracker
 {
-    private static readonly HashSet<Key> _currentlyPressedKeys = new();
-    private static readonly HashSet<Key> _newKeysThisFrame = new();
+    private static readonly HashSet<Key> CurrentlyPressedKeys = [];
+    private static readonly HashSet<Key> NewKeysThisFrame = [];
 
-    private static readonly HashSet<MouseButton> _currentlyPressedMouseButtons = new();
-    private static readonly HashSet<MouseButton> _newMouseButtonsThisFrame = new();
+    private static readonly HashSet<MouseButton> CurrentlyPressedMouseButtons = [];
+    private static readonly HashSet<MouseButton> NewMouseButtonsThisFrame = [];
     
-    public static Vector2 MouseDelta;
-    public static InputSnapshot FrameSnapshot { get; private set; }
+    public static Vector2 MousePosition {  get; private set; }
+    public static Vector2 MouseDelta { get; private set; }
+    public static Vector2 RightClickMousePosition { get; private set; }
+    
 
     public static bool GetKey(Key key)
     {
-        return _currentlyPressedKeys.Contains(key);
+        return CurrentlyPressedKeys.Contains(key);
     }
 
     public static bool GetKeyDown(Key key)
     {
-        return _newKeysThisFrame.Contains(key);
+        return NewKeysThisFrame.Contains(key);
     }
 
     public static bool GetMouseButton(MouseButton button)
     {
-        return _currentlyPressedMouseButtons.Contains(button);
+        return CurrentlyPressedMouseButtons.Contains(button);
     }
 
     public static bool GetMouseButtonDown(MouseButton button)
     {
-        return _newMouseButtonsThisFrame.Contains(button);
+        return NewMouseButtonsThisFrame.Contains(button);
+    }
+    
+    public static void UpdateRightClickMousePosition()
+    {
+        RightClickMousePosition = MousePosition;
     }
 
-    public static void UpdateFrameInput(InputSnapshot snapshot, Sdl2Window window)
+    public static void Update(Sdl2Window window)
     {
-        FrameSnapshot = snapshot;
-        _newKeysThisFrame.Clear();
-        _newMouseButtonsThisFrame.Clear();
+        var snapshot = window.PumpEvents();
         
         MouseDelta = window.MouseDelta;
+        MousePosition = snapshot.MousePosition;
+        
+        NewKeysThisFrame.Clear();
+        NewMouseButtonsThisFrame.Clear();
+        
         foreach (var ke in snapshot.KeyEvents)
-        {
             if (ke.Down)
                 KeyDown(ke.Key);
             else
                 KeyUp(ke.Key);
-        }
+        
         foreach (var me in snapshot.MouseEvents)
-        {
             if (me.Down)
                 MouseDown(me.MouseButton);
             else
                 MouseUp(me.MouseButton);
-        }
     }
 
     private static void MouseUp(MouseButton mouseButton)
     {
-        _currentlyPressedMouseButtons.Remove(mouseButton);
-        _newMouseButtonsThisFrame.Remove(mouseButton);
+        CurrentlyPressedMouseButtons.Remove(mouseButton);
+        NewMouseButtonsThisFrame.Remove(mouseButton);
     }
 
     private static void MouseDown(MouseButton mouseButton)
     {
-        if (_currentlyPressedMouseButtons.Add(mouseButton))
-            _newMouseButtonsThisFrame.Add(mouseButton);
+        if (CurrentlyPressedMouseButtons.Add(mouseButton))
+            NewMouseButtonsThisFrame.Add(mouseButton);
     }
 
     private static void KeyUp(Key key)
     {
-        _currentlyPressedKeys.Remove(key);
-        _newKeysThisFrame.Remove(key);
+        CurrentlyPressedKeys.Remove(key);
+        NewKeysThisFrame.Remove(key);
     }
 
     private static void KeyDown(Key key)
     {
-        if (_currentlyPressedKeys.Add(key))
-            _newKeysThisFrame.Add(key);
+        if (CurrentlyPressedKeys.Add(key))
+            NewKeysThisFrame.Add(key);
     }
 }

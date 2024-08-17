@@ -190,13 +190,19 @@ public class RenderContext : IDisposable
         
         Window.MouseDown += @event =>
         {
-            if(@event.MouseButton == MouseButton.Right)
+            if (@event.MouseButton == MouseButton.Right)
+            {
+                InputTracker.UpdateRightClickMousePosition();
                 Sdl2Native.SDL_SetRelativeMouseMode(true);
+            }
         };
         Window.MouseUp += @event =>
         {
             if (@event.MouseButton == MouseButton.Right)
+            {
                 Sdl2Native.SDL_SetRelativeMouseMode(false);
+                Window.SetMousePosition(InputTracker.RightClickMousePosition);
+            }
         };
 
         Window.Resized += OnResized;
@@ -286,7 +292,7 @@ public class RenderContext : IDisposable
     private void Render(double deltaTime)
     {
         //update input
-        InputTracker.UpdateFrameInput(Window.PumpEvents(), Window);
+        InputTracker.Update(Window);
         //update Camera
         GraphicsDevice.UpdateBuffer(CameraBuffer, 0, Camera.Update(deltaTime));
         
