@@ -223,7 +223,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         var groupCountX = (width + groupSize - 1) / groupSize;
         var groupCountY = (height + groupSize - 1) / groupSize;
         if (pushConstants.Push.Frame < 3)
-            Log.Information("Compute dispatch frame={Frame}: groups={GroupCountX}x{GroupCountY}.", pushConstants.Push.Frame, groupCountX, groupCountY);
+            Log.Debug("Compute dispatch frame={Frame}: groups={GroupCountX}x{GroupCountY}.", pushConstants.Push.Frame, groupCountX, groupCountY);
         Context.Api.CmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
     }
 

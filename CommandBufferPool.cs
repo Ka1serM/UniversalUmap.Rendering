@@ -100,6 +100,7 @@ public sealed class CommandBufferPool : IDisposable
         private readonly Device device;
         private readonly Queue queue;
         private readonly Fence fence;
+        private List<IDisposable>? retainedResources;
         private bool started;
         private bool ended;
 
@@ -183,6 +184,15 @@ public sealed class CommandBufferPool : IDisposable
             owner.MoveToUsed(this);
         }
 
+        public void RetainForExecution(IDisposable resource)
+        {
+            if (resource is null)
+                throw new ArgumentNullException(nameof(resource));
+
+            retainedResources ??= new List<IDisposable>(2);
+            retainedResources.Add(resource);
+        }
+
         public bool IsExecutionComplete()
         {
             var result = api.GetFenceStatus(device, fence);
@@ -207,6 +217,22 @@ public sealed class CommandBufferPool : IDisposable
             var handle = InternalHandle;
             api.FreeCommandBuffers(device, owner.commandPool, 1, in handle);
             api.DestroyFence(device, fence, default);
+
+            if (retainedResources is not null)
+            {
+                foreach (var resource in retainedResources)
+                {
+                    try
+                    {
+                        resource.Dispose();
+                    }
+                    catch
+                    {
+                        // Best-effort cleanup only.
+                    }
+                }
+                retainedResources.Clear();
+            }
         }
 
         public void Dispose()

@@ -26,7 +26,7 @@ internal sealed class Input
             hasPointerPosition = true;
             pendingMouseDelta = Vector2.Zero;
         }
-        Log.Information("Input pointer pressed. RightButton={RightButton} Pos=({X},{Y})", rightButton, position.X, position.Y);
+        Log.Debug("Input pointer pressed. RightButton={RightButton} Pos=({X},{Y})", rightButton, position.X, position.Y);
     }
 
     public void OnPointerReleased(bool rightButton)
@@ -40,7 +40,7 @@ internal sealed class Input
             hasPointerPosition = false;
             pendingMouseDelta = Vector2.Zero;
         }
-        Log.Information("Input pointer released. RightButton={RightButton}", rightButton);
+        Log.Debug("Input pointer released. RightButton={RightButton}", rightButton);
     }
 
     public void OnPointerMoved(Point position)
@@ -69,21 +69,21 @@ internal sealed class Input
     {
         lock (sync)
             pendingWheelDelta += deltaY;
-        Log.Information("Input wheel delta={Delta}", deltaY);
+        Log.Debug("Input wheel delta={Delta}", deltaY);
     }
 
     public void OnKeyDown(Key key)
     {
         lock (sync)
             pressedKeys.Add(key);
-        Log.Information("Input key down: {Key}", key);
+        Log.Debug("Input key down: {Key}", key);
     }
 
     public void OnKeyUp(Key key)
     {
         lock (sync)
             pressedKeys.Remove(key);
-        Log.Information("Input key up: {Key}", key);
+        Log.Debug("Input key up: {Key}", key);
     }
 
     public void OnFocusLost()
@@ -96,7 +96,7 @@ internal sealed class Input
             pendingWheelDelta = 0f;
             pressedKeys.Clear();
         }
-        Log.Information("Input focus lost; transient state cleared.");
+        Log.Debug("Input focus lost; transient state cleared.");
     }
 
     public bool IsKeyDown(Key key)

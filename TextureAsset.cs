@@ -10,6 +10,10 @@ namespace UniversalUmap.Rendering;
 public sealed unsafe class TextureAsset : IDisposable
 {
     private readonly Context context;
+    private static readonly object stagingRingSync = new();
+    private static readonly GpuBuffer?[] stagingRing = new GpuBuffer[4];
+    private static nint stagingRingDeviceHandle;
+    private static int stagingRingCursor;
 
     public string Name { get; }
     public string SourcePath { get; }
@@ -33,12 +37,8 @@ public sealed unsafe class TextureAsset : IDisposable
         Name = name;
         SourcePath = sourcePath;
 
-        using var staging = new GpuBuffer(
-            context,
-            (ulong)pixelBytes.Length,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            pixelBytes);
+        var staging = AcquireStagingUploadBuffer(context, (ulong)pixelBytes.Length);
+        staging.Upload(pixelBytes);
 
         var imageInfo = new ImageCreateInfo
         {
@@ -140,8 +140,38 @@ public sealed unsafe class TextureAsset : IDisposable
             AccessFlags.ShaderReadBit,
             1);
         commandBuffer.Submit();
-        context.Api.QueueWaitIdle(context.Queue).ThrowOnError();
+        context.Pool.FreeUsedCommandBuffers(waitForCompletion: true);
         Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
+    }
+
+    private static GpuBuffer AcquireStagingUploadBuffer(Context context, ulong requiredSize)
+    {
+        lock (stagingRingSync)
+        {
+            if (stagingRingDeviceHandle != 0 && stagingRingDeviceHandle != context.Device.Handle)
+            {
+                for (var i = 0; i < stagingRing.Length; i++)
+                {
+                    stagingRing[i]?.Dispose();
+                    stagingRing[i] = null;
+                }
+            }
+
+            stagingRingDeviceHandle = context.Device.Handle;
+            var slot = stagingRingCursor++ % stagingRing.Length;
+            var existing = stagingRing[slot];
+            if (existing is null || existing.Size < requiredSize)
+            {
+                existing?.Dispose();
+                stagingRing[slot] = new GpuBuffer(
+                    context,
+                    requiredSize,
+                    BufferUsageFlags.TransferSrcBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            }
+
+            return stagingRing[slot]!;
+        }
     }
 
     internal DescriptorImageInfo GetDescriptorImageInfo()
@@ -257,6 +287,21 @@ public sealed unsafe class TextureAsset : IDisposable
             (uint)result.Width,
             (uint)result.Height,
             Format.R32G32B32A32Sfloat);
+    }
+
+    internal static void DisposeSharedStagingRing()
+    {
+        lock (stagingRingSync)
+        {
+            for (var i = 0; i < stagingRing.Length; i++)
+            {
+                stagingRing[i]?.Dispose();
+                stagingRing[i] = null;
+            }
+
+            stagingRingDeviceHandle = 0;
+            stagingRingCursor = 0;
+        }
     }
 
     public void Dispose()

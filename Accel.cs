@@ -82,7 +82,7 @@ internal sealed unsafe class Accel : IDisposable
         Handle = handle;
         Type = AccelerationStructureTypeKHR.TopLevelKhr;
 
-        using var scratch = new GpuBuffer(
+        var scratch = new GpuBuffer(
             context,
             sizeInfo.BuildScratchSize,
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -107,7 +107,7 @@ internal sealed unsafe class Accel : IDisposable
         commandBuffer.BeginRecording();
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
         commandBuffer.Submit();
-        context.Api.QueueWaitIdle(context.Queue).ThrowOnError();
+        commandBuffer.RetainForExecution(scratch);
     }
 
     public void BuildBottomLevelTriangles(
@@ -185,7 +185,7 @@ internal sealed unsafe class Accel : IDisposable
         Handle = handle;
         Type = AccelerationStructureTypeKHR.BottomLevelKhr;
 
-        using var scratch = new GpuBuffer(
+        var scratch = new GpuBuffer(
             context,
             sizeInfo.BuildScratchSize,
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -210,7 +210,7 @@ internal sealed unsafe class Accel : IDisposable
         commandBuffer.BeginRecording();
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
         commandBuffer.Submit();
-        context.Api.QueueWaitIdle(context.Queue).ThrowOnError();
+        commandBuffer.RetainForExecution(scratch);
     }
 
     public ulong GetDeviceAddress()

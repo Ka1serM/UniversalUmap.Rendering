@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Serilog;
 using Silk.NET.Vulkan;
@@ -8,6 +9,9 @@ namespace UniversalUmap.Rendering;
 
 internal sealed unsafe class RtxRaytracer : GpuRaytracer
 {
+    private const int TlasBufferCount = 2;
+    private const int MaxTlasBuildsPerSecond = 10;
+    private static readonly TimeSpan MinTlasRebuildInterval = TimeSpan.FromSeconds(1d / MaxTlasBuildsPerSecond);
     private readonly KhrAccelerationStructure accelExt;
     private readonly KhrRayTracingPipeline rtExt;
 
@@ -17,9 +21,11 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
 
-    private readonly Accel tlas;
-    private GpuBuffer instancesBuffer;
-    private GpuBuffer meshBuffer;
+    private readonly TlasResourceSlot[] tlasSlots;
+    private int activeTlasSlotIndex;
+    private int queuedTlasSlotIndex = -1;
+    private long lastTlasBuildTicks;
+    private GpuBuffer meshBuffer = default!;
 
     private GpuBuffer raygenSbt = default!;
     private GpuBuffer missSbt = default!;
@@ -29,6 +35,29 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private StridedDeviceAddressRegionKHR hitRegion;
     private StridedDeviceAddressRegionKHR callableRegion;
 
+    private sealed class TlasResourceSlot : IDisposable
+    {
+        public readonly Accel Tlas;
+        public GpuBuffer InstancesBuffer;
+
+        public TlasResourceSlot(Context context, KhrAccelerationStructure accelExt)
+        {
+            Tlas = new Accel(context, accelExt);
+            InstancesBuffer = new GpuBuffer(
+                context,
+                16,
+                BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                new byte[16]);
+        }
+
+        public void Dispose()
+        {
+            InstancesBuffer.Dispose();
+            Tlas.Dispose();
+        }
+    }
+
     public RtxRaytracer(Context context, Scene scene)
         : base(context, scene)
     {
@@ -37,13 +66,11 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         if (!Context.Api.TryGetDeviceExtension(Context.Instance, Context.Device, out rtExt))
             throw new InvalidOperationException("VK_KHR_ray_tracing_pipeline extension is not available.");
 
-        tlas = new Accel(Context, accelExt);
-        instancesBuffer = new GpuBuffer(
-            Context,
-            16,
-            BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            new byte[16]);
+        tlasSlots = new TlasResourceSlot[TlasBufferCount];
+        for (var i = 0; i < tlasSlots.Length; i++)
+            tlasSlots[i] = new TlasResourceSlot(Context, accelExt);
+        activeTlasSlotIndex = 0;
+        lastTlasBuildTicks = 0;
         meshBuffer = new GpuBuffer(
             Context,
             16,
@@ -250,43 +277,78 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             height,
             1);
         if (pushConstants.Push.Frame < 3)
-            Log.Information("RTX trace frame={Frame}: rays={Width}x{Height}.", pushConstants.Push.Frame, width, height);
+            Log.Debug("RTX trace frame={Frame}: rays={Width}x{Height}.", pushConstants.Push.Frame, width, height);
     }
 
     protected override void UpdateSceneResources(bool force)
     {
-        if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
+        var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
+        var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
+        if (!meshesDirty && !tlasDirty && queuedTlasSlotIndex < 0)
             return;
 
-        var meshBytes = Scene.BuildMeshAddressData();
-        meshBuffer.Dispose();
-        meshBuffer = new GpuBuffer(
-            Context,
-            (ulong)meshBytes.Length,
-            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            meshBytes);
-
-        var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
-        var meshWrite = new WriteDescriptorSet
+        var meshBytesLength = 0;
+        if (meshesDirty)
         {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 6,
-            DescriptorType = DescriptorType.StorageBuffer,
-            DescriptorCount = 1,
-            PBufferInfo = &meshInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 1, in meshWrite, 0, null);
+            var meshBytes = Scene.BuildMeshAddressData();
+            meshBytesLength = meshBytes.Length;
 
-        if (force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes))
-            UpdateTlas();
+            meshBuffer.Dispose();
+            meshBuffer = new GpuBuffer(
+                Context,
+                (ulong)meshBytes.Length,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                meshBytes);
 
-        Scene.ClearDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas);
-        Log.Information("RTX scene resources updated: meshBytes={MeshBytes}.", meshBytes.Length);
+            var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
+            var meshWrite = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = descriptorSet,
+                DstBinding = 6,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &meshInfo
+            };
+            Context.Api.UpdateDescriptorSets(Context.Device, 1, in meshWrite, 0, null);
+            Scene.ClearDirty(SceneDirtyFlags.Meshes);
+        }
+
+        if (tlasDirty)
+            queuedTlasSlotIndex = force ? activeTlasSlotIndex : (activeTlasSlotIndex + 1) % tlasSlots.Length;
+
+        if (queuedTlasSlotIndex >= 0 && ShouldBuildTlasNow(force))
+        {
+            var tlasSlot = tlasSlots[queuedTlasSlotIndex];
+            UpdateTlas(tlasSlot, queuedTlasSlotIndex);
+            activeTlasSlotIndex = queuedTlasSlotIndex;
+            queuedTlasSlotIndex = -1;
+            lastTlasBuildTicks = Stopwatch.GetTimestamp();
+            Scene.ClearDirty(SceneDirtyFlags.Tlas);
+        }
+
+        if (meshesDirty || tlasDirty)
+        {
+            Log.Debug(
+                "RTX scene resources updated: meshBytes={MeshBytes}, tlasSlot={TlasSlot}/{SlotCount}, tlasQueued={TlasQueued}.",
+                meshBytesLength,
+                activeTlasSlotIndex,
+                tlasSlots.Length,
+                queuedTlasSlotIndex >= 0);
+        }
     }
 
     protected override DescriptorSet GetDescriptorSet() => descriptorSet;
+
+    private bool ShouldBuildTlasNow(bool force)
+    {
+        if (force || lastTlasBuildTicks == 0)
+            return true;
+
+        var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - lastTlasBuildTicks) / (double)Stopwatch.Frequency);
+        return elapsed >= MinTlasRebuildInterval;
+    }
 
     private ShaderModule CreateShaderModule(ReadOnlySpan<byte> shaderBytes)
     {
@@ -358,11 +420,11 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Log.Information("RTX SBT built (handleSizeAligned={HandleSizeAligned}, groups={GroupCount}).", handleSizeAligned, groupCount);
     }
 
-    private void UpdateTlas()
+    private void UpdateTlas(TlasResourceSlot slot, int slotIndex)
     {
         var instanceBytes = Scene.BuildRtxInstanceData();
-        instancesBuffer.Dispose();
-        instancesBuffer = new GpuBuffer(
+        slot.InstancesBuffer.Dispose();
+        slot.InstancesBuffer = new GpuBuffer(
             Context,
             (ulong)instanceBytes.Length,
             BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -370,14 +432,14 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             instanceBytes);
 
         var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
-        tlas.BuildTopLevel(primitiveCount, instancesBuffer.DeviceAddress);
+        slot.Tlas.BuildTopLevel(primitiveCount, slot.InstancesBuffer.DeviceAddress);
 
         var accelInfo = new WriteDescriptorSetAccelerationStructureKHR
         {
             SType = StructureType.WriteDescriptorSetAccelerationStructureKhr,
             AccelerationStructureCount = 1
         };
-        var tlasHandle = tlas.Handle;
+        var tlasHandle = slot.Tlas.Handle;
         accelInfo.PAccelerationStructures = &tlasHandle;
 
         var accelWrite = new WriteDescriptorSet
@@ -390,7 +452,12 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             PNext = &accelInfo
         };
         Context.Api.UpdateDescriptorSets(Context.Device, 1, in accelWrite, 0, null);
-        Log.Information("TLAS updated: instanceBytes={InstanceBytes}, primitiveCount={PrimitiveCount}.", instanceBytes.Length, primitiveCount);
+        Log.Debug(
+            "TLAS updated: instanceBytes={InstanceBytes}, primitiveCount={PrimitiveCount}, sceneSlot={SceneSlot}/{SlotCount}.",
+            instanceBytes.Length,
+            primitiveCount,
+            slotIndex,
+            tlasSlots.Length);
     }
 
     public override void Dispose()
@@ -400,8 +467,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         missSbt.Dispose();
         raygenSbt.Dispose();
         meshBuffer.Dispose();
-        instancesBuffer.Dispose();
-        tlas.Dispose();
+        foreach (var slot in tlasSlots)
+            slot.Dispose();
 
         if (pipeline.Handle != default)
             Context.Api.DestroyPipeline(Context.Device, pipeline, default);

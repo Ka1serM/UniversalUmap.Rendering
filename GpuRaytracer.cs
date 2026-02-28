@@ -45,7 +45,7 @@ internal abstract unsafe class GpuRaytracer : IRaytracer
 
         if (!hasLoggedFirstRender || FrameIndex < 3)
         {
-            Log.Information(
+            Log.Debug(
                 "{RaytracerType} frame={Frame} size={Width}x{Height} envTex={EnvironmentTextureIndex} sceneVersion={SceneVersion}",
                 GetType().Name,
                 FrameIndex,

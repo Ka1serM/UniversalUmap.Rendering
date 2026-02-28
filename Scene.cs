@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using Serilog;
 using Silk.NET.Vulkan;
@@ -11,10 +10,16 @@ public sealed class Scene : IDisposable, IScene
 {
     private const string DefaultCubeMeshName = "DefaultCube";
     private const string DefaultCubeInstanceName = "DefaultCubeInstance";
+    private const int MaxPersistentMeshCacheEntries = 20000;
     private readonly Context context;
     private readonly List<TextureAsset> textures = [];
     private readonly List<MeshAsset> meshAssets = [];
     private readonly List<MeshInstance> meshInstances = [];
+    private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, MeshAsset> meshAssetsByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<MeshAsset> meshAssetSet = [];
+    private readonly HashSet<string> meshInstanceNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, MeshAsset> persistentMeshCache = new(StringComparer.OrdinalIgnoreCase);
     private SceneDirtyFlags dirtyFlags;
     private const float CameraEpsilon = 0.0001f;
 
@@ -49,16 +54,17 @@ public sealed class Scene : IDisposable, IScene
     public Scene(Context context)
     {
         this.context = context;
-        TryCreateDefaultCube();
+        //TryCreateDefaultCube();
     }
 
     public TextureAsset Add(TextureAsset texture)
     {
-        if (textures.Any(x => string.Equals(x.Name, texture.Name, StringComparison.OrdinalIgnoreCase)))
+        if (texturesByName.ContainsKey(texture.Name))
             throw new InvalidOperationException($"Texture already exists: {texture.Name}");
 
         texture.Index = textures.Count;
         textures.Add(texture);
+        texturesByName[texture.Name] = texture;
         Log.Information("Added texture '{TextureName}' at bindless index {TextureIndex}.", texture.Name, texture.Index);
         SetDirty(SceneDirtyFlags.Textures | SceneDirtyFlags.Accumulation);
         return texture;
@@ -66,11 +72,21 @@ public sealed class Scene : IDisposable, IScene
 
     public MeshAsset Add(MeshAsset mesh)
     {
-        if (meshAssets.Any(x => string.Equals(x.Name, mesh.Name, StringComparison.OrdinalIgnoreCase)))
+        if (persistentMeshCache.TryGetValue(mesh.Name, out var cachedMesh) &&
+            !ReferenceEquals(cachedMesh, mesh))
+        {
+            mesh.Dispose();
+            mesh = cachedMesh;
+        }
+
+        if (meshAssetsByName.ContainsKey(mesh.Name))
             throw new InvalidOperationException($"Mesh already exists: {mesh.Name}");
 
         mesh.MeshIndex = (uint)meshAssets.Count;
         meshAssets.Add(mesh);
+        meshAssetsByName[mesh.Name] = mesh;
+        meshAssetSet.Add(mesh);
+        persistentMeshCache[mesh.Name] = mesh;
         SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
         return mesh;
     }
@@ -79,14 +95,29 @@ public sealed class Scene : IDisposable, IScene
     {
         if (string.IsNullOrWhiteSpace(instance.Name))
             throw new ArgumentException("Instance name is empty", nameof(instance));
-        if (meshInstances.Any(x => string.Equals(x.Name, instance.Name, StringComparison.OrdinalIgnoreCase)))
+        if (meshInstanceNames.Contains(instance.Name))
             throw new InvalidOperationException($"Mesh instance already exists: {instance.Name}");
-        if (!meshAssets.Contains(instance.MeshAsset))
+        if (!meshAssetSet.Contains(instance.MeshAsset))
             throw new InvalidOperationException($"Mesh asset '{instance.MeshAsset.Name}' must be added before creating instances.");
 
         meshInstances.Add(instance);
+        meshInstanceNames.Add(instance.Name);
         SetDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
         return instance;
+    }
+
+    public MeshAsset? FindMeshAsset(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+        return meshAssetsByName.GetValueOrDefault(name);
+    }
+
+    public TextureAsset? FindTexture(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+        return texturesByName.GetValueOrDefault(name);
     }
 
     public MeshInstance CreateMeshInstance(MeshAsset mesh, string name, Matrix4x4 transform)
@@ -145,10 +176,18 @@ public sealed class Scene : IDisposable, IScene
         if (!keepDefaultTestCube)
         {
             foreach (var mesh in meshAssets)
-                mesh.Dispose();
+            {
+                if (persistentMeshCache.Count < MaxPersistentMeshCacheEntries)
+                    persistentMeshCache[mesh.Name] = mesh;
+                else if (!persistentMeshCache.TryGetValue(mesh.Name, out var cached) || !ReferenceEquals(cached, mesh))
+                    mesh.Dispose();
+            }
 
             meshInstances.Clear();
+            meshInstanceNames.Clear();
             meshAssets.Clear();
+            meshAssetsByName.Clear();
+            meshAssetSet.Clear();
             SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
             return;
         }
@@ -156,7 +195,10 @@ public sealed class Scene : IDisposable, IScene
         for (var i = meshInstances.Count - 1; i >= 0; i--)
         {
             if (!string.Equals(meshInstances[i].Name, DefaultCubeInstanceName, StringComparison.Ordinal))
+            {
+                meshInstanceNames.Remove(meshInstances[i].Name);
                 meshInstances.RemoveAt(i);
+            }
         }
 
         for (var i = meshAssets.Count - 1; i >= 0; i--)
@@ -164,7 +206,13 @@ public sealed class Scene : IDisposable, IScene
             if (string.Equals(meshAssets[i].Name, DefaultCubeMeshName, StringComparison.Ordinal))
                 continue;
 
-            meshAssets[i].Dispose();
+            var mesh = meshAssets[i];
+            meshAssetsByName.Remove(mesh.Name);
+            meshAssetSet.Remove(mesh);
+            if (persistentMeshCache.Count < MaxPersistentMeshCacheEntries)
+                persistentMeshCache[mesh.Name] = mesh;
+            else if (!persistentMeshCache.TryGetValue(mesh.Name, out var cached) || !ReferenceEquals(cached, mesh))
+                mesh.Dispose();
             meshAssets.RemoveAt(i);
         }
 
@@ -281,10 +329,16 @@ public sealed class Scene : IDisposable, IScene
             texture.Dispose();
         foreach (var mesh in meshAssets)
             mesh.Dispose();
+        foreach (var cached in persistentMeshCache.Values)
+        {
+            if (!meshAssetSet.Contains(cached))
+                cached.Dispose();
+        }
 
         meshInstances.Clear();
         meshAssets.Clear();
         textures.Clear();
+        persistentMeshCache.Clear();
         dirtyFlags = SceneDirtyFlags.None;
     }
 

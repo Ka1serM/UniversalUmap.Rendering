@@ -509,6 +509,7 @@ public sealed unsafe class Context : IDisposable
 
     public void Dispose()
     {
+        TextureAsset.DisposeSharedStagingRing();
         Pool.Dispose();
         Api.DestroyDevice(Device, default);
         Api.DestroyInstance(Instance, default);

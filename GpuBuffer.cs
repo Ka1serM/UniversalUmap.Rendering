@@ -55,7 +55,7 @@ internal sealed unsafe class GpuBuffer : IDisposable
         var bdaInfo = new MemoryAllocateFlagsInfo
         {
             SType = StructureType.MemoryAllocateFlagsInfo,
-            Flags = MemoryAllocateFlags.MemoryAllocateDeviceAddressBit
+            Flags = MemoryAllocateFlags.DeviceAddressBit
         };
         if (usage.HasFlag(BufferUsageFlags.ShaderDeviceAddressBit))
             allocateInfo.PNext = &bdaInfo;
@@ -99,5 +99,21 @@ internal sealed unsafe class GpuBuffer : IDisposable
             api.DestroyBuffer(device, Handle, default);
             Handle = default;
         }
+    }
+
+    public void Upload(ReadOnlySpan<byte> data, ulong offset = 0)
+    {
+        if (data.IsEmpty)
+            return;
+        if (offset + (ulong)data.Length > Size)
+            throw new ArgumentOutOfRangeException(nameof(data), "Upload range exceeds buffer size.");
+
+        void* mapped;
+        api.MapMemory(device, Memory, offset, (ulong)data.Length, 0, &mapped).ThrowOnError();
+        fixed (byte* src = data)
+        {
+            System.Buffer.MemoryCopy(src, mapped, data.Length, data.Length);
+        }
+        api.UnmapMemory(device, Memory);
     }
 }
