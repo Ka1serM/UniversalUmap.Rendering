@@ -1,0 +1,415 @@
+using System;
+using System.Runtime.InteropServices;
+using Serilog;
+using Silk.NET.Vulkan;
+using Silk.NET.Vulkan.Extensions.KHR;
+
+namespace UniversalUmap.Rendering;
+
+internal sealed unsafe class RtxRaytracer : GpuRaytracer
+{
+    private readonly KhrAccelerationStructure accelExt;
+    private readonly KhrRayTracingPipeline rtExt;
+
+    private readonly DescriptorPool descriptorPool;
+    private readonly DescriptorSetLayout descriptorSetLayout;
+    private readonly DescriptorSet descriptorSet;
+    private readonly PipelineLayout pipelineLayout;
+    private readonly Pipeline pipeline;
+
+    private readonly Accel tlas;
+    private GpuBuffer instancesBuffer;
+    private GpuBuffer meshBuffer;
+
+    private GpuBuffer raygenSbt = default!;
+    private GpuBuffer missSbt = default!;
+    private GpuBuffer hitSbt = default!;
+    private StridedDeviceAddressRegionKHR raygenRegion;
+    private StridedDeviceAddressRegionKHR missRegion;
+    private StridedDeviceAddressRegionKHR hitRegion;
+    private StridedDeviceAddressRegionKHR callableRegion;
+
+    public RtxRaytracer(Context context, Scene scene)
+        : base(context, scene)
+    {
+        if (!Context.Api.TryGetDeviceExtension(Context.Instance, Context.Device, out accelExt))
+            throw new InvalidOperationException("VK_KHR_acceleration_structure extension is not available.");
+        if (!Context.Api.TryGetDeviceExtension(Context.Instance, Context.Device, out rtExt))
+            throw new InvalidOperationException("VK_KHR_ray_tracing_pipeline extension is not available.");
+
+        tlas = new Accel(Context, accelExt);
+        instancesBuffer = new GpuBuffer(
+            Context,
+            16,
+            BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            new byte[16]);
+        meshBuffer = new GpuBuffer(
+            Context,
+            16,
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            new byte[16]);
+
+        var raygenBytes = EmbeddedAssets.ReadByFileName("RayGeneration.spv");
+        var missBytes = EmbeddedAssets.ReadByFileName("Miss.spv");
+        var hitBytes = EmbeddedAssets.ReadByFileName("ClosestHit.spv");
+        using var mainName = new ByteString("main");
+
+        var raygenModule = CreateShaderModule(raygenBytes);
+        var missModule = CreateShaderModule(missBytes);
+        var hitModule = CreateShaderModule(hitBytes);
+
+        var stages = stackalloc PipelineShaderStageCreateInfo[3];
+        stages[0] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.RaygenBitKhr,
+            Module = raygenModule,
+            PName = mainName
+        };
+        stages[1] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.MissBitKhr,
+            Module = missModule,
+            PName = mainName
+        };
+        stages[2] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ClosestHitBitKhr,
+            Module = hitModule,
+            PName = mainName
+        };
+
+        var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[3];
+        const uint shaderUnused = 0xFFFFFFFF;
+        groups[0] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 0,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[1] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 1,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[2] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
+            GeneralShader = shaderUnused,
+            ClosestHitShader = 2,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+
+        var layoutBindings = stackalloc DescriptorSetLayoutBinding[8];
+        layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ClosestHitBitKhr);
+        layoutBindings[7] = new DescriptorSetLayoutBinding(
+            7,
+            DescriptorType.CombinedImageSampler,
+            MaxTextures,
+            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr);
+
+        var bindingFlags = stackalloc DescriptorBindingFlags[8];
+        bindingFlags[7] = DescriptorBindingFlags.PartiallyBoundBit |
+                          DescriptorBindingFlags.VariableDescriptorCountBit |
+                          DescriptorBindingFlags.UpdateAfterBindBit;
+
+        var bindingFlagsInfo = new DescriptorSetLayoutBindingFlagsCreateInfo
+        {
+            SType = StructureType.DescriptorSetLayoutBindingFlagsCreateInfo,
+            BindingCount = 8,
+            PBindingFlags = bindingFlags
+        };
+
+        var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
+        {
+            SType = StructureType.DescriptorSetLayoutCreateInfo,
+            Flags = DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit,
+            BindingCount = 8,
+            PBindings = layoutBindings,
+            PNext = &bindingFlagsInfo
+        };
+        Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
+
+        var poolSizes = stackalloc DescriptorPoolSize[4];
+        poolSizes[0] = new DescriptorPoolSize(DescriptorType.AccelerationStructureKhr, 1);
+        poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 1);
+        poolSizes[2] = new DescriptorPoolSize(DescriptorType.StorageImage, 5);
+        poolSizes[3] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, MaxTextures);
+        var descriptorPoolInfo = new DescriptorPoolCreateInfo
+        {
+            SType = StructureType.DescriptorPoolCreateInfo,
+            Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit,
+            MaxSets = 1,
+            PoolSizeCount = 4,
+            PPoolSizes = poolSizes
+        };
+        Context.Api.CreateDescriptorPool(Context.Device, in descriptorPoolInfo, default, out var descriptorPoolLocal).ThrowOnError();
+
+        var descriptorCount = MaxTextures;
+        var variableCountInfo = new DescriptorSetVariableDescriptorCountAllocateInfo
+        {
+            SType = StructureType.DescriptorSetVariableDescriptorCountAllocateInfo,
+            DescriptorSetCount = 1,
+            PDescriptorCounts = &descriptorCount
+        };
+
+        var allocInfo = new DescriptorSetAllocateInfo
+        {
+            SType = StructureType.DescriptorSetAllocateInfo,
+            DescriptorPool = descriptorPoolLocal,
+            DescriptorSetCount = 1,
+            PSetLayouts = &descriptorSetLayoutLocal,
+            PNext = &variableCountInfo
+        };
+        Context.Api.AllocateDescriptorSets(Context.Device, in allocInfo, out var descriptorSetLocal).ThrowOnError();
+
+        var pushConstantRange = new PushConstantRange
+        {
+            StageFlags = ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr,
+            Offset = 0,
+            Size = (uint)sizeof(PushConstantsDataGpu)
+        };
+        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+        {
+            SType = StructureType.PipelineLayoutCreateInfo,
+            SetLayoutCount = 1,
+            PSetLayouts = &descriptorSetLayoutLocal,
+            PushConstantRangeCount = 1,
+            PPushConstantRanges = &pushConstantRange
+        };
+        Context.Api.CreatePipelineLayout(Context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
+
+        var rtPipelineInfo = new RayTracingPipelineCreateInfoKHR
+        {
+            SType = StructureType.RayTracingPipelineCreateInfoKhr,
+            StageCount = 3,
+            PStages = stages,
+            GroupCount = 3,
+            PGroups = groups,
+            MaxPipelineRayRecursionDepth = 1,
+            Layout = pipelineLayoutLocal
+        };
+        rtExt.CreateRayTracingPipelines(Context.Device, default, default, 1, in rtPipelineInfo, default, out var pipelineLocal).ThrowOnError();
+
+        Context.Api.DestroyShaderModule(Context.Device, hitModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, missModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, raygenModule, default);
+
+        descriptorSetLayout = descriptorSetLayoutLocal;
+        descriptorPool = descriptorPoolLocal;
+        descriptorSet = descriptorSetLocal;
+        pipelineLayout = pipelineLayoutLocal;
+        pipeline = pipelineLocal;
+        Log.Information("RTX raytracer pipeline and descriptors created.");
+
+        BuildShaderBindingTable();
+        UpdateSceneResources(force: true);
+    }
+
+    protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants)
+    {
+        Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.RayTracingKhr, pipeline);
+        Context.Api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.RayTracingKhr, pipelineLayout, 0, 1, in descriptorSet, 0, null);
+
+        Context.Api.CmdPushConstants(
+            commandBuffer,
+            pipelineLayout,
+            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr,
+            0,
+            (uint)sizeof(PushConstantsDataGpu),
+            &pushConstants);
+
+        var width = (uint)Math.Max(1, image.Size.Width);
+        var height = (uint)Math.Max(1, image.Size.Height);
+        rtExt.CmdTraceRays(
+            commandBuffer,
+            in raygenRegion,
+            in missRegion,
+            in hitRegion,
+            in callableRegion,
+            width,
+            height,
+            1);
+        if (pushConstants.Push.Frame < 3)
+            Log.Information("RTX trace frame={Frame}: rays={Width}x{Height}.", pushConstants.Push.Frame, width, height);
+    }
+
+    protected override void UpdateSceneResources(bool force)
+    {
+        if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
+            return;
+
+        var meshBytes = Scene.BuildMeshAddressData();
+        meshBuffer.Dispose();
+        meshBuffer = new GpuBuffer(
+            Context,
+            (ulong)meshBytes.Length,
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            meshBytes);
+
+        var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
+        var meshWrite = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 6,
+            DescriptorType = DescriptorType.StorageBuffer,
+            DescriptorCount = 1,
+            PBufferInfo = &meshInfo
+        };
+        Context.Api.UpdateDescriptorSets(Context.Device, 1, in meshWrite, 0, null);
+
+        if (force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes))
+            UpdateTlas();
+
+        Scene.ClearDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas);
+        Log.Information("RTX scene resources updated: meshBytes={MeshBytes}.", meshBytes.Length);
+    }
+
+    protected override DescriptorSet GetDescriptorSet() => descriptorSet;
+
+    private ShaderModule CreateShaderModule(ReadOnlySpan<byte> shaderBytes)
+    {
+        fixed (byte* pShader = shaderBytes)
+        {
+            var shaderInfo = new ShaderModuleCreateInfo
+            {
+                SType = StructureType.ShaderModuleCreateInfo,
+                CodeSize = (nuint)shaderBytes.Length,
+                PCode = (uint*)pShader
+            };
+            Context.Api.CreateShaderModule(Context.Device, in shaderInfo, default, out var module).ThrowOnError();
+            return module;
+        }
+    }
+
+    private void BuildShaderBindingTable()
+    {
+        var rtProps = new PhysicalDeviceRayTracingPipelinePropertiesKHR
+        {
+            SType = StructureType.PhysicalDeviceRayTracingPipelinePropertiesKhr
+        };
+        var props2 = new PhysicalDeviceProperties2
+        {
+            SType = StructureType.PhysicalDeviceProperties2,
+            PNext = &rtProps
+        };
+        Context.Api.GetPhysicalDeviceProperties2(Context.PhysicalDevice, &props2);
+
+        var handleSize = rtProps.ShaderGroupHandleSize;
+        var handleAlignment = rtProps.ShaderGroupHandleAlignment;
+        var handleSizeAligned = (handleSize + handleAlignment - 1) & ~(handleAlignment - 1);
+        var groupCount = 3u;
+        var handleStorageSize = (int)(groupCount * handleSizeAligned);
+        var handleStorage = new byte[handleStorageSize];
+
+        fixed (byte* pHandles = handleStorage)
+        {
+            rtExt.GetRayTracingShaderGroupHandles(Context.Device, pipeline, 0, groupCount, (nuint)handleStorageSize, pHandles).ThrowOnError();
+        }
+
+        var raygenSize = handleSizeAligned;
+        var missSize = handleSizeAligned;
+        var hitSize = handleSizeAligned;
+
+        raygenSbt = new GpuBuffer(
+            Context,
+            raygenSize,
+            BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            handleStorage.AsSpan(0, (int)raygenSize));
+        missSbt = new GpuBuffer(
+            Context,
+            missSize,
+            BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            handleStorage.AsSpan((int)raygenSize, (int)missSize));
+        hitSbt = new GpuBuffer(
+            Context,
+            hitSize,
+            BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            handleStorage.AsSpan((int)(raygenSize + missSize), (int)hitSize));
+
+        raygenRegion = new StridedDeviceAddressRegionKHR(raygenSbt.DeviceAddress, handleSizeAligned, raygenSize);
+        missRegion = new StridedDeviceAddressRegionKHR(missSbt.DeviceAddress, handleSizeAligned, missSize);
+        hitRegion = new StridedDeviceAddressRegionKHR(hitSbt.DeviceAddress, handleSizeAligned, hitSize);
+        callableRegion = default;
+        Log.Information("RTX SBT built (handleSizeAligned={HandleSizeAligned}, groups={GroupCount}).", handleSizeAligned, groupCount);
+    }
+
+    private void UpdateTlas()
+    {
+        var instanceBytes = Scene.BuildRtxInstanceData();
+        instancesBuffer.Dispose();
+        instancesBuffer = new GpuBuffer(
+            Context,
+            (ulong)instanceBytes.Length,
+            BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            instanceBytes);
+
+        var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
+        tlas.BuildTopLevel(primitiveCount, instancesBuffer.DeviceAddress);
+
+        var accelInfo = new WriteDescriptorSetAccelerationStructureKHR
+        {
+            SType = StructureType.WriteDescriptorSetAccelerationStructureKhr,
+            AccelerationStructureCount = 1
+        };
+        var tlasHandle = tlas.Handle;
+        accelInfo.PAccelerationStructures = &tlasHandle;
+
+        var accelWrite = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 0,
+            DescriptorType = DescriptorType.AccelerationStructureKhr,
+            DescriptorCount = 1,
+            PNext = &accelInfo
+        };
+        Context.Api.UpdateDescriptorSets(Context.Device, 1, in accelWrite, 0, null);
+        Log.Information("TLAS updated: instanceBytes={InstanceBytes}, primitiveCount={PrimitiveCount}.", instanceBytes.Length, primitiveCount);
+    }
+
+    public override void Dispose()
+    {
+        DisposeRenderImages();
+        hitSbt.Dispose();
+        missSbt.Dispose();
+        raygenSbt.Dispose();
+        meshBuffer.Dispose();
+        instancesBuffer.Dispose();
+        tlas.Dispose();
+
+        if (pipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, pipeline, default);
+        if (pipelineLayout.Handle != default)
+            Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
+        if (descriptorSetLayout.Handle != default)
+            Context.Api.DestroyDescriptorSetLayout(Context.Device, descriptorSetLayout, default);
+        if (descriptorPool.Handle != default)
+            Context.Api.DestroyDescriptorPool(Context.Device, descriptorPool, default);
+    }
+}

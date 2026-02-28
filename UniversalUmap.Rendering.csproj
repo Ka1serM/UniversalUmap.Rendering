@@ -5,17 +5,24 @@
     <Nullable>enable</Nullable>
     <RootNamespace>UniversalUmap.Rendering</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <UsedAvaloniaProducts></UsedAvaloniaProducts>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <AppendRuntimeIdentifierToOutputPath>true</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>none</DebugType>
   </PropertyGroup>
-    <ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.12" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="ppy.Veldrid" Version="4.9.69-ga405fe8484" />
-    <PackageReference Include="ppy.Veldrid.SPIRV" Version="1.0.15-gfbb03d21c2" />
+    <PackageReference Include="Serilog" Version="4.3.1" />
+    <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
     <PackageReference Include="StbImageSharp" Version="2.30.15" />
-    <PackageReference Include="Veldrid.SDL2" Version="4.9.0" />
   </ItemGroup>
     <ItemGroup>
       <ProjectReference Include="..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
@@ -23,16 +30,35 @@
     </ItemGroup>
   
   <ItemGroup>
-    <ShaderSource Include="$(ProjectDir)Assets\Shaders\*.vert" />
-    <ShaderSource Include="$(ProjectDir)Assets\Shaders\*.frag" />
-    <CompiledShaders Include="$(ProjectDir)Assets\Shaders\*.spv" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGeneration.glsl">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/RayGeneration.spv</SpvOutput>
+      <Arguments>--target-env=vulkan1.3</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHit.glsl">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/ClosestHit.spv</SpvOutput>
+      <Arguments>--target-env=vulkan1.3</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/Miss.glsl">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/Miss.spv</SpvOutput>
+      <Arguments>--target-env=vulkan1.3</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracer.comp">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/Compute/PathTracer.spv</SpvOutput>
+      <Arguments>-DUSE_COMPUTE=1</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/Tonemapper.comp">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/Tonemapping/Tonemapper.spv</SpvOutput>
+      <Arguments></Arguments>
+    </ShaderSource>
+    <ShaderInclude Include="$(ProjectDir)Assets/Shaders/**/*.glsl;$(ProjectDir)Assets/Shaders/**/*.h" />
   </ItemGroup>
 
-  <Target Name="CompileShaders" BeforeTargets="ResolveReferences">
-    <Delete Files="@(CompiledShaders)" />
-    <Exec Command="glslc &quot;%(ShaderSource.FullPath)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename)%(ShaderSource.Extension).spv&quot;"
-          Condition="'%(ShaderSource.Extension)' != '.spv'"
-          LogStandardErrorAsError="true" />
+  <Target Name="CompileRayTracingShaders"
+          BeforeTargets="ResolveReferences"
+          Inputs="@(ShaderSource);@(ShaderInclude)"
+          Outputs="@(ShaderSource->'%(SpvOutput)')">
+    <Message Text="Compiling shaders via glslc from PATH (incremental)." Importance="High" />
+    <Exec Command="glslc &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.SpvOutput)&quot; %(ShaderSource.Arguments)" LogStandardErrorAsError="true" />
   </Target>
   
   <ItemGroup>
