@@ -80,14 +80,16 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
         var raygenBytes = EmbeddedAssets.ReadByFileName("RayGeneration.spv");
         var missBytes = EmbeddedAssets.ReadByFileName("Miss.spv");
+        var shadowMissBytes = EmbeddedAssets.ReadByFileName("ShadowMiss.spv");
         var hitBytes = EmbeddedAssets.ReadByFileName("ClosestHit.spv");
         using var mainName = new ByteString("main");
 
         var raygenModule = CreateShaderModule(raygenBytes);
         var missModule = CreateShaderModule(missBytes);
+        var shadowMissModule = CreateShaderModule(shadowMissBytes);
         var hitModule = CreateShaderModule(hitBytes);
 
-        var stages = stackalloc PipelineShaderStageCreateInfo[3];
+        var stages = stackalloc PipelineShaderStageCreateInfo[4];
         stages[0] = new PipelineShaderStageCreateInfo
         {
             SType = StructureType.PipelineShaderStageCreateInfo,
@@ -105,12 +107,19 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         stages[2] = new PipelineShaderStageCreateInfo
         {
             SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.MissBitKhr,
+            Module = shadowMissModule,
+            PName = mainName
+        };
+        stages[3] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
             Stage = ShaderStageFlags.ClosestHitBitKhr,
             Module = hitModule,
             PName = mainName
         };
 
-        var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[3];
+        var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[4];
         const uint shaderUnused = 0xFFFFFFFF;
         groups[0] = new RayTracingShaderGroupCreateInfoKHR
         {
@@ -133,15 +142,28 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         groups[2] = new RayTracingShaderGroupCreateInfoKHR
         {
             SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 2,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[3] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
             Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
             GeneralShader = shaderUnused,
-            ClosestHitShader = 2,
+            ClosestHitShader = 3,
             AnyHitShader = shaderUnused,
             IntersectionShader = shaderUnused
         };
 
         var layoutBindings = stackalloc DescriptorSetLayoutBinding[8];
-        layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[0] = new DescriptorSetLayoutBinding(
+            0,
+            DescriptorType.AccelerationStructureKhr,
+            1,
+            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr);
         layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
@@ -153,7 +175,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             DescriptorType.CombinedImageSampler,
             MaxTextures,
             ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr);
-
         var bindingFlags = stackalloc DescriptorBindingFlags[8];
         bindingFlags[7] = DescriptorBindingFlags.PartiallyBoundBit |
                           DescriptorBindingFlags.VariableDescriptorCountBit |
@@ -228,16 +249,18 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var rtPipelineInfo = new RayTracingPipelineCreateInfoKHR
         {
             SType = StructureType.RayTracingPipelineCreateInfoKhr,
-            StageCount = 3,
+            StageCount = 4,
             PStages = stages,
-            GroupCount = 3,
+            GroupCount = 4,
             PGroups = groups,
-            MaxPipelineRayRecursionDepth = 1,
+            // Primary ray from raygen + one shadow ray from closest-hit.
+            MaxPipelineRayRecursionDepth = 2,
             Layout = pipelineLayoutLocal
         };
         rtExt.CreateRayTracingPipelines(Context.Device, default, default, 1, in rtPipelineInfo, default, out var pipelineLocal).ThrowOnError();
 
         Context.Api.DestroyShaderModule(Context.Device, hitModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, shadowMissModule, default);
         Context.Api.DestroyShaderModule(Context.Device, missModule, default);
         Context.Api.DestroyShaderModule(Context.Device, raygenModule, default);
 
@@ -249,7 +272,10 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Log.Information("RTX raytracer pipeline and descriptors created.");
 
         BuildShaderBindingTable();
-        UpdateSceneResources(force: true);
+        var initCommandBuffer = Context.Pool.CreateCommandBuffer();
+        initCommandBuffer.BeginRecording();
+        UpdateSceneResources(initCommandBuffer, force: true);
+        initCommandBuffer.SubmitAndWait();
     }
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants)
@@ -280,7 +306,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             Log.Debug("RTX trace frame={Frame}: rays={Width}x{Height}.", pushConstants.Push.Frame, width, height);
     }
 
-    protected override void UpdateSceneResources(bool force)
+    protected override void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force)
     {
         var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
         var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
@@ -293,13 +319,14 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             var meshBytes = Scene.BuildMeshAddressData();
             meshBytesLength = meshBytes.Length;
 
-            meshBuffer.Dispose();
+            var previousMeshBuffer = meshBuffer;
             meshBuffer = new GpuBuffer(
                 Context,
                 (ulong)meshBytes.Length,
                 BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
                 MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
                 meshBytes);
+            commandBuffer.RetainForExecution(previousMeshBuffer);
 
             var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
             var meshWrite = new WriteDescriptorSet
@@ -321,7 +348,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         if (queuedTlasSlotIndex >= 0 && ShouldBuildTlasNow(force))
         {
             var tlasSlot = tlasSlots[queuedTlasSlotIndex];
-            UpdateTlas(tlasSlot, queuedTlasSlotIndex);
+            UpdateTlas(commandBuffer, tlasSlot, queuedTlasSlotIndex);
             activeTlasSlotIndex = queuedTlasSlotIndex;
             queuedTlasSlotIndex = -1;
             lastTlasBuildTicks = Stopwatch.GetTimestamp();
@@ -381,7 +408,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var handleSize = rtProps.ShaderGroupHandleSize;
         var handleAlignment = rtProps.ShaderGroupHandleAlignment;
         var handleSizeAligned = (handleSize + handleAlignment - 1) & ~(handleAlignment - 1);
-        var groupCount = 3u;
+        var groupCount = 4u;
         var handleStorageSize = (int)(groupCount * handleSizeAligned);
         var handleStorage = new byte[handleStorageSize];
 
@@ -391,7 +418,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         }
 
         var raygenSize = handleSizeAligned;
-        var missSize = handleSizeAligned;
+        var missSize = handleSizeAligned * 2;
         var hitSize = handleSizeAligned;
 
         raygenSbt = new GpuBuffer(
@@ -420,18 +447,21 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Log.Information("RTX SBT built (handleSizeAligned={HandleSizeAligned}, groups={GroupCount}).", handleSizeAligned, groupCount);
     }
 
-    private void UpdateTlas(TlasResourceSlot slot, int slotIndex)
+    private void UpdateTlas(CommandBufferPool.PooledCommandBuffer commandBuffer, TlasResourceSlot slot, int slotIndex)
     {
         var instanceBytes = Scene.BuildRtxInstanceData();
-        slot.InstancesBuffer.Dispose();
+        var previousInstancesBuffer = slot.InstancesBuffer;
         slot.InstancesBuffer = new GpuBuffer(
             Context,
             (ulong)instanceBytes.Length,
             BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             instanceBytes);
+        commandBuffer.RetainForExecution(previousInstancesBuffer);
 
         var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
+        // NoorRay-style: TLAS upload/build via one-time immediate submit path.
+        // Frame command buffer stays focused on ray trace/composite work.
         slot.Tlas.BuildTopLevel(primitiveCount, slot.InstancesBuffer.DeviceAddress);
 
         var accelInfo = new WriteDescriptorSetAccelerationStructureKHR

@@ -173,6 +173,11 @@ HitInfo traceScene(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
     return bestHit;
 }
 
+bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMax) {
+    HitInfo shadowHit = traceScene(rayOrigin, rayDirection, 0.001, tMax);
+    return shadowHit.instanceIndex != INVALID_INSTANCE;
+}
+
 void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, inout Payload payload) {
     HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
 

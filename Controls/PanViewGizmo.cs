@@ -1,0 +1,153 @@
+using System;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media;
+using FluentIcons.Avalonia.Fluent;
+using FluentIcons.Common;
+
+namespace UniversalUmap.Rendering.Controls;
+
+public sealed class PanViewGizmo : ContentControl
+{
+    private const float HoverScaleBoost = 0.06f;
+    private static readonly Color FillColor = Color.FromArgb(166, 58, 58, 58);
+    private static readonly Color HoverColor = Color.FromArgb(200, 72, 72, 72);
+    private static readonly IBrush FillBrush = new SolidColorBrush(FillColor);
+    private static readonly IBrush HoverBrush = new SolidColorBrush(HoverColor);
+    private static readonly IBrush PressBrush = new SolidColorBrush(Color.FromArgb(220, 92, 92, 92));
+
+    private readonly Border chrome;
+    private readonly PointerCaptureController capture = new();
+    private readonly ScaleTransform hoverScale = new(1, 1);
+    private bool isHovering;
+    private Renderer? renderer;
+
+    public PanViewGizmo()
+    {
+        Width = 38;
+        Height = 38;
+        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
+        VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top;
+        Margin = new Thickness(0, 196, 15, 0);
+        RenderTransformOrigin = RelativePoint.Center;
+        RenderTransform = hoverScale;
+
+        chrome = new Border
+        {
+            CornerRadius = new CornerRadius(19),
+            Background = FillBrush,
+            Child = new SymbolIcon
+            {
+                Symbol = Symbol.HandDraw,
+                FontSize = 19,
+                Foreground = Brushes.White,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            }
+        };
+        Content = chrome;
+    }
+
+    protected override void OnPointerEntered(PointerEventArgs e)
+    {
+        base.OnPointerEntered(e);
+        isHovering = true;
+        ApplyVisualState();
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+        if (capture.IsActive)
+            return;
+        isHovering = false;
+        ApplyVisualState();
+    }
+
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        base.OnPointerPressed(e);
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        capture.Begin(this, e.Pointer);
+        ApplyVisualState();
+        e.Handled = true;
+    }
+
+    protected override void OnPointerMoved(PointerEventArgs e)
+    {
+        base.OnPointerMoved(e);
+        if (!capture.IsActive)
+            return;
+
+        if (capture.TryConsumeWarpSuppressedMove())
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (!TryGetActiveRenderer(out var activeRenderer))
+            return;
+
+        var delta = capture.GetDeltaFromCenter(e.GetPosition(this));
+        if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
+            activeRenderer.Scene.Mutate(scene => scene.CameraController.PanInViewPlane((float)delta.X, (float)delta.Y));
+
+        capture.Recenter(this);
+        e.Handled = true;
+    }
+
+    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    {
+        base.OnPointerReleased(e);
+        if (!capture.IsActive)
+            return;
+
+        capture.End(this, e.Pointer);
+        isHovering = Bounds.Contains(e.GetPosition(this));
+        ApplyVisualState();
+        e.Handled = true;
+    }
+
+    protected override void OnLostFocus(RoutedEventArgs e)
+    {
+        base.OnLostFocus(e);
+        capture.End(this);
+        isHovering = false;
+        ApplyVisualState();
+    }
+
+    private void ApplyVisualState()
+    {
+        if (capture.IsActive)
+        {
+            chrome.Background = PressBrush;
+            hoverScale.ScaleX = 1d + HoverScaleBoost;
+            hoverScale.ScaleY = 1d + HoverScaleBoost;
+            return;
+        }
+
+        chrome.Background = isHovering ? HoverBrush : FillBrush;
+        var s = 1d + (isHovering ? HoverScaleBoost : 0d);
+        hoverScale.ScaleX = s;
+        hoverScale.ScaleY = s;
+    }
+
+    private bool TryGetActiveRenderer(out Renderer activeRenderer)
+    {
+        if (RendererHost.TryGetRenderer(out var resolved) && resolved is not null)
+        {
+            if (!ReferenceEquals(renderer, resolved))
+                renderer = resolved;
+            activeRenderer = resolved;
+            return true;
+        }
+
+        renderer = null;
+        activeRenderer = null!;
+        return false;
+    }
+}

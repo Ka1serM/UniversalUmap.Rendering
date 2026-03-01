@@ -10,10 +10,6 @@ namespace UniversalUmap.Rendering;
 public sealed unsafe class TextureAsset : IDisposable
 {
     private readonly Context context;
-    private static readonly object stagingRingSync = new();
-    private static readonly GpuBuffer?[] stagingRing = new GpuBuffer[4];
-    private static nint stagingRingDeviceHandle;
-    private static int stagingRingCursor;
 
     public string Name { get; }
     public string SourcePath { get; }
@@ -37,7 +33,11 @@ public sealed unsafe class TextureAsset : IDisposable
         Name = name;
         SourcePath = sourcePath;
 
-        var staging = AcquireStagingUploadBuffer(context, (ulong)pixelBytes.Length);
+        var staging = new GpuBuffer(
+            context,
+            (ulong)pixelBytes.Length,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         staging.Upload(pixelBytes);
 
         var imageInfo = new ImageCreateInfo
@@ -139,72 +139,14 @@ public sealed unsafe class TextureAsset : IDisposable
             ImageLayout.ShaderReadOnlyOptimal,
             AccessFlags.ShaderReadBit,
             1);
-        commandBuffer.Submit();
-        context.Pool.FreeUsedCommandBuffers(waitForCompletion: true);
+        commandBuffer.RetainForExecution(staging);
+        commandBuffer.SubmitAndWait();
         Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
-    }
-
-    private static GpuBuffer AcquireStagingUploadBuffer(Context context, ulong requiredSize)
-    {
-        lock (stagingRingSync)
-        {
-            if (stagingRingDeviceHandle != 0 && stagingRingDeviceHandle != context.Device.Handle)
-            {
-                for (var i = 0; i < stagingRing.Length; i++)
-                {
-                    stagingRing[i]?.Dispose();
-                    stagingRing[i] = null;
-                }
-            }
-
-            stagingRingDeviceHandle = context.Device.Handle;
-            var slot = stagingRingCursor++ % stagingRing.Length;
-            var existing = stagingRing[slot];
-            if (existing is null || existing.Size < requiredSize)
-            {
-                existing?.Dispose();
-                stagingRing[slot] = new GpuBuffer(
-                    context,
-                    requiredSize,
-                    BufferUsageFlags.TransferSrcBit,
-                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-            }
-
-            return stagingRing[slot]!;
-        }
     }
 
     internal DescriptorImageInfo GetDescriptorImageInfo()
     {
         return new DescriptorImageInfo(Sampler, View, ImageLayout.ShaderReadOnlyOptimal);
-    }
-
-    public static bool TryCreateHdr(Context context, string sourcePath, out TextureAsset? texture)
-    {
-        try
-        {
-            texture = CreateHdr(context, sourcePath);
-            return true;
-        }
-        catch
-        {
-            texture = null;
-            return false;
-        }
-    }
-
-    public static bool TryCreateHdr(Context context, string name, ReadOnlySpan<byte> encodedHdrBytes, out TextureAsset? texture)
-    {
-        try
-        {
-            texture = CreateHdr(context, name, encodedHdrBytes);
-            return true;
-        }
-        catch
-        {
-            texture = null;
-            return false;
-        }
     }
 
     public static TextureAsset CreateHdr(Context context, string sourcePath)
@@ -291,17 +233,7 @@ public sealed unsafe class TextureAsset : IDisposable
 
     internal static void DisposeSharedStagingRing()
     {
-        lock (stagingRingSync)
-        {
-            for (var i = 0; i < stagingRing.Length; i++)
-            {
-                stagingRing[i]?.Dispose();
-                stagingRing[i] = null;
-            }
-
-            stagingRingDeviceHandle = 0;
-            stagingRingCursor = 0;
-        }
+        // No-op: shared staging ring was removed in favor of per-upload retained staging buffers.
     }
 
     public void Dispose()

@@ -19,6 +19,12 @@ float luminance(vec3 c) {
     return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 }
 
+float powerHeuristic(float pdfA, float pdfB) {
+    float a2 = pdfA * pdfA;
+    float b2 = pdfB * pdfB;
+    return a2 / max(a2 + b2, EPSILON);
+}
+
 // Barycentric Helpers
 vec3 calculateBarycentric(vec3 attribs) {
     return vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);

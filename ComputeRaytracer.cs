@@ -149,10 +149,13 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         pipeline = pipelineLocal;
         Log.Information("Compute raytracer pipeline and descriptors created.");
 
-        UpdateSceneResources(force: true);
+        var initCommandBuffer = Context.Pool.CreateCommandBuffer();
+        initCommandBuffer.BeginRecording();
+        UpdateSceneResources(initCommandBuffer, force: true);
+        initCommandBuffer.SubmitAndWait();
     }
 
-    protected override void UpdateSceneResources(bool force)
+    protected override void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force)
     {
         if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
             return;
@@ -160,8 +163,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         var instanceBytes = Scene.BuildComputeInstanceData();
         var meshBytes = Scene.BuildMeshAddressData();
 
-        instancesBuffer.Dispose();
-        meshBuffer.Dispose();
+        var previousInstancesBuffer = instancesBuffer;
+        var previousMeshBuffer = meshBuffer;
 
         instancesBuffer = new GpuBuffer(
             Context,
@@ -175,6 +178,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             meshBytes);
+
+        commandBuffer.RetainForExecution(previousInstancesBuffer);
+        commandBuffer.RetainForExecution(previousMeshBuffer);
 
         var instancesInfo = new DescriptorBufferInfo(instancesBuffer.Handle, 0, instancesBuffer.Size);
         var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);

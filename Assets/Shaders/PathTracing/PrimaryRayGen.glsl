@@ -33,11 +33,12 @@ in ivec2 pixelCoord,
 in ivec2 screenSize,
 in CameraData camera,
 inout SamplerState samplerState,
+in bool deterministicSample,
 out vec3 rayOrigin,
 out vec3 rayDirection
 ) {
-    // Jitter for anti-aliasing using the R2 sequence.
-    vec2 jitter = getSample2D(samplerState) - 0.5;
+    // Keep sample 0 deterministic for stable auxiliary buffers (crypto/position/normal/albedo).
+    vec2 jitter = deterministicSample ? vec2(0.0) : (getSample2D(samplerState) - 0.5);
 
     // Compute normalized UV coordinates with jitter
     vec2 uv = (vec2(pixelCoord) + jitter) / vec2(screenSize);
@@ -63,8 +64,8 @@ out vec3 rayDirection
     // Apply depth of field if aperture is larger than a pinhole
     if (camera.aperture > 0.0) {
         float apertureRadius = (camera.focalLength / camera.aperture) * 0.5 * 0.001;
-        // Use the next dimension of the R2 sequence for the lens sample.
-        vec2 lensSampleRaw = getSample2D(samplerState);
+        // Sample 0 stays deterministic: no lens jitter for stable buffers.
+        vec2 lensSampleRaw = deterministicSample ? vec2(0.5) : getSample2D(samplerState);
         vec2 lensSample = roundBokeh(lensSampleRaw.x, lensSampleRaw.y, camera.bokehBias) * apertureRadius;
         vec3 lensU = normalize(horizontal);
         vec3 lensV = normalize(vertical);
@@ -85,6 +86,7 @@ vec3 accumulateBuffer(vec3 oldValue, vec3 newValue, float alpha, int frame) {
 void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     if (pixelCoord.x >= screenSize.x || pixelCoord.y >= screenSize.y)
         return;
+    const ivec2 pickPixelCoord = ivec2(pixelCoord.x, (screenSize.y - 1) - pixelCoord.y);
     
     #ifdef USE_COMPUTE
         Payload payload;
@@ -94,23 +96,29 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     uint rngState = seed.x;
 
     vec3 accumulatedColor = vec3(0.0);
-    vec3 accumulatedAlbedo = vec3(0.0);
-    vec3 accumulatedNormal = vec3(0.0);
     bool hitAnything = false;
+    vec3 stableAlbedo = vec3(0.0);
+    vec3 stableNormal = vec3(0.0);
+    bool stableHit = false;
 
     for (int sampleIndex = 0; sampleIndex < pushConstants.push.samples; ++sampleIndex) {
+        payload.lastBsdfPdf = 0.0;
+        payload.lastNeeLightPdf = 0.0;
+        payload.pad1 = 0u;
+        payload.pad2 = 0u;
+        payload.pad3 = 0u;
+
         SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.push.frame + sampleIndex);
+        bool deterministicSample = (sampleIndex == 0);
 
         vec3 rayOrigin, rayDirection;
-        generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, samplerState, rayOrigin, rayDirection);
+        generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, samplerState, deterministicSample, rayOrigin, rayDirection);
 
         vec3 throughput = vec3(1.0);
         int diffuseCount = 0;
         int specularCount = 0;
         int transmissionCount = 0;
         int maxBounces = max(pushConstants.push.diffuseBounces, max(pushConstants.push.specularBounces, pushConstants.push.transmissionBounces));
-
-        bool firstHitStored = false;
 
         for (int bounce = 0; bounce < maxBounces; ++bounce) {
             payload.rngState = rngState;
@@ -146,13 +154,17 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
                     continue;
                 }
                 
-                accumulatedAlbedo += payload.albedo;
-                accumulatedNormal += payload.normal;
-                
-                // Store crypto and position buffer directly
+                // Store crypto and position buffer directly from sample 0.
                 if(sampleIndex == 0) {
-                    imageStore(outputCrypto, pixelCoord, uvec4(payload.objectIndex, 0, 0, 0));
-                    imageStore(outputPosition, pixelCoord, vec4(payload.position, 0));
+                    imageStore(outputCrypto, pickPixelCoord, uvec4(payload.objectIndex, 0, 0, 0));
+                    if (payload.objectIndex != INVALID_INSTANCE)
+                        imageStore(outputPosition, pickPixelCoord, vec4(payload.position, 1.0));
+                    else
+                        imageStore(outputPosition, pickPixelCoord, vec4(0));
+
+                    stableHit = ((payload.flags & ENV_TRANSPARENT) == 0u);
+                    stableAlbedo = stableHit ? payload.albedo : vec3(0.0);
+                    stableNormal = stableHit ? payload.normal : vec3(0.0);
                 }
                 
                 hitAnything = ((payload.flags & ENV_TRANSPARENT) == 0u);
@@ -178,8 +190,6 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
 
     // Average per-pixel over samples
     vec3 newColor = accumulatedColor / float(pushConstants.push.samples);
-    vec3 newAlbedo = (hitAnything) ? accumulatedAlbedo / float(pushConstants.push.samples) : vec3(0.0);
-    vec3 newNormal = (hitAnything) ? normalize(accumulatedNormal / float(pushConstants.push.samples)) : vec3(0.0);
     float newAlpha = float(hitAnything);
     float frameF = float(pushConstants.push.frame);
 
@@ -187,12 +197,6 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     vec4 prevColorData = imageLoad(outputColor, pixelCoord);
     vec3 prevColorPremult = prevColorData.rgb * prevColorData.a;
     float prevAlpha = prevColorData.a;
-
-    vec4 prevAlbedoData = imageLoad(outputAlbedo, pixelCoord);
-    vec3 prevAlbedo = prevAlbedoData.rgb;
-
-    vec4 prevNormalData = imageLoad(outputNormal, pixelCoord);
-    vec3 prevNormal = prevNormalData.rgb;
 
     // Apply exposure
     vec3 newColorWithExposure = newColor * exp2(pushConstants.push.exposure);
@@ -205,9 +209,9 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     // Un-premultiply for storage
     vec3 finalColor = (finalAlpha > 0.0) ? finalColorPremult / finalAlpha : vec3(0.0);
 
-    // Accumulate albedo and normal (simple temporal average)
-    vec3 finalAlbedo = accumulateBuffer(prevAlbedo, newAlbedo, 1.0, pushConstants.push.frame);
-    vec3 finalNormal = accumulateBuffer(prevNormal, newNormal, 1.0, pushConstants.push.frame);
+    // Stable auxiliary buffers from deterministic sample 0 (no temporal accumulation).
+    vec3 finalAlbedo = stableAlbedo;
+    vec3 finalNormal = stableNormal;
 
     // Store results
     imageStore(outputColor, pixelCoord, vec4(finalColor, finalAlpha));

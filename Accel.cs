@@ -13,6 +13,29 @@ internal sealed unsafe class Accel : IDisposable
     public AccelerationStructureKHR Handle { get; private set; }
     public AccelerationStructureTypeKHR Type { get; private set; }
 
+    private sealed class DeferredAccelResources : IDisposable
+    {
+        private readonly Context context;
+        private readonly KhrAccelerationStructure ext;
+        private readonly AccelerationStructureKHR handle;
+        private readonly GpuBuffer? storage;
+
+        public DeferredAccelResources(Context context, KhrAccelerationStructure ext, AccelerationStructureKHR handle, GpuBuffer? storage)
+        {
+            this.context = context;
+            this.ext = ext;
+            this.handle = handle;
+            this.storage = storage;
+        }
+
+        public void Dispose()
+        {
+            if (handle.Handle != default)
+                ext.DestroyAccelerationStructure(context.Device, handle, default);
+            storage?.Dispose();
+        }
+    }
+
     public Accel(Context context, KhrAccelerationStructure ext)
     {
         this.context = context;
@@ -21,7 +44,16 @@ internal sealed unsafe class Accel : IDisposable
 
     public void BuildTopLevel(uint primitiveCount, ulong instancesDeviceAddress)
     {
-        DisposeHandle();
+        var commandBuffer = context.Pool.CreateCommandBuffer();
+        commandBuffer.BeginRecording();
+        BuildTopLevel(commandBuffer, primitiveCount, instancesDeviceAddress);
+        commandBuffer.SubmitAndWait();
+    }
+
+    public void BuildTopLevel(CommandBufferPool.PooledCommandBuffer commandBuffer, uint primitiveCount, ulong instancesDeviceAddress)
+    {
+        var previousHandle = Handle;
+        var previousStorage = storageBuffer;
 
         var instancesData = new AccelerationStructureGeometryInstancesDataKHR
         {
@@ -82,6 +114,9 @@ internal sealed unsafe class Accel : IDisposable
         Handle = handle;
         Type = AccelerationStructureTypeKHR.TopLevelKhr;
 
+        if (previousHandle.Handle != default || previousStorage is not null)
+            commandBuffer.RetainForExecution(new DeferredAccelResources(context, ext, previousHandle, previousStorage));
+
         var scratch = new GpuBuffer(
             context,
             sizeInfo.BuildScratchSize,
@@ -103,11 +138,9 @@ internal sealed unsafe class Accel : IDisposable
         };
         var pRangeInfo = &rangeInfo;
 
-        var commandBuffer = context.Pool.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
-        commandBuffer.Submit();
         commandBuffer.RetainForExecution(scratch);
+        InsertBuildToReadBarrier(commandBuffer.InternalHandle);
     }
 
     public void BuildBottomLevelTriangles(
@@ -117,7 +150,22 @@ internal sealed unsafe class Accel : IDisposable
         uint maxVertex,
         ulong indexAddress)
     {
-        DisposeHandle();
+        var commandBuffer = context.Pool.CreateCommandBuffer();
+        commandBuffer.BeginRecording();
+        BuildBottomLevelTriangles(commandBuffer, primitiveCount, vertexAddress, vertexStride, maxVertex, indexAddress);
+        commandBuffer.SubmitAndWait();
+    }
+
+    public void BuildBottomLevelTriangles(
+        CommandBufferPool.PooledCommandBuffer commandBuffer,
+        uint primitiveCount,
+        ulong vertexAddress,
+        ulong vertexStride,
+        uint maxVertex,
+        ulong indexAddress)
+    {
+        var previousHandle = Handle;
+        var previousStorage = storageBuffer;
 
         var trianglesData = new AccelerationStructureGeometryTrianglesDataKHR
         {
@@ -185,6 +233,9 @@ internal sealed unsafe class Accel : IDisposable
         Handle = handle;
         Type = AccelerationStructureTypeKHR.BottomLevelKhr;
 
+        if (previousHandle.Handle != default || previousStorage is not null)
+            commandBuffer.RetainForExecution(new DeferredAccelResources(context, ext, previousHandle, previousStorage));
+
         var scratch = new GpuBuffer(
             context,
             sizeInfo.BuildScratchSize,
@@ -206,11 +257,9 @@ internal sealed unsafe class Accel : IDisposable
         };
         var pRangeInfo = &rangeInfo;
 
-        var commandBuffer = context.Pool.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
-        commandBuffer.Submit();
         commandBuffer.RetainForExecution(scratch);
+        InsertBuildToReadBarrier(commandBuffer.InternalHandle);
     }
 
     public ulong GetDeviceAddress()
@@ -236,6 +285,28 @@ internal sealed unsafe class Accel : IDisposable
 
         storageBuffer?.Dispose();
         storageBuffer = null;
+    }
+
+    private void InsertBuildToReadBarrier(CommandBuffer commandBuffer)
+    {
+        var barrier = new MemoryBarrier
+        {
+            SType = StructureType.MemoryBarrier,
+            SrcAccessMask = AccessFlags.AccelerationStructureWriteBitKhr,
+            DstAccessMask = AccessFlags.AccelerationStructureReadBitKhr | AccessFlags.ShaderReadBit
+        };
+
+        context.Api.CmdPipelineBarrier(
+            commandBuffer,
+            PipelineStageFlags.AccelerationStructureBuildBitKhr,
+            PipelineStageFlags.AccelerationStructureBuildBitKhr | PipelineStageFlags.RayTracingShaderBitKhr,
+            0,
+            1,
+            in barrier,
+            0,
+            null,
+            0,
+            null);
     }
 
     public void Dispose()

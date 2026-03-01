@@ -18,6 +18,7 @@
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.12" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="FluentIcons.Avalonia.Fluent" Version="2.0.318" />
     <PackageReference Include="Serilog" Version="4.3.1" />
     <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
@@ -42,12 +43,16 @@
       <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/Miss.spv</SpvOutput>
       <Arguments>--target-env=vulkan1.3</Arguments>
     </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.spv</SpvOutput>
+      <Arguments>--target-env=vulkan1.3</Arguments>
+    </ShaderSource>
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracer.comp">
       <SpvOutput>$(ProjectDir)Assets/Shaders/Compute/PathTracer.spv</SpvOutput>
       <Arguments>-DUSE_COMPUTE=1</Arguments>
     </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/Tonemapper.comp">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/Tonemapping/Tonemapper.spv</SpvOutput>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.comp">
+      <SpvOutput>$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.spv</SpvOutput>
       <Arguments></Arguments>
     </ShaderSource>
     <ShaderInclude Include="$(ProjectDir)Assets/Shaders/**/*.glsl;$(ProjectDir)Assets/Shaders/**/*.h" />

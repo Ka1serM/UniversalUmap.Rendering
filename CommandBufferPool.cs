@@ -32,17 +32,25 @@ public sealed class CommandBufferPool : IDisposable
 
     public unsafe void Dispose()
     {
+        WaitForSubmittedCommandBuffers();
         lock (sync)
-        {
-            FreeUsedCommandBuffers(waitForCompletion: true);
             api.DestroyCommandPool(device, commandPool, default);
-        }
     }
 
-    public PooledCommandBuffer CreateCommandBuffer() => new(api, device, queue, this);
+    public PooledCommandBuffer CreateCommandBuffer()
+    {
+        ReclaimCompletedCommandBuffers();
+        return new PooledCommandBuffer(api, device, queue, this);
+    }
+
+    public void ReclaimCompletedCommandBuffers()
+        => FreeUsedCommandBuffers(waitForCompletion: false);
+
+    public void WaitForSubmittedCommandBuffers()
+        => FreeUsedCommandBuffers(waitForCompletion: true);
 
     public void FreeUsedCommandBuffers()
-        => FreeUsedCommandBuffers(waitForCompletion: false);
+        => ReclaimCompletedCommandBuffers();
 
     public void FreeUsedCommandBuffers(bool waitForCompletion)
     {
@@ -156,8 +164,20 @@ public sealed class CommandBufferPool : IDisposable
         {
             EndRecording();
 
+            if (!waitSemaphores.IsEmpty && !waitDstStageMask.IsEmpty && waitSemaphores.Length != waitDstStageMask.Length)
+                throw new ArgumentException("waitDstStageMask length must match waitSemaphores length.");
+
+            Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
+            var effectiveWaitStages = waitDstStageMask;
+            if (!waitSemaphores.IsEmpty && waitDstStageMask.IsEmpty)
+            {
+                for (var i = 0; i < defaultWaitStages.Length; i++)
+                    defaultWaitStages[i] = PipelineStageFlags.AllCommandsBit;
+                effectiveWaitStages = defaultWaitStages;
+            }
+
             fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
-            fixed (PipelineStageFlags* pWaitStages = waitDstStageMask)
+            fixed (PipelineStageFlags* pWaitStages = effectiveWaitStages)
             {
                 var cmd = InternalHandle;
                 var submitInfo = new SubmitInfo
@@ -165,7 +185,7 @@ public sealed class CommandBufferPool : IDisposable
                     SType = StructureType.SubmitInfo,
                     WaitSemaphoreCount = waitSemaphores.IsEmpty ? 0u : (uint)waitSemaphores.Length,
                     PWaitSemaphores = pWaitSemaphores,
-                    PWaitDstStageMask = pWaitStages,
+                    PWaitDstStageMask = waitSemaphores.IsEmpty ? null : pWaitStages,
                     CommandBufferCount = 1,
                     PCommandBuffers = &cmd,
                     SignalSemaphoreCount = signalSemaphores.IsEmpty ? 0u : (uint)signalSemaphores.Length,
@@ -184,6 +204,16 @@ public sealed class CommandBufferPool : IDisposable
             owner.MoveToUsed(this);
         }
 
+        public void SubmitAndWait(
+            ReadOnlySpan<Silk.NET.Vulkan.Semaphore> waitSemaphores = default,
+            ReadOnlySpan<PipelineStageFlags> waitDstStageMask = default,
+            ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores = default)
+        {
+            Submit(waitSemaphores, waitDstStageMask, signalSemaphores);
+            WaitForCompletion();
+            owner.ReclaimCompletedCommandBuffers();
+        }
+
         public void RetainForExecution(IDisposable resource)
         {
             if (resource is null)
@@ -197,6 +227,11 @@ public sealed class CommandBufferPool : IDisposable
         {
             var result = api.GetFenceStatus(device, fence);
             return result == Result.Success;
+        }
+
+        public unsafe void WaitForCompletion()
+        {
+            api.WaitForFences(device, 1, in fence, true, ulong.MaxValue).ThrowOnError();
         }
 
         public unsafe void Dispose(bool waitForCompletion)
@@ -215,8 +250,11 @@ public sealed class CommandBufferPool : IDisposable
             }
 
             var handle = InternalHandle;
-            api.FreeCommandBuffers(device, owner.commandPool, 1, in handle);
-            api.DestroyFence(device, fence, default);
+            lock (owner.sync)
+            {
+                api.FreeCommandBuffers(device, owner.commandPool, 1, in handle);
+                api.DestroyFence(device, fence, default);
+            }
 
             if (retainedResources is not null)
             {

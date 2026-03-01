@@ -6,7 +6,7 @@ using Serilog;
 
 namespace UniversalUmap.Rendering;
 
-internal sealed class PerspectiveCamera
+internal sealed class PerspectiveCamera : ISceneTickable
 {
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
     private static readonly Vector3 LocalForward = new(0f, 0f, 1f);
@@ -15,6 +15,8 @@ internal sealed class PerspectiveCamera
     private const float ArcballSensitivity = 0.004f;
     private const float FlySensitivityDegrees = 0.1f;
     private const float SpeedBoostMultiplier = 10f;
+    private const float CameraDataEpsilon = 0.0001f;
+    private const float WheelDollyScale = 0.8f;
 
     private Vector3 position = new(0f, 0f, -2f);
     private Quaternion rotation = Quaternion.Identity;
@@ -28,21 +30,70 @@ internal sealed class PerspectiveCamera
     public float FocusDistance { get; set; } = 4f;
     public float BokehBias { get; set; } = 1f;
 
-    public float MoveSpeed { get; private set; } = 5f;
+    public float MoveSpeed { get; private set; } = 12f;
     public Vector3 ArcballPivot { get; set; } = Vector3.Zero;
+    public Vector3 Position => position;
+    public Quaternion Rotation => rotation;
 
     public PerspectiveCamera(Input input)
     {
         this.input = input;
     }
 
-    public void FocusOn(Matrix4x4 worldTransform, float distance = 500f)
+    public void SetArcballPivot(Vector3 pivot)
     {
-        var target = new Vector3(worldTransform.M41, worldTransform.M42, worldTransform.M43);
-        var safeDistance = Math.Max(10f, distance);
-        ArcballPivot = target;
-        rotation = Quaternion.Identity;
-        position = target - (LocalForward * safeDistance);
+        ArcballPivot = pivot;
+    }
+
+    public void OrbitAroundPivot(float yawRadians, float pitchRadians)
+    {
+        if (Math.Abs(yawRadians) < 0.000001f && Math.Abs(pitchRadians) < 0.000001f)
+            return;
+
+        var yawQuat = Quaternion.CreateFromAxisAngle(Vector3.Normalize(WorldUp), yawRadians);
+        var localRight = Vector3.Transform(LocalRight, rotation);
+        var pitchQuat = Quaternion.CreateFromAxisAngle(Vector3.Normalize(localRight), pitchRadians);
+
+        var offset = position - ArcballPivot;
+        var rotationDelta = Quaternion.Normalize(yawQuat * pitchQuat);
+        offset = Vector3.Transform(offset, rotationDelta);
+        position = ArcballPivot + offset;
+        rotation = Quaternion.Normalize(yawQuat * pitchQuat * rotation);
+    }
+
+    public void PanInViewPlane(float deltaX, float deltaY)
+    {
+        if (Math.Abs(deltaX) < 0.000001f && Math.Abs(deltaY) < 0.000001f)
+            return;
+
+        var right = Vector3.Normalize(Vector3.Transform(LocalRight, rotation));
+        var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
+        var distance = Math.Max(1f, Vector3.Distance(position, ArcballPivot));
+        var sensitivity = 0.0015f * distance;
+        var offset = right * (-deltaX * sensitivity) + up * (deltaY * sensitivity);
+
+        position += offset;
+    }
+
+    public void Dolly(float amount)
+    {
+        if (Math.Abs(amount) < 0.000001f)
+            return;
+
+        var forward = Vector3.Normalize(Vector3.Transform(LocalForward, rotation));
+        var distance = Math.Max(1f, Vector3.Distance(position, ArcballPivot));
+        var step = amount * Math.Max(0.25f, distance * 0.05f);
+        position += forward * step;
+    }
+
+    public void SetPosition(Vector3 value)
+    {
+        position = value;
+    }
+
+    public void SetRotation(Quaternion value)
+    {
+        rotation = Quaternion.Normalize(value);
     }
 
     public bool Update(
@@ -53,32 +104,33 @@ internal sealed class PerspectiveCamera
         var changed = false;
         var wheelDelta = input.ConsumeWheelDelta();
         var mouseDelta = input.ConsumeMouseDelta();
+        var leftMouseDown = input.LeftMouseDown;
         var rightMouseDown = input.RightMouseDown;
+        var dragActive = leftMouseDown || rightMouseDown;
+        var flyMode = dragActive;
         var hasMovementKeys = input.IsKeyDown(Key.W) || input.IsKeyDown(Key.A) || input.IsKeyDown(Key.S) ||
                               input.IsKeyDown(Key.D) || input.IsKeyDown(Key.Q) || input.IsKeyDown(Key.E);
 
         if (Math.Abs(wheelDelta) > 0.0001f)
         {
-            MoveSpeed = Math.Clamp(MoveSpeed + wheelDelta, 0.25f, 50f);
+            Dolly(wheelDelta * WheelDollyScale);
             changed = true;
         }
 
-        if (rightMouseDown)
+        if (flyMode)
         {
-            var arcballMode = IsAltDown();
-            if (arcballMode)
-                changed |= UpdateArcball(mouseDelta, deltaTimeSeconds);
-            else
-                changed |= UpdateFly(mouseDelta, deltaTimeSeconds);
+            changed |= UpdateFly(mouseDelta, deltaTimeSeconds);
         }
 
-        if ((Math.Abs(wheelDelta) > 0.0001f || mouseDelta.LengthSquared() > 0.0001f || hasMovementKeys || rightMouseDown) &&
+        if ((Math.Abs(wheelDelta) > 0.0001f || mouseDelta.LengthSquared() > 0.0001f || hasMovementKeys || flyMode) &&
             (Environment.TickCount64 / 1000.0 - lastInputLogSeconds) > 0.25)
         {
             lastInputLogSeconds = Environment.TickCount64 / 1000.0;
             Log.Debug(
-                "Camera input frame: RMB={Rmb} mouseDelta=({Dx:0.00},{Dy:0.00}) wheel={Wheel:0.00} moveKeys={MoveKeys} pos=({Px:0.00},{Py:0.00},{Pz:0.00})",
+                "Camera input frame: LMB={Lmb} RMB={Rmb} Fly={Fly} mouseDelta=({Dx:0.00},{Dy:0.00}) wheel={Wheel:0.00} moveKeys={MoveKeys} pos=({Px:0.00},{Py:0.00},{Pz:0.00})",
+                leftMouseDown,
                 rightMouseDown,
+                flyMode,
                 mouseDelta.X,
                 mouseDelta.Y,
                 wheelDelta,
@@ -92,44 +144,23 @@ internal sealed class PerspectiveCamera
         return changed;
     }
 
-    private bool UpdateArcball(Vector2 mouseDeltaPixels, float deltaTimeSeconds)
+    public void Tick(Scene scene, PixelSize renderSize, float deltaTimeSeconds)
     {
-        var changed = false;
-        var positionBefore = position;
-        var rotationBefore = rotation;
-        var moveForward = input.IsKeyDown(Key.W);
-        var moveBackward = input.IsKeyDown(Key.S);
+        var changed = Update(renderSize, deltaTimeSeconds, out var cameraData);
+        scene.SetCameraData(cameraData, changed);
+    }
 
-        var moveSpeed = deltaTimeSeconds * MoveSpeed;
-        if (IsShiftDown())
-            moveSpeed *= SpeedBoostMultiplier;
-
-        var toCamera = Vector3.Normalize(position - ArcballPivot);
-        if (moveForward)
-            position -= toCamera * moveSpeed;
-        if (moveBackward)
-            position += toCamera * moveSpeed;
-
-        var yawAngle = -mouseDeltaPixels.X * ArcballSensitivity;
-        var pitchAngle = -mouseDeltaPixels.Y * ArcballSensitivity;
-
-        if (Math.Abs(yawAngle) > 0.000001f || Math.Abs(pitchAngle) > 0.000001f)
-        {
-            var yawQuat = Quaternion.CreateFromAxisAngle(Vector3.Normalize(WorldUp), yawAngle);
-            var localRight = Vector3.Transform(LocalRight, rotation);
-            var pitchQuat = Quaternion.CreateFromAxisAngle(Vector3.Normalize(localRight), pitchAngle);
-
-            var offset = position - ArcballPivot;
-            var rotationDelta = Quaternion.Normalize(yawQuat * pitchQuat);
-            offset = Vector3.Transform(offset, rotationDelta);
-            position = ArcballPivot + offset;
-            rotation = Quaternion.Normalize(yawQuat * pitchQuat * rotation);
-        }
-
-        if (position != positionBefore || rotation != rotationBefore)
-            changed = true;
-
-        return changed;
+    internal static bool IsCameraDataEquivalent(in CameraDataGpu a, in CameraDataGpu b)
+    {
+        var epsilonSq = CameraDataEpsilon * CameraDataEpsilon;
+        return Vector3.DistanceSquared(a.Position, b.Position) <= epsilonSq &&
+               Vector3.DistanceSquared(a.Direction, b.Direction) <= epsilonSq &&
+               Vector3.DistanceSquared(a.Horizontal, b.Horizontal) <= epsilonSq &&
+               Vector3.DistanceSquared(a.Vertical, b.Vertical) <= epsilonSq &&
+               MathF.Abs(a.FocalLength - b.FocalLength) <= CameraDataEpsilon &&
+               MathF.Abs(a.FocusDistance - b.FocusDistance) <= CameraDataEpsilon &&
+               MathF.Abs(a.Aperture - b.Aperture) <= CameraDataEpsilon &&
+               MathF.Abs(a.BokehBias - b.BokehBias) <= CameraDataEpsilon;
     }
 
     private bool UpdateFly(Vector2 mouseDeltaPixels, float deltaTimeSeconds)
@@ -208,8 +239,6 @@ internal sealed class PerspectiveCamera
             BokehBias = BokehBias
         };
     }
-
-    private bool IsAltDown() => input.IsKeyDown(Key.LeftAlt) || input.IsKeyDown(Key.RightAlt);
 
     private bool IsShiftDown() => input.IsKeyDown(Key.LeftShift) || input.IsKeyDown(Key.RightShift);
 

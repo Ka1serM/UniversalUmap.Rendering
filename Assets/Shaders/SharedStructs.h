@@ -1,12 +1,5 @@
-#ifdef __cplusplus //In C++, use 
-    #pragma once
-    #include "glm/vec2.hpp"
-    #include <glm/vec3.hpp>
-    #include <glm/mat4x4.hpp>
-    using namespace glm;
-#else
-    #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-#endif
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// NOTE: Keep this file layout-synced with UniversalUmap.Rendering/SharedStructs.cs.
 
 #define INVALID_INSTANCE 0xFFFFFFFFu //max uint32_t
 #define GROUP_SIZE 16
@@ -20,34 +13,6 @@ struct AABB
     float _pad0;
     vec3 maxBounds;
     float _pad1;
-
-#ifdef __cplusplus
-    AABB()
-        : minBounds(std::numeric_limits<float>::max()),
-          _pad0(0.0f),
-          maxBounds(-std::numeric_limits<float>::max()),
-          _pad1(0.0f)
-    {}
-
-    void expand(const vec3& point) {
-        minBounds = min(minBounds, point);
-        maxBounds = max(maxBounds, point);
-    }
-
-    void expand(const AABB& other) {
-        minBounds = min(minBounds, other.minBounds);
-        maxBounds = max(maxBounds, other.maxBounds);
-    }
-
-    float surfaceArea() const {
-        vec3 d = maxBounds - minBounds;
-        return 2.0f * (d.x * d.y + d.x * d.z + d.y * d.z);
-    }
-
-    vec3 centroid() const {
-        return (minBounds + maxBounds) * 0.5f;
-    }
-#endif
 };
 
 // Node is 64 bytes, aligning perfectly to GPU cache lines.
@@ -74,11 +39,6 @@ struct EnvironmentData {
     vec3 color; float intensity;
     int textureIndex; int cdfTextureIndex; float rotation; float exposure;
     int visible, _pad0, _pad1,  _pad2;
-#ifdef __cplusplus
-    EnvironmentData()
-    : color(1), intensity(1), textureIndex(0), cdfTextureIndex(-1), rotation(0), exposure(0), visible(1), _pad0(0), _pad1(0), _pad2(0)
-    {}
-#endif
 };
 
 struct CameraData {
@@ -113,16 +73,6 @@ struct Material {
     vec3 emission; float emissionStrength;
     int emissionIndex, transmissionIndex, opacityIndex; float opacity;
 
-#ifdef __cplusplus
-    Material()
-        : albedo{1}, albedoIndex(-1),
-          specular(0.5f), metallic(0), roughness(0), ior(1.5f),
-          specularIndex(-1), metallicIndex(-1),
-          roughnessIndex(-1), normalIndex(-1),
-          transmissionColor(1), transmission(0), emission(1),
-          emissionStrength(0), emissionIndex(-1), transmissionIndex(-1), opacityIndex(-1), opacity(1)
-    {}
-#endif
 };
 
 //Vulkan Only
@@ -152,6 +102,13 @@ struct Payload {
     
     vec3 albedo; float roughness;
     vec3 normal; uint objectIndex;
+
+    // MIS bookkeeping for environment light.
+    float lastBsdfPdf;
+    float lastNeeLightPdf;
+    uint pad1;
+    uint pad2;
+    uint pad3;
 };
 
 

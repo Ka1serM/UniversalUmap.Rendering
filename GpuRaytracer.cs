@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Platform;
@@ -7,7 +8,7 @@ using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering;
 
-internal abstract unsafe class GpuRaytracer : IRaytracer
+internal abstract unsafe class GpuRaytracer : IDisposable
 {
     protected const uint MaxTextures = 10_000;
 
@@ -31,12 +32,38 @@ internal abstract unsafe class GpuRaytracer : IRaytracer
         Scene = scene;
     }
 
-    public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
+    public static GpuRaytracer Create(Context context, Scene scene)
+    {
+        if (!context.RayTracingSupported)
+        {
+            Log.Information("Hardware ray tracing unsupported; using Compute raytracer backend.");
+            return new ComputeRaytracer(context, scene);
+        }
 
-    public void Render(ImageResource image)
+        try
+        {
+            var rtxRaytracer = new RtxRaytracer(context, scene);
+            Log.Information("Using RTX raytracer backend.");
+            return rtxRaytracer;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "RTX raytracer creation failed, falling back to compute.");
+            var computeRaytracer = new ComputeRaytracer(context, scene);
+            Log.Information("Using Compute raytracer backend.");
+            return computeRaytracer;
+        }
+    }
+
+    public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
+    public ImageResource OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raytracer crypto image is not initialized");
+    public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
+    public PixelSize RenderImageSize => renderImageSize;
+
+    public void Record(ImageResource image, CommandBufferPool.PooledCommandBuffer commandBuffer)
     {
         EnsureRenderImages(image.Size);
-        UpdateSceneResources(force: false);
+        UpdateSceneResources(commandBuffer, force: false);
         UpdateOutputImageBindings();
         UpdateTextureBindings();
 
@@ -56,9 +83,6 @@ internal abstract unsafe class GpuRaytracer : IRaytracer
             hasLoggedFirstRender = true;
         }
 
-        var commandBuffer = Context.Pool.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
-
         outputColorImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         albedoImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         normalImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
@@ -66,14 +90,13 @@ internal abstract unsafe class GpuRaytracer : IRaytracer
         positionImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
 
         ExecuteRaytracing(commandBuffer.InternalHandle, outputColorImage, CreatePushConstants(FrameIndex));
-        commandBuffer.Submit();
 
         FrameIndex++;
         Scene.ClearDirty(SceneDirtyFlags.Accumulation);
     }
 
     protected abstract void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants);
-    protected abstract void UpdateSceneResources(bool force);
+    protected abstract void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
 
     protected void UpdateOutputImageBindings()
@@ -221,24 +244,133 @@ internal abstract unsafe class GpuRaytracer : IRaytracer
         lastBoundColorImageViewHandle = 0;
     }
 
+    public bool QueryPixelUInt(ImageResource image, int pixelX, int pixelY, out uint value)
+    {
+        value = 0;
+        if (image is null)
+            return false;
+
+        var maxX = renderImageSize.Width - 1;
+        var maxY = renderImageSize.Height - 1;
+        if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
+            return false;
+
+        value = ReadPixelUInt(image, pixelX, pixelY);
+        return true;
+    }
+
+    public bool QueryPixelHalf4(ImageResource image, int pixelX, int pixelY, out Vector4 value)
+    {
+        value = default;
+        if (image is null)
+            return false;
+
+        var maxX = renderImageSize.Width - 1;
+        var maxY = renderImageSize.Height - 1;
+        if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
+            return false;
+
+        value = ReadPixelHalf4(image, pixelX, pixelY);
+        return true;
+    }
+
     protected PushConstantsDataGpu CreatePushConstants(uint frame)
     {
+        var push = new PushDataGpu
+        {
+            Frame = (int)frame,
+            IsMoving = Scene.CameraIsMoving
+        };
+
         return new PushConstantsDataGpu
         {
-            Push = new PushDataGpu
-            {
-                Frame = (int)frame,
-                Samples = 1,
-                DiffuseBounces = 2,
-                SpecularBounces = 2,
-                TransmissionBounces = 2,
-                Exposure = 0f,
-                IsMoving = Scene.CameraIsMoving,
-                VisualizeBvh = 0
-            },
+            Push = push,
             Camera = Scene.Camera,
             Environment = Scene.Environment
         };
+    }
+
+    private uint ReadPixelUInt(ImageResource image, int pixelX, int pixelY)
+    {
+        using var staging = new GpuBuffer(
+            Context,
+            sizeof(uint),
+            BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
+        CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
+
+        unsafe
+        {
+            void* mapped = null;
+            Context.Api.MapMemory(Context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
+            try
+            {
+                return *(uint*)mapped;
+            }
+            finally
+            {
+                Context.Api.UnmapMemory(Context.Device, staging.Memory);
+            }
+        }
+    }
+
+    private Vector4 ReadPixelHalf4(ImageResource image, int pixelX, int pixelY)
+    {
+        using var staging = new GpuBuffer(
+            Context,
+            sizeof(ushort) * 4,
+            BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
+        CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
+
+        var bytes = new byte[sizeof(ushort) * 4];
+        unsafe
+        {
+            void* mapped = null;
+            Context.Api.MapMemory(Context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
+            try
+            {
+                Marshal.Copy((nint)mapped, bytes, 0, bytes.Length);
+            }
+            finally
+            {
+                Context.Api.UnmapMemory(Context.Device, staging.Memory);
+            }
+        }
+
+        var x = (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes, 0));
+        var y = (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes, 2));
+        var z = (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes, 4));
+        var w = (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes, 6));
+        return new Vector4(x, y, z, w);
+    }
+
+    private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer stagingBuffer, int pixelX, int pixelY)
+    {
+        var commandBuffer = Context.Pool.CreateCommandBuffer();
+        commandBuffer.BeginRecording();
+
+        image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
+
+        var copyRegion = new BufferImageCopy
+        {
+            ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+            ImageOffset = new Offset3D(pixelX, pixelY, 0),
+            ImageExtent = new Extent3D(1, 1, 1)
+        };
+
+        Context.Api.CmdCopyImageToBuffer(
+            commandBuffer.InternalHandle,
+            image.InternalHandle,
+            ImageLayout.TransferSrcOptimal,
+            stagingBuffer.Handle,
+            1,
+            in copyRegion);
+
+        image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        commandBuffer.SubmitAndWait();
     }
 
     protected static string[] GetSupportedHandleTypes()

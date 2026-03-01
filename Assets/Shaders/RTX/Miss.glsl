@@ -12,7 +12,6 @@
 
 // Payload and Bindings
 layout(location = 0) rayPayloadInEXT Payload payload;
-layout(set = 0, binding = 3) uniform sampler2D textureSamplers[];
 
 // Push Constants
 layout (push_constant) uniform PushConstants {

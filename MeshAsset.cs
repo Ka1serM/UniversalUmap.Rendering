@@ -56,7 +56,7 @@ public sealed class MeshAsset : IDisposable
 
         var materialArray = materials?.ToArray();
         if (materialArray is null || materialArray.Length == 0)
-            materialArray = [MaterialData.Default];
+            materialArray = [new MaterialData()];
 
         var usage = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr;
         var memory = MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit;
@@ -226,7 +226,7 @@ public sealed class MeshAsset : IDisposable
             vertexStart += 4;
         }
 
-        return new MeshAsset(context, name, vertices, indices, faces, [MaterialData.Default]);
+        return new MeshAsset(context, name, vertices, indices, faces, [new MaterialData()]);
     }
 
     public static MeshAsset CreateSphere(
@@ -298,7 +298,7 @@ public sealed class MeshAsset : IDisposable
             }
         }
 
-        return new MeshAsset(context, name, vertices, indices, faces, [MaterialData.Default]);
+        return new MeshAsset(context, name, vertices, indices, faces, [new MaterialData()]);
     }
 
     public static bool TryCreateCube(Context context, string name, out MeshAsset? mesh)

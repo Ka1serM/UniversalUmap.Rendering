@@ -4,6 +4,14 @@ using System.Runtime.InteropServices;
 
 namespace UniversalUmap.Rendering;
 
+internal static class SharedShaderDefines
+{
+    public const uint InvalidInstance = 0xFFFFFFFFu;
+    public const int GroupSize = 16;
+    public const int MaxLeafSize = 8;
+    public const int SahBins = 16;
+}
+
 [Flags]
 public enum SceneDirtyFlags : byte
 {
@@ -64,27 +72,28 @@ public struct MaterialData
     public int OpacityIndex;
     public float Opacity;
 
-    public static MaterialData Default => new()
+    public MaterialData()
     {
-        Albedo = Vector3.One,
-        AlbedoIndex = -1,
-        Specular = 0.5f,
-        Metallic = 0,
-        Roughness = 0,
-        Ior = 1.5f,
-        SpecularIndex = -1,
-        MetallicIndex = -1,
-        RoughnessIndex = -1,
-        NormalIndex = -1,
-        TransmissionColor = Vector3.One,
-        Transmission = 0,
-        Emission = Vector3.Zero,
-        EmissionStrength = 0,
-        EmissionIndex = -1,
-        TransmissionIndex = -1,
-        OpacityIndex = -1,
-        Opacity = 1
-    };
+        Albedo = Vector3.One;
+        AlbedoIndex = -1;
+        Specular = 0.5f;
+        Metallic = 0f;
+        Roughness = 0f;
+        Ior = 1.5f;
+        SpecularIndex = -1;
+        MetallicIndex = -1;
+        RoughnessIndex = -1;
+        NormalIndex = -1;
+        TransmissionColor = Vector3.One;
+        Transmission = 0f;
+        Emission = Vector3.Zero;
+        EmissionStrength = 0f;
+        EmissionIndex = -1;
+        TransmissionIndex = -1;
+        OpacityIndex = -1;
+        Opacity = 1f;
+    }
+
 }
 
 [StructLayout(LayoutKind.Sequential, Size = 48)]
@@ -140,6 +149,18 @@ internal struct PushDataGpu
     public int Frame;
     public int IsMoving;
     public int VisualizeBvh;
+
+    public PushDataGpu()
+    {
+        Samples = 1;
+        DiffuseBounces = 2;
+        SpecularBounces = 2;
+        TransmissionBounces = 2;
+        Exposure = 0f;
+        Frame = 0;
+        IsMoving = 0;
+        VisualizeBvh = 0;
+    }
 }
 
 [StructLayout(LayoutKind.Sequential, Size = 48)]
@@ -155,6 +176,20 @@ internal struct EnvironmentDataGpu
     public int Pad0;
     public int Pad1;
     public int Pad2;
+
+    public EnvironmentDataGpu()
+    {
+        Color = Vector3.One;
+        Intensity = 1f;
+        TextureIndex = -1;
+        CdfTextureIndex = -1;
+        Rotation = 0f;
+        Exposure = 2f;
+        Visible = 1;
+        Pad0 = 0;
+        Pad1 = 0;
+        Pad2 = 0;
+    }
 }
 
 [StructLayout(LayoutKind.Sequential, Size = 64)]
@@ -168,6 +203,18 @@ internal struct CameraDataGpu
     public float FocalLength;
     public Vector3 Vertical;
     public float BokehBias;
+
+    public CameraDataGpu()
+    {
+        Position = new Vector3(0f, 0f, -2f);
+        Aperture = 0f;
+        Direction = new Vector3(0f, 0f, 1f);
+        FocusDistance = 4f;
+        Horizontal = new Vector3(1f, 0f, 0f);
+        FocalLength = 50f;
+        Vertical = new Vector3(0f, 1f, 0f);
+        BokehBias = 1f;
+    }
 }
 
 [StructLayout(LayoutKind.Sequential, Size = 144)]
@@ -176,6 +223,13 @@ internal struct PushConstantsDataGpu
     public PushDataGpu Push;
     public CameraDataGpu Camera;
     public EnvironmentDataGpu Environment;
+
+    public PushConstantsDataGpu()
+    {
+        Push = new PushDataGpu();
+        Camera = new CameraDataGpu();
+        Environment = new EnvironmentDataGpu();
+    }
 }
 
 internal static class GpuStructLayoutValidator

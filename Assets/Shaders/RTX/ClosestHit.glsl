@@ -8,11 +8,27 @@
 
 #include "../SharedStructs.h"
 #include "../Bindings.glsl"
-#include "../PathTracing/ShadeClosestHit.glsl"
 
 // Payload and Attributes
 layout(location = 0) rayPayloadInEXT Payload payload;
+layout(location = 1) rayPayloadEXT uint shadowPayload;
 hitAttributeEXT vec3 attribs;
+
+layout (push_constant) uniform PushConstants {
+    PushConstantsData pushConstants;
+};
+
+bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMax) {
+   shadowPayload = 1u;
+   const uint shadowFlags = gl_RayFlagsTerminateOnFirstHitEXT
+       | gl_RayFlagsOpaqueEXT
+       | gl_RayFlagsSkipClosestHitShaderEXT;
+   // Miss index 1 points to RTX/ShadowMiss.glsl
+   traceRayEXT(topLevelAS, shadowFlags, 0xFF, 0, 0, 1, rayOrigin, 0.001, rayDirection, tMax, 1);
+   return shadowPayload != 0u;
+}
+
+#include "../PathTracing/ShadeClosestHit.glsl"
 
 void main() {
    const MeshAddresses mesh = meshes[gl_InstanceCustomIndexEXT];

@@ -110,6 +110,9 @@ internal static class BvhBuilder
         var bestSplitBin = 0;
         var bestCost = float.MaxValue;
         var parentArea = SurfaceArea(in nodeBounds);
+        Span<AabbGpu> binBounds = stackalloc AabbGpu[SahBins];
+        Span<int> binCounts = stackalloc int[SahBins];
+        Span<float> rightArea = stackalloc float[SahBins - 1];
 
         for (var axis = 0; axis < 3; axis++)
         {
@@ -119,8 +122,7 @@ internal static class BvhBuilder
             if (range < 1e-6f)
                 continue;
 
-            Span<AabbGpu> binBounds = stackalloc AabbGpu[SahBins];
-            Span<int> binCounts = stackalloc int[SahBins];
+            binCounts.Clear();
             for (var i = 0; i < SahBins; i++)
                 binBounds[i] = CreateEmptyAabb();
 
@@ -133,7 +135,6 @@ internal static class BvhBuilder
                 Expand(ref binBounds[bin], primitiveInfos[i].Bounds);
             }
 
-            Span<float> rightArea = stackalloc float[SahBins - 1];
             var rightBox = CreateEmptyAabb();
             for (var i = SahBins - 1; i > 0; i--)
             {

@@ -437,10 +437,10 @@ public sealed unsafe class Context : IDisposable
 
     private static bool IsValidationEnabledInThisBuild()
     {
-#if DEBUG
-        return true;
+#if RELEASE
+        return false;
 #else
-        return Environment.GetEnvironmentVariable("UVUMAP_ENABLE_VK_VALIDATION") == "1";
+        return true;
 #endif
     }
 

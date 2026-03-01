@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Avalonia;
 using Serilog;
 using Silk.NET.Vulkan;
 
@@ -8,10 +9,11 @@ namespace UniversalUmap.Rendering;
 
 public sealed class Scene : IDisposable, IScene
 {
-    private const string DefaultCubeMeshName = "DefaultCube";
-    private const string DefaultCubeInstanceName = "DefaultCubeInstance";
     private const int MaxPersistentMeshCacheEntries = 20000;
     private readonly Context context;
+    private readonly PerspectiveCamera camera;
+    private readonly List<ISceneTickable> tickables = [];
+    private readonly object syncRoot = new();
     private readonly List<TextureAsset> textures = [];
     private readonly List<MeshAsset> meshAssets = [];
     private readonly List<MeshInstance> meshInstances = [];
@@ -21,40 +23,68 @@ public sealed class Scene : IDisposable, IScene
     private readonly HashSet<string> meshInstanceNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MeshAsset> persistentMeshCache = new(StringComparer.OrdinalIgnoreCase);
     private SceneDirtyFlags dirtyFlags;
-    private const float CameraEpsilon = 0.0001f;
 
     public ulong Version { get; private set; }
+    public int SelectedInstanceIndex { get; private set; } = -1;
+    public MeshInstance? SelectedInstance =>
+        SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
+            ? meshInstances[SelectedInstanceIndex]
+            : null;
 
     public IReadOnlyList<TextureAsset> Textures => textures;
     public IReadOnlyList<MeshAsset> MeshAssets => meshAssets;
     public IReadOnlyList<MeshInstance> MeshInstances => meshInstances;
-    internal EnvironmentDataGpu Environment { get; private set; } = new()
-    {
-        Color = Vector3.One,
-        Intensity = 1f,
-        TextureIndex = -1,
-        CdfTextureIndex = -1,
-        Rotation = 0f,
-        Exposure = 2f,
-        Visible = 1
-    };
-    internal CameraDataGpu Camera { get; private set; } = new()
-    {
-        Position = new Vector3(0f, 0f, -2f),
-        Direction = new Vector3(0f, 0f, 1f),
-        Horizontal = new Vector3(1f, 0f, 0f),
-        Vertical = new Vector3(0f, 1f, 0f),
-        FocalLength = 50f,
-        FocusDistance = 4f,
-        Aperture = 0f,
-        BokehBias = 1f
-    };
+    internal EnvironmentDataGpu Environment { get; private set; } = new();
+    internal CameraDataGpu Camera { get; private set; } = new();
     internal int CameraIsMoving { get; private set; }
+    internal object SyncRoot => syncRoot;
+    internal PerspectiveCamera CameraController => camera;
+    internal event Action? CameraChanged;
 
-    public Scene(Context context)
+    internal Scene(Context context, Input input)
     {
         this.context = context;
+        camera = new PerspectiveCamera(input);
+        RegisterTickable(camera);
         //TryCreateDefaultCube();
+    }
+
+    public void RegisterTickable(ISceneTickable tickable)
+    {
+        if (tickable is null)
+            throw new ArgumentNullException(nameof(tickable));
+
+        if (!tickables.Contains(tickable))
+            tickables.Add(tickable);
+    }
+
+    public void UnregisterTickable(ISceneTickable tickable)
+    {
+        if (tickable is null)
+            throw new ArgumentNullException(nameof(tickable));
+        tickables.Remove(tickable);
+    }
+
+    public void Update(PixelSize renderSize, float deltaTimeSeconds)
+    {
+        for (var i = 0; i < tickables.Count; i++)
+            tickables[i].Tick(this, renderSize, deltaTimeSeconds);
+    }
+
+    public T Mutate<T>(Func<Scene, T> mutate)
+    {
+        if (mutate is null)
+            throw new ArgumentNullException(nameof(mutate));
+        lock (syncRoot)
+            return mutate(this);
+    }
+
+    public void Mutate(Action<Scene> mutate)
+    {
+        if (mutate is null)
+            throw new ArgumentNullException(nameof(mutate));
+        lock (syncRoot)
+            mutate(this);
     }
 
     public TextureAsset Add(TextureAsset texture)
@@ -128,6 +158,22 @@ public sealed class Scene : IDisposable, IScene
         return Add(MeshInstance.Create(this, name, mesh, transform));
     }
 
+    public void SelectInstance(int instanceIndex)
+    {
+        if (instanceIndex < 0 || instanceIndex >= meshInstances.Count)
+        {
+            SelectedInstanceIndex = -1;
+            return;
+        }
+
+        SelectedInstanceIndex = instanceIndex;
+    }
+
+    public void ClearSelection()
+    {
+        SelectedInstanceIndex = -1;
+    }
+
     public void SetEnvironment(TextureAsset texture)
     {
         if (texture.Index < 0)
@@ -139,33 +185,22 @@ public sealed class Scene : IDisposable, IScene
         SetDirty(SceneDirtyFlags.Accumulation);
     }
 
-
-    public MeshAsset CreateDefaultCube()
+    public void TryLoadDefaultEnvironment()
     {
-        var mesh = MeshAsset.CreateCube(context, "DefaultCube");
+        const string hdriFileName = "autumn_field_puresky_4k.hdr";
+        if (!EmbeddedAssets.TryReadByFileName(hdriFileName, out var embeddedHdr))
+            return;
 
         try
         {
-            Add(mesh);
-            CreateMeshInstance(mesh, "DefaultCubeInstance", Matrix4x4.Identity);
-            return mesh;
-        }
-        catch
-        {
-            mesh.Dispose();
-            throw;
-        }
-    }
-
-    private void TryCreateDefaultCube()
-    {
-        try
-        {
-            CreateDefaultCube();
+            var texture = TextureAsset.CreateHdr(context, hdriFileName, embeddedHdr);
+            Add(texture);
+            SetEnvironment(texture);
+            Log.Information("Loaded default environment from embedded asset '{HdrFileName}'.", hdriFileName);
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to create default cube test mesh.");
+            Log.Warning(ex, "Failed to load default environment map.");
         }
     }
 
@@ -173,6 +208,8 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearGeometry(bool keepDefaultTestCube = false)
     {
+        SelectedInstanceIndex = -1;
+
         if (!keepDefaultTestCube)
         {
             foreach (var mesh in meshAssets)
@@ -194,18 +231,12 @@ public sealed class Scene : IDisposable, IScene
 
         for (var i = meshInstances.Count - 1; i >= 0; i--)
         {
-            if (!string.Equals(meshInstances[i].Name, DefaultCubeInstanceName, StringComparison.Ordinal))
-            {
-                meshInstanceNames.Remove(meshInstances[i].Name);
-                meshInstances.RemoveAt(i);
-            }
+            meshInstanceNames.Remove(meshInstances[i].Name);
+            meshInstances.RemoveAt(i);
         }
 
         for (var i = meshAssets.Count - 1; i >= 0; i--)
         {
-            if (string.Equals(meshAssets[i].Name, DefaultCubeMeshName, StringComparison.Ordinal))
-                continue;
-
             var mesh = meshAssets[i];
             meshAssetsByName.Remove(mesh.Name);
             meshAssetSet.Remove(mesh);
@@ -233,11 +264,12 @@ public sealed class Scene : IDisposable, IScene
     internal void SetCameraData(in CameraDataGpu camera, bool isMoving)
     {
         CameraIsMoving = isMoving ? 1 : 0;
-        if (CameraEquals(Camera, camera))
+        if (PerspectiveCamera.IsCameraDataEquivalent(Camera, camera))
             return;
 
         Camera = camera;
         SetDirty(SceneDirtyFlags.Accumulation);
+        CameraChanged?.Invoke();
     }
 
     void IScene.SetAccumulationDirty()
@@ -342,15 +374,4 @@ public sealed class Scene : IDisposable, IScene
         dirtyFlags = SceneDirtyFlags.None;
     }
 
-    private static bool CameraEquals(in CameraDataGpu a, in CameraDataGpu b)
-    {
-        return Vector3.DistanceSquared(a.Position, b.Position) <= CameraEpsilon * CameraEpsilon &&
-               Vector3.DistanceSquared(a.Direction, b.Direction) <= CameraEpsilon * CameraEpsilon &&
-               Vector3.DistanceSquared(a.Horizontal, b.Horizontal) <= CameraEpsilon * CameraEpsilon &&
-               Vector3.DistanceSquared(a.Vertical, b.Vertical) <= CameraEpsilon * CameraEpsilon &&
-               MathF.Abs(a.FocalLength - b.FocalLength) <= CameraEpsilon &&
-               MathF.Abs(a.FocusDistance - b.FocusDistance) <= CameraEpsilon &&
-               MathF.Abs(a.Aperture - b.Aperture) <= CameraEpsilon &&
-               MathF.Abs(a.BokehBias - b.BokehBias) <= CameraEpsilon;
-    }
 }

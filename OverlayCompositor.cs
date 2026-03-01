@@ -1,25 +1,34 @@
 using System;
+using System.Runtime.InteropServices;
 using Serilog;
 using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering;
 
-public sealed unsafe class Tonemapper : IDisposable
+public sealed unsafe class OverlayCompositor : IDisposable
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct OverlayPushConstants
+    {
+        public uint SelectedInstanceId;
+    }
+
     private readonly Context context;
     private readonly DescriptorPool descriptorPool;
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
-    private ulong lastInputViewHandle;
+    private ulong lastColorInputViewHandle;
+    private ulong lastCryptoInputViewHandle;
+    private ulong lastPositionInputViewHandle;
     private ulong lastOutputViewHandle;
     private bool hasLoggedDispatch;
 
-    public Tonemapper(Context context)
+    public OverlayCompositor(Context context)
     {
         this.context = context;
-        var shaderBytes = EmbeddedAssets.ReadByFileName("Tonemapper.spv");
+        var shaderBytes = EmbeddedAssets.ReadByFileName("OverlayComposite.spv");
         using var mainName = new ByteString("main");
 
         ShaderModule computeModule;
@@ -34,19 +43,21 @@ public sealed unsafe class Tonemapper : IDisposable
             context.Api.CreateShaderModule(context.Device, in shaderInfo, default, out computeModule).ThrowOnError();
         }
 
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[2];
+        var layoutBindings = stackalloc DescriptorSetLayoutBinding[4];
         layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
 
         var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 2,
+            BindingCount = 4,
             PBindings = layoutBindings
         };
         context.Api.CreateDescriptorSetLayout(context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var poolSize = new DescriptorPoolSize(DescriptorType.StorageImage, 2);
+        var poolSize = new DescriptorPoolSize(DescriptorType.StorageImage, 4);
         var descriptorPoolInfo = new DescriptorPoolCreateInfo
         {
             SType = StructureType.DescriptorPoolCreateInfo,
@@ -71,6 +82,14 @@ public sealed unsafe class Tonemapper : IDisposable
             SetLayoutCount = 1,
             PSetLayouts = &descriptorSetLayoutLocal
         };
+        var pushConstantRange = new PushConstantRange
+        {
+            StageFlags = ShaderStageFlags.ComputeBit,
+            Offset = 0,
+            Size = (uint)sizeof(OverlayPushConstants)
+        };
+        pipelineLayoutInfo.PushConstantRangeCount = 1;
+        pipelineLayoutInfo.PPushConstantRanges = &pushConstantRange;
         context.Api.CreatePipelineLayout(context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
 
         var stageInfo = new PipelineShaderStageCreateInfo
@@ -94,20 +113,34 @@ public sealed unsafe class Tonemapper : IDisposable
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
         pipeline = pipelineLocal;
-        Log.Information("Tonemapper pipeline created.");
+        Log.Information("OverlayCompositor pipeline created.");
     }
 
-    public void Apply(ImageResource inputImage, ImageResource outputImage)
+    public void Record(
+        CommandBufferPool.PooledCommandBuffer commandBuffer,
+        ImageResource colorInputImage,
+        ImageResource cryptoInputImage,
+        ImageResource positionInputImage,
+        uint selectedInstanceId,
+        ImageResource outputImage)
     {
-        UpdateBindings(inputImage, outputImage);
+        UpdateBindings(colorInputImage, cryptoInputImage, positionInputImage, outputImage);
 
-        var commandBuffer = context.Pool.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
-        inputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        colorInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        cryptoInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        positionInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
         outputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderWriteBit);
 
         context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipeline);
         context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipelineLayout, 0, 1, in descriptorSet, 0, null);
+        var pushConstants = new OverlayPushConstants { SelectedInstanceId = selectedInstanceId };
+        context.Api.CmdPushConstants(
+            commandBuffer.InternalHandle,
+            pipelineLayout,
+            ShaderStageFlags.ComputeBit,
+            0,
+            (uint)sizeof(OverlayPushConstants),
+            &pushConstants);
 
         const uint groupSize = 16;
         var width = (uint)Math.Max(1, outputImage.Size.Width);
@@ -116,21 +149,29 @@ public sealed unsafe class Tonemapper : IDisposable
         var groupCountY = (height + groupSize - 1) / groupSize;
         if (!hasLoggedDispatch)
         {
-            Log.Information("Tonemapper dispatch: {GroupCountX}x{GroupCountY} groups for {Width}x{Height}.", groupCountX, groupCountY, width, height);
+            Log.Information("OverlayCompositor dispatch: {GroupCountX}x{GroupCountY} groups for {Width}x{Height}.", groupCountX, groupCountY, width, height);
             hasLoggedDispatch = true;
         }
         context.Api.CmdDispatch(commandBuffer.InternalHandle, groupCountX, groupCountY, 1);
-        commandBuffer.Submit();
     }
 
-    private void UpdateBindings(ImageResource inputImage, ImageResource outputImage)
+    private void UpdateBindings(
+        ImageResource colorInputImage,
+        ImageResource cryptoInputImage,
+        ImageResource positionInputImage,
+        ImageResource outputImage)
     {
-        if (lastInputViewHandle == inputImage.ViewHandle && lastOutputViewHandle == outputImage.ViewHandle)
+        if (lastColorInputViewHandle == colorInputImage.ViewHandle &&
+            lastCryptoInputViewHandle == cryptoInputImage.ViewHandle &&
+            lastPositionInputViewHandle == positionInputImage.ViewHandle &&
+            lastOutputViewHandle == outputImage.ViewHandle)
             return;
 
-        var inputInfo = new DescriptorImageInfo(default, new ImageView(inputImage.ViewHandle), ImageLayout.General);
+        var colorInputInfo = new DescriptorImageInfo(default, new ImageView(colorInputImage.ViewHandle), ImageLayout.General);
+        var cryptoInputInfo = new DescriptorImageInfo(default, new ImageView(cryptoInputImage.ViewHandle), ImageLayout.General);
+        var positionInputInfo = new DescriptorImageInfo(default, new ImageView(positionInputImage.ViewHandle), ImageLayout.General);
         var outputInfo = new DescriptorImageInfo(default, new ImageView(outputImage.ViewHandle), ImageLayout.General);
-        var writes = stackalloc WriteDescriptorSet[2];
+        var writes = stackalloc WriteDescriptorSet[4];
         writes[0] = new WriteDescriptorSet
         {
             SType = StructureType.WriteDescriptorSet,
@@ -138,7 +179,7 @@ public sealed unsafe class Tonemapper : IDisposable
             DstBinding = 0,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &inputInfo
+            PImageInfo = &colorInputInfo
         };
         writes[1] = new WriteDescriptorSet
         {
@@ -147,13 +188,33 @@ public sealed unsafe class Tonemapper : IDisposable
             DstBinding = 1,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &cryptoInputInfo
+        };
+        writes[2] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 2,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &positionInputInfo
+        };
+        writes[3] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 3,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &outputInfo
         };
 
-        context.Api.UpdateDescriptorSets(context.Device, 2, writes, 0, null);
-        lastInputViewHandle = inputImage.ViewHandle;
+        context.Api.UpdateDescriptorSets(context.Device, 4, writes, 0, null);
+        lastColorInputViewHandle = colorInputImage.ViewHandle;
+        lastCryptoInputViewHandle = cryptoInputImage.ViewHandle;
+        lastPositionInputViewHandle = positionInputImage.ViewHandle;
         lastOutputViewHandle = outputImage.ViewHandle;
-        Log.Information("Tonemapper image bindings updated.");
+        Log.Information("OverlayCompositor image bindings updated (color/crypto/position/output).");
     }
 
     public void Dispose()
