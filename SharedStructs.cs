@@ -143,7 +143,7 @@ internal struct PushDataGpu
 
     public PushDataGpu()
     {
-        Samples = 8;
+        Samples = 1;
         DiffuseBounces = 2;
         SpecularBounces = 2;
         TransmissionBounces = 2;

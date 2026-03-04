@@ -136,7 +136,7 @@ public sealed class DebugOverlay : Control
         var camera = source.CameraPositionDebug;
         var lines = new[]
         {
-            $"FPS: {fps:0.0}",
+            //$"FPS: {fps:0.0}",
             $"Selected: {source.SelectedInstanceName}",
             $"Arcball Pivot: ({pivot.X:0.0}, {pivot.Y:0.0}, {pivot.Z:0.0})",
             $"Camera: ({camera.X:0.0}, {camera.Y:0.0}, {camera.Z:0.0})"

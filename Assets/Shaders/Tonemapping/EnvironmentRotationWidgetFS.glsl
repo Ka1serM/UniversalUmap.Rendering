@@ -14,7 +14,6 @@ layout(set = 0, binding = 7) uniform sampler2D textureSamplers[];
 void main()
 {
     vec2 uv = vUv * 2.0 - 1.0;
-    uv.y = -uv.y;
 
     float rr = dot(uv, uv);
     float r = sqrt(max(rr, 0.0));

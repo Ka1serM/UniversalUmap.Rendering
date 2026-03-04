@@ -17,6 +17,7 @@ public abstract class VulkanShaderControl : Control
     private CompositionSurfaceVisual? visual;
     private Compositor? compositor;
     private bool updateQueued;
+    private bool frameDirty = true;
     private bool initialized;
     private readonly Action update;
     private Task pendingDisposeTask = Task.CompletedTask;
@@ -70,7 +71,7 @@ public abstract class VulkanShaderControl : Control
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         if (change.Property == BoundsProperty)
-            QueueNextFrame();
+            InvalidateGpuFrame();
 
         base.OnPropertyChanged(change);
     }
@@ -108,7 +109,7 @@ public abstract class VulkanShaderControl : Control
             var surface = new VulkanSurface(rendererLease.Renderer.Context, interop, drawingSurface);
             resources = new GraphicsResources(rendererLease, surface);
             initialized = true;
-            QueueNextFrame();
+            InvalidateGpuFrame();
         }
         catch (Exception ex)
         {
@@ -121,6 +122,7 @@ public abstract class VulkanShaderControl : Control
     {
         initialized = false;
         updateQueued = false;
+        frameDirty = true;
         SharedRendererContext.Reset();
         FreeGraphicsResources();
         Initialize();
@@ -156,12 +158,13 @@ public abstract class VulkanShaderControl : Control
         var root = this.GetVisualRoot();
         if (root is null || visual is null || resources is null)
             return;
+        if (!frameDirty)
+            return;
 
         var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
         visual.Size = new(Bounds.Width, Bounds.Height);
         if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
         {
-            QueueNextFrame();
             return;
         }
 
@@ -175,6 +178,7 @@ public abstract class VulkanShaderControl : Control
 
             using (presentScope)
                 OnRasterDraw(resources.Renderer, image);
+            frameDirty = false;
         }
         catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
         {
@@ -188,13 +192,17 @@ public abstract class VulkanShaderControl : Control
             QueueNextFrame();
             return;
         }
+    }
 
+    protected void InvalidateGpuFrame()
+    {
+        frameDirty = true;
         QueueNextFrame();
     }
 
     private void QueueNextFrame()
     {
-        if (!initialized || updateQueued || compositor is null)
+        if (!initialized || !frameDirty || updateQueued || compositor is null)
             return;
 
         updateQueued = true;

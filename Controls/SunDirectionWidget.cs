@@ -18,8 +18,10 @@ public sealed class SunDirectionWidget : VulkanShaderControl
     private const double RotateGizmoRightInset = 15d;
     private const double BottomInset = 15d;
     private const double SunWidgetSize = RotateGizmoSize * 0.5d;
+    private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
+    private static readonly Vector3 LocalRight = Vector3.UnitX;
+    private static readonly Vector3 LocalSunDirection = Vector3.UnitY;
 
-    private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     [StructLayout(LayoutKind.Sequential)]
     private struct PushConstants
     {
@@ -28,9 +30,11 @@ public sealed class SunDirectionWidget : VulkanShaderControl
 
     private VulkanRasterShaderProgram? shaderProgram;
     private Context? shaderContext;
+    private VulkanViewer? subscribedSource;
 
     private readonly ControlCaptureApi capture;
     private Vector3 direction;
+    private Quaternion directionRotation = Quaternion.Identity;
     private bool hasDirectionFromSource;
     private bool suppressUiEvents;
 
@@ -58,14 +62,11 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         AddHandler(PointerMovedEvent, OnPointerMovedRouted, RoutingStrategies.Tunnel, handledEventsToo: true);
         AddHandler(PointerReleasedEvent, OnPointerReleasedRouted, RoutingStrategies.Tunnel, handledEventsToo: true);
         AddHandler(PointerCaptureLostEvent, OnPointerCaptureLostRouted, RoutingStrategies.Tunnel, handledEventsToo: true);
-
-        refreshTimer.Tick += (_, _) => RefreshFromSource();
-        refreshTimer.Start();
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        refreshTimer.Stop();
+        UnsubscribeFromSource(subscribedSource);
         capture.End();
         shaderProgram?.Dispose();
         shaderProgram = null;
@@ -77,6 +78,7 @@ public sealed class SunDirectionWidget : VulkanShaderControl
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
+        SubscribeToSource(Source);
         RefreshFromSource();
     }
 
@@ -84,7 +86,13 @@ public sealed class SunDirectionWidget : VulkanShaderControl
     {
         base.OnPropertyChanged(change);
         if (change.Property == SourceProperty)
+        {
+            if (change.OldValue is VulkanViewer oldSource)
+                UnsubscribeFromSource(oldSource);
+            if (change.NewValue is VulkanViewer newSource)
+                SubscribeToSource(newSource);
             RefreshFromSource();
+        }
     }
 
     protected override Size MeasureOverride(Size availableSize) => new(SunWidgetSize, SunWidgetSize);
@@ -114,8 +122,14 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         if (source is null || !source.TryGetEnvironmentSettings(out var settings))
             return;
 
+        var normalizedDirection = NormalizeOrDefault(settings.DirectionalDirection);
         suppressUiEvents = true;
-        direction = settings.DirectionalDirection;
+        if (Vector3.DistanceSquared(direction, normalizedDirection) > 0.000001f || !hasDirectionFromSource)
+        {
+            direction = normalizedDirection;
+            directionRotation = BuildRotationFromDirection(direction);
+            InvalidateGpuFrame();
+        }
         hasDirectionFromSource = true;
         suppressUiEvents = false;
     }
@@ -168,8 +182,10 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         var pitch = (float)(-delta.Y * 0.01);
         if (Math.Abs(yaw) > float.Epsilon || Math.Abs(pitch) > float.Epsilon)
         {
-            direction = ApplyOrbitDelta(direction, yaw, pitch);
+            directionRotation = ApplyOrbitDelta(directionRotation, yaw, pitch);
+            direction = NormalizeOrDefault(Vector3.Transform(LocalSunDirection, directionRotation));
             Log.Information("SunDirectionWidget rotate orbit direction={Direction}", direction);
+            InvalidateGpuFrame();
 
             if (!suppressUiEvents)
                 Source?.SetDirectionalLightDirection(direction);
@@ -214,24 +230,17 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         return (x * x) + (y * y) <= 1f;
     }
 
-    private static Vector3 ApplyOrbitDelta(Vector3 currentDirection, float yaw, float pitch)
+    private static Quaternion ApplyOrbitDelta(Quaternion currentRotation, float yaw, float pitch)
     {
-        if (currentDirection.LengthSquared() < 1e-10f)
-            currentDirection = new Vector3(0f, 1f, 0f);
-
-        var yawQ = Quaternion.CreateFromAxisAngle(Vector3.UnitY, yaw);
-        var yawed = Vector3.Transform(currentDirection, yawQ);
-
-        var right = Vector3.Cross(yawed, Vector3.UnitY);
-        if (right.LengthSquared() < 1e-8f)
-            right = Vector3.UnitX;
+        var yawQ = Quaternion.CreateFromAxisAngle(Vector3.Normalize(WorldUp), yaw);
+        var right = Vector3.Transform(LocalRight, currentRotation);
+        if (right.LengthSquared() < 0.000001f)
+            right = LocalRight;
         else
-        {
-            right /= MathF.Sqrt(right.LengthSquared());
-        }
+            right = Vector3.Normalize(right);
 
         var pitchQ = Quaternion.CreateFromAxisAngle(right, pitch);
-        return Vector3.Transform(yawed, pitchQ);
+        return Quaternion.Normalize(yawQ * pitchQ * currentRotation);
     }
 
     private void EnsureProgram(Context context)
@@ -249,5 +258,84 @@ public sealed class SunDirectionWidget : VulkanShaderControl
             ShaderStageFlags.FragmentBit,
             (uint)Marshal.SizeOf<PushConstants>(),
             enableAlphaBlending: true);
+    }
+
+    private void SubscribeToSource(VulkanViewer? source)
+    {
+        if (ReferenceEquals(subscribedSource, source))
+            return;
+
+        UnsubscribeFromSource(subscribedSource);
+        subscribedSource = source;
+        if (source is null)
+            return;
+
+        source.EnvironmentSettingsChanged += OnEnvironmentSettingsChanged;
+    }
+
+    private void UnsubscribeFromSource(VulkanViewer? source)
+    {
+        if (source is null)
+            return;
+
+        source.EnvironmentSettingsChanged -= OnEnvironmentSettingsChanged;
+        if (ReferenceEquals(subscribedSource, source))
+            subscribedSource = null;
+    }
+
+    private void OnEnvironmentSettingsChanged(VulkanViewer.EnvironmentSettings settings)
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(() => OnEnvironmentSettingsChanged(settings));
+            return;
+        }
+
+        var normalizedDirection = NormalizeOrDefault(settings.DirectionalDirection);
+        suppressUiEvents = true;
+        if (Vector3.DistanceSquared(direction, normalizedDirection) > 0.000001f || !hasDirectionFromSource)
+        {
+            direction = normalizedDirection;
+            directionRotation = BuildRotationFromDirection(direction);
+            hasDirectionFromSource = true;
+            InvalidateGpuFrame();
+        }
+        else
+        {
+            hasDirectionFromSource = true;
+        }
+        suppressUiEvents = false;
+    }
+
+    private static Vector3 NormalizeOrDefault(Vector3 v)
+    {
+        if (v.LengthSquared() <= 0.000001f)
+            return LocalSunDirection;
+
+        return Vector3.Normalize(v);
+    }
+
+    private static Quaternion BuildRotationFromDirection(Vector3 direction)
+    {
+        var from = Vector3.Normalize(LocalSunDirection);
+        var to = NormalizeOrDefault(direction);
+        var dot = Math.Clamp(Vector3.Dot(from, to), -1f, 1f);
+
+        if (dot > 0.9999f)
+            return Quaternion.Identity;
+
+        if (dot < -0.9999f)
+        {
+            var axis = Vector3.Cross(from, Vector3.UnitX);
+            if (axis.LengthSquared() < 0.000001f)
+                axis = Vector3.Cross(from, Vector3.UnitZ);
+
+            axis = Vector3.Normalize(axis);
+            return Quaternion.CreateFromAxisAngle(axis, MathF.PI);
+        }
+
+        var rotationAxis = Vector3.Normalize(Vector3.Cross(from, to));
+        var angle = MathF.Acos(dot);
+        return Quaternion.CreateFromAxisAngle(rotationAxis, angle);
     }
 }

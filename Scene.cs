@@ -212,7 +212,7 @@ public sealed class Scene : IDisposable, IScene
 
     public void TryLoadDefaultEnvironment()
     {
-        const string hdriFileName = "autumn_field_puresky_4k.hdr";
+        const string hdriFileName = "golden_gate_hills_4k.hdr";
         if (!EmbeddedAssets.TryReadByFileName(hdriFileName, out var embeddedHdr))
             return;
 

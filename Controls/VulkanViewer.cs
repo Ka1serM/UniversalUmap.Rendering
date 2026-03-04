@@ -60,6 +60,7 @@ public class VulkanViewer : CapturingControlBase
 
     public event Action? FrameRendered;
     public event Action? DebugOverlayToggleRequested;
+    public event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
 
     public string SelectedInstanceName => resources?.Renderer.Scene.SelectedInstance?.Name ?? "<none>";
     public Vector3 CameraPositionDebug => resources?.Renderer.Scene.CameraController.Position ?? Vector3.Zero;
@@ -215,6 +216,7 @@ public class VulkanViewer : CapturingControlBase
             var surface = new VulkanSurface(rendererLease.Renderer.Context, interop, drawingSurface);
             resources = new GraphicsResources(rendererLease, surface);
             initialized = true;
+            RaiseEnvironmentSettingsChanged();
             QueueNextFrame();
         }
         catch (Exception ex)
@@ -362,12 +364,17 @@ public class VulkanViewer : CapturingControlBase
         if (renderer is null)
             return;
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            if (MathF.Abs(env.DirectionalIntensity - intensity) <= 0.0001f)
+                return false;
             env.DirectionalIntensity = intensity;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
     }
 
     public void SetDirectionalLightDirection(Vector3 direction)
@@ -380,12 +387,17 @@ public class VulkanViewer : CapturingControlBase
             ? Vector3.Normalize(direction)
             : new Vector3(0f, 1f, 0f);
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            if (Vector3.DistanceSquared(env.DirectionalDirection, normalizedDirection) <= 0.000001f)
+                return false;
             env.DirectionalDirection = normalizedDirection;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
     }
 
     public void SetEnvironmentRotation(float rotationDegrees)
@@ -394,12 +406,17 @@ public class VulkanViewer : CapturingControlBase
         if (renderer is null)
             return;
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            if (MathF.Abs(env.Rotation - rotationDegrees) <= 0.0001f)
+                return false;
             env.Rotation = rotationDegrees;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
     }
 
     public void SetEnvironmentVisibleExposure(float exposureStops)
@@ -408,12 +425,17 @@ public class VulkanViewer : CapturingControlBase
         if (renderer is null)
             return;
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            if (MathF.Abs(env.VisibleExposure - exposureStops) <= 0.0001f)
+                return false;
             env.VisibleExposure = exposureStops;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
     }
 
     public void SetEnvironmentLightingExposure(float exposureStops)
@@ -422,12 +444,17 @@ public class VulkanViewer : CapturingControlBase
         if (renderer is null)
             return;
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            if (MathF.Abs(env.LightingExposure - exposureStops) <= 0.0001f)
+                return false;
             env.LightingExposure = exposureStops;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
     }
 
     public void SetEnvironmentVisible(bool visible)
@@ -436,11 +463,25 @@ public class VulkanViewer : CapturingControlBase
         if (renderer is null)
             return;
 
-        renderer.Scene.Mutate(scene =>
+        var changed = renderer.Scene.Mutate(scene =>
         {
             var env = scene.Environment;
+            var visibleValue = visible ? 1 : 0;
+            if (env.Visible == visibleValue)
+                return false;
             env.Visible = visible ? 1 : 0;
             scene.SetEnvironmentData(env);
+            return true;
         });
+        if (changed)
+            RaiseEnvironmentSettingsChanged();
+    }
+
+    private void RaiseEnvironmentSettingsChanged()
+    {
+        if (!TryGetEnvironmentSettings(out var settings))
+            return;
+
+        EnvironmentSettingsChanged?.Invoke(settings);
     }
 }

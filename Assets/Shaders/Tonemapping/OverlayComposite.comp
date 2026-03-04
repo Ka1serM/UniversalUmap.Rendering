@@ -1,7 +1,16 @@
 #version 460
 
 #include "../SharedStructs.h"
-#include "Agx.glsl"
+#include "agx.glsl"
+#include "aces.glsl"
+#include "filmic.glsl"
+#include "lottes.glsl"
+#include "neutral.glsl"
+#include "reinhard.glsl"
+#include "reinhard2.glsl"
+#include "uchimura.glsl"
+#include "uncharted2.glsl"
+#include "unreal.glsl"
 
 layout(local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE) in;
 
@@ -13,6 +22,10 @@ layout(binding = 3, rgba8) writeonly uniform image2D outputImage;
 layout(push_constant) uniform OverlayPushConstants {
     uint selectedInstanceId;
 } pc;
+
+vec3 applyTonemap(vec3 hdrColor) {
+    return aces(hdrColor);
+}
 
 ivec2 toPickPixel(ivec2 outputPixel, ivec2 outputSize) {
     return ivec2(outputPixel.x, (outputSize.y - 1) - outputPixel.y);
@@ -39,7 +52,7 @@ void main() {
 
     vec4 hdrImage = imageLoad(inputColorImage, pixel);
 
-    vec3 color = agxPunchy(hdrImage.rgb);
+    vec3 color = applyTonemap(hdrImage.rgb);
     if (pc.selectedInstanceId == INVALID_INSTANCE) {
         imageStore(outputImage, pixel, vec4(color, hdrImage.a));
         return;
