@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using Avalonia;
 using Avalonia.Rendering.Composition;
+using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering;
 
@@ -59,6 +60,12 @@ public sealed class Renderer : IDisposable
                 target);
             commandBuffer.Submit();
         }
+    }
+
+    internal bool TryGetBindlessTextureDescriptors(out DescriptorSetLayout layout, out DescriptorSet set)
+    {
+        lock (Scene.SyncRoot)
+            return raytracer.TryGetBindlessTextureDescriptors(out layout, out set);
     }
 
     public void Dispose()

@@ -15,7 +15,7 @@ struct AABB
     float _pad1;
 };
 
-// Node is 64 bytes, aligning perfectly to GPU cache lines.
+// Scalar-packed node layout (76 bytes).
 struct  BVHNode {
     AABB leftBounds;  // 32 bytes
     AABB rightBounds; // 32 bytes
@@ -27,7 +27,6 @@ struct  BVHNode {
     // For an interior node: split axis (0=x, 1=y, 2=z)
     // For a leaf node: unused
     uint splitAxis;
-    uint _pad[7]; // Padding
 };
 
 struct PushData {
@@ -36,9 +35,11 @@ struct PushData {
 };
 
 struct EnvironmentData {
-    vec3 color; float intensity;
-    int textureIndex; int cdfTextureIndex; float rotation; float exposure;
-    int visible, _pad0, _pad1,  _pad2;
+    int textureIndex, cdfTextureIndex;
+    float rotation, visibleExposure, lightingExposure;
+    int visible;
+    vec3 directionalDirection; float directionalIntensity;
+    int _pad0, _pad1;
 };
 
 struct CameraData {
@@ -55,14 +56,14 @@ struct PushConstantsData {
 };
 
 struct Vertex {
-    vec3 position; int _pad0;
-    vec3 normal; int _pad1;
-    vec3 tangent; int _pad2;
-    vec2 uv; int _pad3, _pad4;
+    vec3 position;
+    vec3 normal;
+    vec3 tangent;
+    vec2 uv;
 };
 
 struct Face {
-    int materialIndex, _pad0, _pad1, _pad2;
+    int materialIndex;
 };
 
 struct Material {

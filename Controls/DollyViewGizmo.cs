@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.VisualTree;
 using FluentIcons.Avalonia.Fluent;
 using FluentIcons.Common;
 
@@ -19,13 +20,13 @@ public sealed class DollyViewGizmo : ContentControl
     private static readonly IBrush PressBrush = new SolidColorBrush(Color.FromArgb(220, 92, 92, 92));
 
     private readonly Border chrome;
-    private readonly PointerCaptureController capture = new();
     private readonly ScaleTransform hoverScale = new(1, 1);
+    private readonly ControlCaptureApi capture;
     private bool isHovering;
-    private Renderer? renderer;
 
     public DollyViewGizmo()
     {
+        capture = new ControlCaptureApi(this);
         Width = 38;
         Height = 38;
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
@@ -50,6 +51,12 @@ public sealed class DollyViewGizmo : ContentControl
         Content = chrome;
     }
 
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        capture.End();
+        base.OnDetachedFromVisualTree(e);
+    }
+
     protected override void OnPointerEntered(PointerEventArgs e)
     {
         base.OnPointerEntered(e);
@@ -69,10 +76,11 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        var props = e.GetCurrentPoint(this).Properties;
+        if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
-        capture.Begin(this, e.Pointer);
+        capture.Begin(e.Pointer, e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
     }
@@ -83,20 +91,21 @@ public sealed class DollyViewGizmo : ContentControl
         if (!capture.IsActive)
             return;
 
-        if (capture.TryConsumeWarpSuppressedMove())
+        if (capture.TryConsumeWarpMove())
         {
             e.Handled = true;
             return;
         }
 
-        if (!TryGetActiveRenderer(out var activeRenderer))
+        if (!RendererHost.TryGetRenderer(out var activeRenderer) || activeRenderer is null)
             return;
 
-        var delta = capture.GetDeltaFromCenter(e.GetPosition(this));
+        var position = e.GetPosition(this);
+        var delta = capture.GetDelta(position);
         if (Math.Abs(delta.Y) > double.Epsilon)
             activeRenderer.Scene.Mutate(scene => scene.CameraController.Dolly((float)(-delta.Y * 0.05)));
 
-        capture.Recenter(this);
+        capture.TryWrap(position);
         e.Handled = true;
     }
 
@@ -106,7 +115,7 @@ public sealed class DollyViewGizmo : ContentControl
         if (!capture.IsActive)
             return;
 
-        capture.End(this, e.Pointer);
+        capture.End(e.Pointer);
         isHovering = Bounds.Contains(e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
@@ -115,7 +124,15 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End(this);
+        capture.End();
+        isHovering = false;
+        ApplyVisualState();
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        capture.End();
         isHovering = false;
         ApplyVisualState();
     }
@@ -136,18 +153,4 @@ public sealed class DollyViewGizmo : ContentControl
         hoverScale.ScaleY = s;
     }
 
-    private bool TryGetActiveRenderer(out Renderer activeRenderer)
-    {
-        if (RendererHost.TryGetRenderer(out var resolved) && resolved is not null)
-        {
-            if (!ReferenceEquals(renderer, resolved))
-                renderer = resolved;
-            activeRenderer = resolved;
-            return true;
-        }
-
-        renderer = null;
-        activeRenderer = null!;
-        return false;
-    }
 }

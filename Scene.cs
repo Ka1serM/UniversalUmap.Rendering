@@ -174,13 +174,38 @@ public sealed class Scene : IDisposable, IScene
         SelectedInstanceIndex = -1;
     }
 
-    public void SetEnvironment(TextureAsset texture)
+    public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null)
     {
         if (texture.Index < 0)
             Add(texture);
+        if (cdfTexture is not null && cdfTexture.Index < 0)
+            Add(cdfTexture);
 
         var environment = Environment;
         environment.TextureIndex = texture.Index;
+        environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
+        Environment = environment;
+        SetDirty(SceneDirtyFlags.Accumulation);
+    }
+
+    public void SetEnvironmentVisibleExposure(float exposureStops)
+    {
+        var environment = Environment;
+        environment.VisibleExposure = exposureStops;
+        Environment = environment;
+        SetDirty(SceneDirtyFlags.Accumulation);
+    }
+
+    public void SetEnvironmentLightingExposure(float exposureStops)
+    {
+        var environment = Environment;
+        environment.LightingExposure = exposureStops;
+        Environment = environment;
+        SetDirty(SceneDirtyFlags.Accumulation);
+    }
+
+    internal void SetEnvironmentData(in EnvironmentDataGpu environment)
+    {
         Environment = environment;
         SetDirty(SceneDirtyFlags.Accumulation);
     }
@@ -193,9 +218,10 @@ public sealed class Scene : IDisposable, IScene
 
         try
         {
-            var texture = TextureAsset.CreateHdr(context, hdriFileName, embeddedHdr);
-            Add(texture);
-            SetEnvironment(texture);
+            var textureSet = TextureAsset.CreateHdrWithCdf(context, hdriFileName, embeddedHdr);
+            Add(textureSet.Environment);
+            Add(textureSet.Cdf);
+            SetEnvironment(textureSet.Environment, textureSet.Cdf);
             Log.Information("Loaded default environment from embedded asset '{HdrFileName}'.", hdriFileName);
         }
         catch (Exception ex)

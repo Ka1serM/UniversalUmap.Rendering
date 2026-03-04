@@ -81,6 +81,79 @@ vec3 sampleUniformHemisphere(vec3 N, inout uint rngState, out float pdf) {
     return fastNormalize(T * local.x + B * local.y + N * local.z);
 }
 
+int binarySearchMarginalCdf(int cdfTextureIndex, int height, float xi) {
+    int lo = 0;
+    int hi = height - 1;
+    for (int i = 0; i < 20 && lo < hi; i++) {
+        int mid = (lo + hi) >> 1;
+        float c = texelFetch(textureSamplers[cdfTextureIndex], ivec2(0, mid), 0).g;
+        if (c < xi)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return clamp(lo, 0, height - 1);
+}
+
+int binarySearchConditionalCdf(int cdfTextureIndex, int width, int y, float xi) {
+    int lo = 0;
+    int hi = width - 1;
+    for (int i = 0; i < 20 && lo < hi; i++) {
+        int mid = (lo + hi) >> 1;
+        float c = texelFetch(textureSamplers[cdfTextureIndex], ivec2(mid, y), 0).r;
+        if (c < xi)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return clamp(lo, 0, width - 1);
+}
+
+vec3 sampleEnvironmentDirection(
+    in EnvironmentData environmentData,
+    inout uint rngState,
+    out float lightPdf)
+{
+    lightPdf = 0.0;
+    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+        return vec3(0.0);
+
+    ivec2 envSize = textureSize(textureSamplers[environmentData.textureIndex], 0);
+    if (envSize.x <= 0 || envSize.y <= 0)
+        return vec3(0.0);
+
+    float xi1 = rand(rngState);
+    float xi2 = rand(rngState);
+
+    int y = binarySearchMarginalCdf(environmentData.cdfTextureIndex, envSize.y, xi1);
+    int x = binarySearchConditionalCdf(environmentData.cdfTextureIndex, envSize.x, y, xi2);
+    vec4 cdfTexel = texelFetch(textureSamplers[environmentData.cdfTextureIndex], ivec2(x, y), 0);
+
+    float v = (float(y) + 0.5) / float(envSize.y);
+    float u = (float(x) + 0.5) / float(envSize.x);
+    float theta = v * PI;
+    float phi = (u - 0.5) * (2.0 * PI);
+    float sinTheta = max(sin(theta), EPSILON);
+
+    float uvPdf = max(cdfTexel.a, 0.0);
+    lightPdf = uvPdf / max(2.0 * PI * PI * sinTheta, EPSILON);
+
+    vec3 rotatedDir = vec3(
+        cos(phi) * sinTheta,
+        cos(theta),
+        sin(phi) * sinTheta);
+
+    // sampleEnvironmentMapColor applies +rotation before lookup.
+    // Convert sampled env-space direction back into world-space by inverse rotation.
+    float radRotation = radians(environmentData.rotation);
+    float s = sin(radRotation);
+    float c = cos(radRotation);
+    vec3 worldDir = rotatedDir;
+    worldDir.x = rotatedDir.x * c + rotatedDir.z * s;
+    worldDir.z = -rotatedDir.x * s + rotatedDir.z * c;
+    return fastNormalize(worldDir);
+}
+
 vec3 evaluateDiffuseBRDF(vec3 albedo, float metallic) {
     return (1 - metallic) * (albedo / PI);
 }
@@ -198,9 +271,10 @@ vec3 evaluateOpaqueBSDFAndPdf(
     return diffuseBRDF + specularBRDF;
 }
 
-vec3 estimateDirectEnvironment(
+vec3 estimateDirectLighting(
     vec3 worldPosition,
-    vec3 normal,
+    vec3 shadingNormal,
+    vec3 geometricNormal,
     vec3 viewDir,
     vec3 albedo,
     float specular,
@@ -210,24 +284,56 @@ vec3 estimateDirectEnvironment(
     in EnvironmentData environmentData,
     inout uint rngState
 ) {
-    float lightPdf = 0.0;
-    vec3 lightDir = sampleUniformHemisphere(normal, rngState, lightPdf);
-    float NdotL = max(dot(normal, lightDir), 0.0);
-    if (NdotL <= 0.0 || lightPdf <= 0.0)
-        return vec3(0.0);
+    vec3 directContribution = vec3(0.0);
 
-    vec3 shadowOrigin = worldPosition + normal * 0.001;
+    // Delta directional light: evaluate explicitly (Dirac light), no light-PDF sampling needed.
+    if (hasDirectionalLight(environmentData)) {
+        vec3 sunDir = getDirectionalLightDirection(environmentData);
+        float NdotLGeomSun = max(dot(geometricNormal, sunDir), 0.0);
+        if (NdotLGeomSun > 0.0) {
+            vec3 shadowOriginSun = worldPosition + geometricNormal * 0.001;
+            if (!traceShadowRay(shadowOriginSun, sunDir, 1000.0)) {
+                float bsdfPdfSun = 0.0;
+                vec3 bsdfSun = evaluateOpaqueBSDFAndPdf(
+                    viewDir,
+                    shadingNormal,
+                    sunDir,
+                    albedo,
+                    specular,
+                    metallic,
+                    roughness,
+                    probSpecular,
+                    bsdfPdfSun);
+                directContribution += bsdfSun * vec3(environmentData.directionalIntensity) * NdotLGeomSun;
+            }
+        }
+    }
+
+    // HDRI direct-light sample (continuous), with MIS against BSDF sampling.
+    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+        return directContribution;
+
+    float lightPdf = 0.0;
+    vec3 lightDir = sampleEnvironmentDirection(environmentData, rngState, lightPdf);
+    vec3 Li = sampleEnvironmentMapColor(lightDir, environmentData, environmentData.lightingExposure);
+
+    // Single-sided visibility must use geometric normal, not bumped shading normal.
+    float NdotLGeom = max(dot(geometricNormal, lightDir), 0.0);
+    if (NdotLGeom <= 0.0 || lightPdf <= 0.0)
+        return directContribution;
+
+    vec3 shadowOrigin = worldPosition + geometricNormal * 0.001;
     if (traceShadowRay(shadowOrigin, lightDir, 1000.0))
-        return vec3(0.0);
+        return directContribution;
 
     float bsdfPdf = 0.0;
-    vec3 bsdf = evaluateOpaqueBSDFAndPdf(viewDir, normal, lightDir, albedo, specular, metallic, roughness, probSpecular, bsdfPdf);
+    vec3 bsdf = evaluateOpaqueBSDFAndPdf(viewDir, shadingNormal, lightDir, albedo, specular, metallic, roughness, probSpecular, bsdfPdf);
     if (bsdfPdf <= 0.0)
-        return vec3(0.0);
+        return directContribution;
 
-    vec3 Li = evaluateEnvironmentRadiance(lightDir, environmentData);
     float wLight = powerHeuristic(lightPdf, bsdfPdf);
-    return bsdf * Li * (NdotL * wLight / max(lightPdf, EPSILON));
+    directContribution += bsdf * Li * (NdotLGeom * wLight / max(lightPdf, EPSILON));
+    return directContribution;
 }
 
 float fresnelDielectric(float cosThetaI, float etaI, float etaT) {
@@ -298,7 +404,16 @@ void handleDielectricBSDF(vec3 viewDir, vec3 shadingNormal, float roughness, flo
     }
 }
 
-void handleOpaqueBSDF(vec3 viewDir, vec3 shadingNormal, vec3 albedo, float metallic, float specular, float roughness, inout Payload payload) {
+void handleOpaqueBSDF(
+    vec3 viewDir,
+    vec3 shadingNormal,
+    vec3 geometricNormal,
+    vec3 albedo,
+    float metallic,
+    float specular,
+    float roughness,
+    inout Payload payload)
+{
     float NdotV = dot(shadingNormal, viewDir);
 
     vec3 normal = shadingNormal;
@@ -320,6 +435,15 @@ void handleOpaqueBSDF(vec3 viewDir, vec3 shadingNormal, vec3 albedo, float metal
         halfVector = fastNormalize(viewDir + sampledDir); // Fake half-vector only for MIS/Fresnel weighting
     }
     payload.nextDirection = sampledDir;
+
+    // Prevent back-side light leaks on single-sided geometry with strong normal maps.
+    if (dot(geometricNormal, sampledDir) <= 0.0) {
+        payload.attenuation = vec3(0.0);
+        payload.lastBsdfPdf = 0.0;
+        payload.lastNeeLightPdf = 0.0;
+        payload.flags |= RAY_TERMINATED;
+        return;
+    }
         
     // Mix with metallic
     vec3 F_dielectric = vec3(dielectricF0);
@@ -341,7 +465,16 @@ void handleOpaqueBSDF(vec3 viewDir, vec3 shadingNormal, vec3 albedo, float metal
     payload.lastNeeLightPdf = (max(dot(normal, sampledDir), 0.0) > 0.0) ? (0.5 / PI) : 0.0;
 }
 
-void shadeClosestHit(in vec3 worldPosition, in vec3 shadingNormal, in vec3 interpolatedTangent, in vec2 interpolatedUV, in vec3 worldRayDirection, in Material material, inout Payload payload) {
+void shadeClosestHit(
+    in vec3 worldPosition,
+    in vec3 shadingNormal,
+    in vec3 geometricNormal,
+    in vec3 interpolatedTangent,
+    in vec2 interpolatedUV,
+    in vec3 worldRayDirection,
+    in Material material,
+    inout Payload payload)
+{
     payload.position = worldPosition;
     payload.lastBsdfPdf = 0.0;
     payload.lastNeeLightPdf = 0.0;
@@ -396,6 +529,10 @@ void shadeClosestHit(in vec3 worldPosition, in vec3 shadingNormal, in vec3 inter
     payload.emission = emission;
 
     vec3 viewDir = fastNormalize(-worldRayDirection);
+    vec3 geometricFacingNormal = (dot(geometricNormal, viewDir) < 0.0) ? -geometricNormal : geometricNormal;
+    if (dot(shadingNormalTextured, geometricFacingNormal) < 0.0)
+        shadingNormalTextured = -shadingNormalTextured;
+
     float NdotV = dot(shadingNormalTextured, viewDir);
     vec3 facingNormal = (NdotV < 0.0) ? -shadingNormalTextured : shadingNormalTextured;
     float probSpecular = computeSpecularProbability(abs(NdotV), metallic, specular);
@@ -403,9 +540,10 @@ void shadeClosestHit(in vec3 worldPosition, in vec3 shadingNormal, in vec3 inter
     if (rand(payload.rngState) < transmission)
         handleDielectricBSDF(viewDir, shadingNormalTextured, roughness, material.ior, material.transmissionColor, payload);
     else {
-        payload.emission += estimateDirectEnvironment(
+        payload.emission += estimateDirectLighting(
             worldPosition,
             facingNormal,
+            geometricFacingNormal,
             viewDir,
             albedo,
             specular,
@@ -415,7 +553,7 @@ void shadeClosestHit(in vec3 worldPosition, in vec3 shadingNormal, in vec3 inter
             pushConstants.environment,
             payload.rngState
         );
-        handleOpaqueBSDF(viewDir, shadingNormalTextured, albedo, metallic, specular, roughness, payload);
+        handleOpaqueBSDF(viewDir, shadingNormalTextured, geometricFacingNormal, albedo, metallic, specular, roughness, payload);
     }
 }
 

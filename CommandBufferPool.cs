@@ -167,41 +167,58 @@ public sealed class CommandBufferPool : IDisposable
             if (!waitSemaphores.IsEmpty && !waitDstStageMask.IsEmpty && waitSemaphores.Length != waitDstStageMask.Length)
                 throw new ArgumentException("waitDstStageMask length must match waitSemaphores length.");
 
-            Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
-            var effectiveWaitStages = waitDstStageMask;
             if (!waitSemaphores.IsEmpty && waitDstStageMask.IsEmpty)
             {
+                Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
                 for (var i = 0; i < defaultWaitStages.Length; i++)
                     defaultWaitStages[i] = PipelineStageFlags.AllCommandsBit;
-                effectiveWaitStages = defaultWaitStages;
+
+                fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+                fixed (PipelineStageFlags* pWaitStages = defaultWaitStages)
+                {
+                    SubmitInternal(pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+                }
             }
-
-            fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
-            fixed (PipelineStageFlags* pWaitStages = effectiveWaitStages)
+            else
             {
-                var cmd = InternalHandle;
-                var submitInfo = new SubmitInfo
+                fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+                fixed (PipelineStageFlags* pWaitStages = waitDstStageMask)
                 {
-                    SType = StructureType.SubmitInfo,
-                    WaitSemaphoreCount = waitSemaphores.IsEmpty ? 0u : (uint)waitSemaphores.Length,
-                    PWaitSemaphores = pWaitSemaphores,
-                    PWaitDstStageMask = waitSemaphores.IsEmpty ? null : pWaitStages,
-                    CommandBufferCount = 1,
-                    PCommandBuffers = &cmd,
-                    SignalSemaphoreCount = signalSemaphores.IsEmpty ? 0u : (uint)signalSemaphores.Length,
-                    PSignalSemaphores = pSignalSemaphores
-                };
-
-                var fenceValue = fence;
-                lock (owner.sync)
-                {
-                    // Vulkan queue operations must be externally synchronized.
-                    api.ResetFences(device, 1, in fenceValue).ThrowOnError();
-                    api.QueueSubmit(queue, 1, in submitInfo, fenceValue).ThrowOnError();
+                    SubmitInternal(pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
                 }
             }
 
             owner.MoveToUsed(this);
+        }
+
+        private unsafe void SubmitInternal(
+            Silk.NET.Vulkan.Semaphore* pWaitSemaphores,
+            PipelineStageFlags* pWaitStages,
+            Silk.NET.Vulkan.Semaphore* pSignalSemaphores,
+            int waitSemaphoreCount,
+            int signalSemaphoreCount)
+        {
+            var cmd = InternalHandle;
+            var hasWaitSemaphores = waitSemaphoreCount > 0;
+            var submitInfo = new SubmitInfo
+            {
+                SType = StructureType.SubmitInfo,
+                WaitSemaphoreCount = hasWaitSemaphores ? (uint)waitSemaphoreCount : 0u,
+                PWaitSemaphores = pWaitSemaphores,
+                PWaitDstStageMask = hasWaitSemaphores ? pWaitStages : null,
+                CommandBufferCount = 1,
+                PCommandBuffers = &cmd,
+                SignalSemaphoreCount = signalSemaphoreCount > 0 ? (uint)signalSemaphoreCount : 0u,
+                PSignalSemaphores = pSignalSemaphores
+            };
+
+            var fenceValue = fence;
+            lock (owner.sync)
+            {
+                // Vulkan queue operations must be externally synchronized.
+                api.ResetFences(device, 1, in fenceValue).ThrowOnError();
+                api.QueueSubmit(queue, 1, in submitInfo, fenceValue).ThrowOnError();
+            }
         }
 
         public void SubmitAndWait(

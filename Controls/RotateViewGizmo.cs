@@ -55,7 +55,7 @@ public sealed class RotateViewGizmo : Control
     private readonly record struct AxisHandle(int Id, int AxisIndex, float Depth, Point ScreenPosition);
 
     private readonly DispatcherTimer animationTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
-    private readonly PointerCaptureController capture = new();
+    private readonly ControlCaptureApi capture;
     private readonly AxisHandle[] handles = new AxisHandle[6];
     private readonly int[] drawOrder = [0, 1, 2, 3, 4, 5];
     private readonly float[] axisHoverFade = new float[6];
@@ -72,6 +72,7 @@ public sealed class RotateViewGizmo : Control
     private int pressedAxisId = -1;
     private bool hoveredCenter;
     private bool rotating;
+    private bool orbitCaptureMode;
 
     private float centerFadeCurrent;
     private float centerFadeTarget;
@@ -85,6 +86,7 @@ public sealed class RotateViewGizmo : Control
 
     public RotateViewGizmo()
     {
+        capture = new ControlCaptureApi(this);
         var diameter = (GizmoBigCircleRadius * 2f) + 2f;
         Width = diameter;
         Height = diameter;
@@ -109,6 +111,7 @@ public sealed class RotateViewGizmo : Control
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
+        capture.End();
         DetachObservedScene();
         DetachTopLevel();
         animationTimer.Stop();
@@ -208,7 +211,8 @@ public sealed class RotateViewGizmo : Control
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        var props = e.GetCurrentPoint(this).Properties;
+        if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
         localPointer = e.GetPosition(this);
@@ -222,7 +226,8 @@ public sealed class RotateViewGizmo : Control
 
             snapAnimating = false;
             rotating = true;
-            capture.Begin(this, e.Pointer);
+            orbitCaptureMode = true;
+            capture.Begin(e.Pointer, localPointer);
             centerFadeTarget = CenterFadeStrength;
             EnsureAnimationRunning(resetClock: true);
             InvalidateVisual();
@@ -235,6 +240,8 @@ public sealed class RotateViewGizmo : Control
             pressedAxisId = hoveredAxisId;
             pressedPointer = localPointer;
             pressedAxisWorldDirection = AxisDirections[pressedAxisId];
+            orbitCaptureMode = false;
+            capture.Begin(e.Pointer, localPointer);
             e.Handled = true;
         }
     }
@@ -251,7 +258,7 @@ public sealed class RotateViewGizmo : Control
             return;
         }
 
-        if (capture.TryConsumeWarpSuppressedMove())
+        if (capture.TryConsumeWarpMove())
         {
             e.Handled = true;
             return;
@@ -260,7 +267,13 @@ public sealed class RotateViewGizmo : Control
         if (!TryGetActiveRenderer(out var activeRenderer))
             return;
 
-        var delta = capture.GetDeltaFromCenter(localPointer);
+        if (!orbitCaptureMode)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var delta = capture.GetDelta(localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
             activeRenderer.Scene.Mutate(scene =>
@@ -270,7 +283,7 @@ public sealed class RotateViewGizmo : Control
             InvalidateVisual();
         }
 
-        capture.Recenter(this);
+        capture.TryWrap(localPointer);
         e.Handled = true;
     }
 
@@ -280,17 +293,22 @@ public sealed class RotateViewGizmo : Control
 
         if (capture.IsActive)
         {
-            capture.End(this, e.Pointer);
+            capture.End(e.Pointer);
+            var wasOrbitCapture = orbitCaptureMode;
+            orbitCaptureMode = false;
             rotating = false;
             localPointer = e.GetPosition(this);
             hasTrackedPointer = true;
-            if (IsPointerOver)
-                RecomputeHover(localPointer, startAnimations: true);
-            else
-                ClearHoverState();
+            if (wasOrbitCapture)
+            {
+                if (IsPointerOver)
+                    RecomputeHover(localPointer, startAnimations: true);
+                else
+                    ClearHoverState();
 
-            e.Handled = true;
-            return;
+                e.Handled = true;
+                return;
+            }
         }
 
         if (pressedAxisId >= 0)
@@ -315,7 +333,8 @@ public sealed class RotateViewGizmo : Control
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End(this);
+        capture.End();
+        orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
         ClearHoverState();
@@ -410,6 +429,18 @@ public sealed class RotateViewGizmo : Control
         hoveredCenter = false;
         centerFadeTarget = 0f;
         EnsureAnimationRunning();
+        InvalidateVisual();
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        capture.End();
+        orbitCaptureMode = false;
+        rotating = false;
+        pressedAxisId = -1;
+        if (!capture.IsActive && hasTrackedPointer)
+            RecomputeHover(localPointer, startAnimations: false);
         InvalidateVisual();
     }
 
@@ -648,7 +679,7 @@ public sealed class RotateViewGizmo : Control
         {
             var axisIndex = i / 2;
             var viewDir = Vector3.Transform(AxisDirections[i], inverse);
-            var screen = new Point(center.X + viewDir.X * axisLength, center.Y - viewDir.Y * axisLength);
+            var screen = new Point(center.X - viewDir.X * axisLength, center.Y - viewDir.Y * axisLength);
             targetHandles[i] = new AxisHandle(i, axisIndex, viewDir.Z, screen);
             targetDrawOrder[i] = i;
         }

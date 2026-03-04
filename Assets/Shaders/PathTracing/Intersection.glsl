@@ -194,6 +194,7 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
         const Vertex v2 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 2]];
 
         vec3 localPos = interpolateBarycentric(hit.barycentrics, v0.position, v1.position, v2.position);
+        vec3 geometricNormalLocal = normalize(cross(v1.position - v0.position, v2.position - v0.position));
         vec3 shadingNormalLocal = normalize(interpolateBarycentric(hit.barycentrics, v0.normal, v1.normal, v2.normal));
         vec3 localTan = normalize(interpolateBarycentric(hit.barycentrics, v0.tangent, v1.tangent, v2.tangent));
         vec2 uv = interpolateBarycentric(hit.barycentrics, v0.uv, v1.uv, v2.uv);
@@ -201,10 +202,11 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
         vec3 worldPos = (inst.transform * vec4(localPos, 1.0)).xyz;
         mat3 normalMatrix = transpose(inverse(mat3(inst.transform)));
 
+        vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
         vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);
         vec3 worldTan = normalize(normalMatrix * localTan);
 
-        shadeClosestHit(worldPos, shadingNormalWorld, worldTan, uv, rayDirection, material, payload);
+        shadeClosestHit(worldPos, shadingNormalWorld, geometricNormalWorld, worldTan, uv, rayDirection, material, payload);
         payload.objectIndex = hit.instanceIndex;
     }
 }

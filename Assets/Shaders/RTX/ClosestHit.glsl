@@ -14,7 +14,7 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 layout(location = 1) rayPayloadEXT uint shadowPayload;
 hitAttributeEXT vec3 attribs;
 
-layout (push_constant) uniform PushConstants {
+layout (push_constant, scalar) uniform PushConstants {
     PushConstantsData pushConstants;
 };
 
@@ -48,6 +48,7 @@ void main() {
    const vec3 bary = calculateBarycentric(attribs);
 
    vec3 localPosition = interpolateBarycentric(bary, v0.position, v1.position, v2.position);
+   vec3 geometricNormalLocal = normalize(cross(v1.position - v0.position, v2.position - v0.position));
    vec3 shadingNormalLocal = normalize(interpolateBarycentric(bary, v0.normal, v1.normal, v2.normal));
    vec3 localTangent = normalize(interpolateBarycentric(bary, v0.tangent, v1.tangent, v2.tangent));
    vec2 interpolatedUV = interpolateBarycentric(bary, v0.uv, v1.uv, v2.uv);
@@ -55,9 +56,10 @@ void main() {
    vec3 worldPosition = (gl_ObjectToWorldEXT * vec4(localPosition, 1.0)).xyz;
    mat3 normalMatrix = transpose(inverse(mat3(gl_ObjectToWorldEXT)));
 
+   vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
    vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);     // The smooth, interpolated normal
    vec3 tangentWorld = normalize(normalMatrix * localTangent);
    
-   shadeClosestHit(worldPosition, shadingNormalWorld, tangentWorld, interpolatedUV, gl_WorldRayDirectionEXT, material, payload);
+   shadeClosestHit(worldPosition, shadingNormalWorld, geometricNormalWorld, tangentWorld, interpolatedUV, gl_WorldRayDirectionEXT, material, payload);
    payload.objectIndex = uint(gl_InstanceID);
 }

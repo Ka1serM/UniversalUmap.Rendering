@@ -178,43 +178,69 @@ public sealed unsafe class Context : IDisposable
                 if (!hasRequiredExtensions)
                     continue;
 
+                if (api.IsDeviceExtensionPresent(physical, "VK_KHR_dynamic_rendering"))
+                    deviceExtensions.Add("VK_KHR_dynamic_rendering");
+
                 var rayTracingExtensionsPresent = rayTracingExtensions.All(x => api.IsDeviceExtensionPresent(physical, x));
                 var rayTracingFeaturesSupported = false;
+                var dynamicRenderingSupported = false;
 
-                if (rayTracingExtensionsPresent)
                 {
                     var feature2 = new PhysicalDeviceFeatures2
                     {
                         SType = StructureType.PhysicalDeviceFeatures2
                     };
-                    var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
+                    var dynamicRenderingFeatures = new PhysicalDeviceDynamicRenderingFeatures
                     {
-                        SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
+                        SType = StructureType.PhysicalDeviceDynamicRenderingFeatures
                     };
-                    var accelerationStructureFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
-                    {
-                        SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
-                    };
-                    var rayTracingPipelineFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
-                    {
-                        SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr
-                    };
-                    var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
-                    {
-                        SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
-                    };
+                    feature2.PNext = &dynamicRenderingFeatures;
 
-                    feature2.PNext = &descriptorIndexingFeatures;
-                    descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
-                    accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
-                    rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
-                    api.GetPhysicalDeviceFeatures2(physical, &feature2);
+                    if (rayTracingExtensionsPresent)
+                    {
+                        var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
+                        {
+                            SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
+                        };
+                        var accelerationStructureFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
+                        {
+                            SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
+                        };
+                        var rayTracingPipelineFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
+                        {
+                            SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr
+                        };
+                        var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
+                        {
+                            SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
+                        };
 
-                    rayTracingFeaturesSupported =
-                        descriptorIndexingFeatures.RuntimeDescriptorArray &&
-                        accelerationStructureFeatures.AccelerationStructure &&
-                        rayTracingPipelineFeatures.RayTracingPipeline &&
-                        bufferDeviceAddressFeatures.BufferDeviceAddress;
+                        dynamicRenderingFeatures.PNext = &descriptorIndexingFeatures;
+                        descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
+                        accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
+                        rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
+                        api.GetPhysicalDeviceFeatures2(physical, &feature2);
+
+                        rayTracingFeaturesSupported =
+                            descriptorIndexingFeatures.RuntimeDescriptorArray &&
+                            accelerationStructureFeatures.AccelerationStructure &&
+                            rayTracingPipelineFeatures.RayTracingPipeline &&
+                            bufferDeviceAddressFeatures.BufferDeviceAddress;
+                    }
+                    else
+                    {
+                        api.GetPhysicalDeviceFeatures2(physical, &feature2);
+                    }
+
+                    dynamicRenderingSupported = dynamicRenderingFeatures.DynamicRendering;
+                }
+
+                if (!dynamicRenderingSupported)
+                    continue;
+
+                if (rayTracingExtensionsPresent)
+                {
+                    // already queried above
                 }
 
                 var rayTracingEnabled = rayTracingExtensionsPresent && rayTracingFeaturesSupported;
@@ -300,6 +326,11 @@ public sealed unsafe class Context : IDisposable
                         SType = StructureType.PhysicalDeviceFeatures2,
                         Features = features
                     };
+                    var dynamicRenderingFeatures = new PhysicalDeviceDynamicRenderingFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceDynamicRenderingFeatures,
+                        DynamicRendering = true
+                    };
                     var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
                     {
                         SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
@@ -317,6 +348,8 @@ public sealed unsafe class Context : IDisposable
                         SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
                     };
 
+                    feature2.PNext = &dynamicRenderingFeatures;
+
                     if (candidate.RayTracingEnabled)
                     {
                         descriptorIndexingFeatures.RuntimeDescriptorArray = true;
@@ -327,17 +360,13 @@ public sealed unsafe class Context : IDisposable
                         rayTracingPipelineFeatures.RayTracingPipeline = true;
                         bufferDeviceAddressFeatures.BufferDeviceAddress = true;
 
-                        feature2.PNext = &descriptorIndexingFeatures;
+                        dynamicRenderingFeatures.PNext = &descriptorIndexingFeatures;
                         descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
                         accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
                         rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
+                    }
 
-                        deviceInfo.PNext = &feature2;
-                    }
-                    else
-                    {
-                        deviceInfo.PEnabledFeatures = &features;
-                    }
+                    deviceInfo.PNext = &feature2;
 
                     api.CreateDevice(candidate.PhysicalDevice, in deviceInfo, default, out createdDevice).ThrowOnError();
                     api.GetDeviceQueue(createdDevice, candidate.QueueFamilyIndex, 0, out var queue);

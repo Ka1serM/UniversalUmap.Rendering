@@ -11,7 +11,7 @@
 #include "../Common.glsl"
 #include "../Bindings.glsl"
 
-layout (push_constant) uniform PushConstants {
+layout (push_constant, scalar) uniform PushConstants {
     PushConstantsData pushConstants;
 };
 

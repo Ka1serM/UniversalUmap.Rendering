@@ -174,7 +174,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             7,
             DescriptorType.CombinedImageSampler,
             MaxTextures,
-            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr);
+            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr | ShaderStageFlags.FragmentBit);
         var bindingFlags = stackalloc DescriptorBindingFlags[8];
         bindingFlags[7] = DescriptorBindingFlags.PartiallyBoundBit |
                           DescriptorBindingFlags.VariableDescriptorCountBit |
@@ -367,6 +367,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     }
 
     protected override DescriptorSet GetDescriptorSet() => descriptorSet;
+    protected override DescriptorSetLayout GetDescriptorSetLayout() => descriptorSetLayout;
 
     private bool ShouldBuildTlasNow(bool force)
     {

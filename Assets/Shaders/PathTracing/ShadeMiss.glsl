@@ -3,60 +3,81 @@
 
 #include "../Bindings.glsl"
 
-const bool USE_PROCEDURAL_SKY = true;
+bool hasDirectionalLight(in EnvironmentData environmentData) {
+    return environmentData.directionalIntensity > EPSILON &&
+           dot(environmentData.directionalDirection, environmentData.directionalDirection) > EPSILON;
+}
 
-vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentData environmentData) {
-    if (environmentData.textureIndex == -1)
-        return vec3(1.0);
+vec3 getDirectionalLightDirection(in EnvironmentData environmentData) {
+    vec3 d = environmentData.directionalDirection;
+    float l2 = dot(d, d);
+    if (l2 <= EPSILON)
+        return vec3(0.0, 1.0, 0.0);
+    return d * inversesqrt(l2);
+}
 
-    float radRotation = radians(environmentData.rotation);
+vec2 directionToEnvironmentUv(in vec3 worldRayDirection, in float rotationDegrees) {
+    float radRotation = radians(rotationDegrees);
     float s = sin(radRotation);
     float c = cos(radRotation);
-    vec3 rotatedDir = worldRayDirection;
+    vec3 rotatedDir = normalize(worldRayDirection);
     rotatedDir.x = worldRayDirection.x * c - worldRayDirection.z * s;
     rotatedDir.z = worldRayDirection.x * s + worldRayDirection.z * c;
 
-    vec3 viewDir = normalize(rotatedDir);
     vec2 uv;
-    uv.x = atan(viewDir.z, viewDir.x) / (2.0 * PI) + 0.5;
-    uv.y = 1.0 - acos(clamp(viewDir.y, -1.0, 1.0)) / PI;
-    return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exp2(environmentData.exposure);
+    uv.x = atan(rotatedDir.z, rotatedDir.x) / (2.0 * PI) + 0.5;
+    uv.y = 1.0 - acos(clamp(rotatedDir.y, -1.0, 1.0)) / PI;
+    return uv;
 }
 
-vec3 sampleProceduralSkyColor(in vec3 worldRayDirection) {
-    vec3 d = normalize(worldRayDirection);
-    float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentData environmentData, in float exposureStops) {
+    if (environmentData.textureIndex == -1)
+        return vec3(1.0);
 
-    // Bright blue zenith and near-white horizon for a clear sky look.
-    vec3 horizon = vec3(1.22, 1.28, 1.34);
-    vec3 skyTop = vec3(0.24, 0.62, 1.45) * 2.1;
-    vec3 base = mix(horizon, skyTop, smoothstep(0.0, 1.0, t));
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
+    return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exp2(exposureStops);
+}
 
-    // Extra horizon glow to keep lower hemisphere bright.
-    float horizonGlow = exp(-abs(d.y) * 10.0);
-    base += vec3(0.55, 0.72, 0.95) * horizonGlow;
+float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+        return 0.0;
 
-    // Soft sun lobe.
-    vec3 sunDir = normalize(vec3(0.2, 0.95, 0.25));
-    float sun = pow(max(dot(d, sunDir), 0.0), 320.0);
-    vec3 sunColor = vec3(1.0, 0.99, 0.94) * 48.0 * sun;
+    ivec2 envSize = textureSize(textureSamplers[environmentData.textureIndex], 0);
+    if (envSize.x <= 0 || envSize.y <= 0)
+        return 0.0;
 
-    return base + sunColor;
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
+    int x = clamp(int(floor(uv.x * float(envSize.x))), 0, envSize.x - 1);
+    int y = clamp(int(floor(uv.y * float(envSize.y))), 0, envSize.y - 1);
+    float uvPdf = max(texelFetch(textureSamplers[environmentData.cdfTextureIndex], ivec2(x, y), 0).a, 0.0);
+    float theta = uv.y * PI;
+    float sinTheta = max(sin(theta), EPSILON);
+    return uvPdf / max(2.0 * PI * PI * sinTheta, EPSILON);
+}
+
+float evaluateNeeLightPdfForDirection(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+    return evaluateEnvironmentPdfForDirection(worldRayDirection, environmentData);
 }
 
 vec3 evaluateEnvironmentRadiance(in vec3 worldRayDirection, in EnvironmentData environmentData) {
-    vec3 sampledColor = USE_PROCEDURAL_SKY
-        ? sampleProceduralSkyColor(worldRayDirection)
-        : sampleEnvironmentMapColor(worldRayDirection, environmentData);
-    return sampledColor * environmentData.color * environmentData.intensity;
+    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.lightingExposure);
+    return sampledColor;
+}
+
+vec3 evaluateEnvironmentVisibleRadiance(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.visibleExposure);
+    return sampledColor;
 }
 
 void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, inout Payload payload) {
-    vec3 envColor = evaluateEnvironmentRadiance(worldRayDirection, environmentData);
+    vec3 envColor = payload.depth == 0
+        ? evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData)
+        : evaluateEnvironmentRadiance(worldRayDirection, environmentData);
 
     // MIS: when the environment is reached via BSDF sampling, apply balance against NEE.
-    if (payload.depth > 0 && payload.lastBsdfPdf > 0.0 && payload.lastNeeLightPdf > 0.0) {
-        float wBsdf = powerHeuristic(payload.lastBsdfPdf, payload.lastNeeLightPdf);
+    if (payload.depth > 0 && payload.lastBsdfPdf > 0.0) {
+        float neeLightPdf = evaluateNeeLightPdfForDirection(worldRayDirection, environmentData);
+        float wBsdf = powerHeuristic(payload.lastBsdfPdf, neeLightPdf);
         envColor *= wBsdf;
     }
 

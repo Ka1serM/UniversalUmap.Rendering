@@ -41,7 +41,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.ComputeBit);
+        layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit);
 
         var bindingFlags = stackalloc DescriptorBindingFlags[8];
         bindingFlags[7] = DescriptorBindingFlags.PartiallyBoundBit |
@@ -234,6 +234,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     }
 
     protected override DescriptorSet GetDescriptorSet() => descriptorSet;
+    protected override DescriptorSetLayout GetDescriptorSetLayout() => descriptorSetLayout;
 
     public override void Dispose()
     {

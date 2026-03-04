@@ -17,6 +17,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.12" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="FluentIcons.Avalonia.Fluent" Version="2.0.318" />
     <PackageReference Include="Serilog" Version="4.3.1" />
@@ -31,39 +32,45 @@
     </ItemGroup>
   
   <ItemGroup>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGeneration.glsl">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/RayGeneration.spv</SpvOutput>
-      <Arguments>--target-env=vulkan1.3</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHit.glsl">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/ClosestHit.spv</SpvOutput>
-      <Arguments>--target-env=vulkan1.3</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/Miss.glsl">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/Miss.spv</SpvOutput>
-      <Arguments>--target-env=vulkan1.3</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.spv</SpvOutput>
-      <Arguments>--target-env=vulkan1.3</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracer.comp">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/Compute/PathTracer.spv</SpvOutput>
-      <Arguments>-DUSE_COMPUTE=1</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.comp">
-      <SpvOutput>$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.spv</SpvOutput>
-      <Arguments></Arguments>
-    </ShaderSource>
-    <ShaderInclude Include="$(ProjectDir)Assets/Shaders/**/*.glsl;$(ProjectDir)Assets/Shaders/**/*.h" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGeneration.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHit.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/Miss.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracer.comp"
+                  Arguments="-DUSE_COMPUTE=1" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.comp" />
+
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/SunDirectionWidgetVS.glsl"
+                  Arguments="-fshader-stage=vert" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/SunDirectionWidgetFS.glsl"
+                  Arguments="-fshader-stage=frag" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/EnvironmentRotationWidgetFS.glsl"
+                  Arguments="-fshader-stage=frag" />
   </ItemGroup>
 
-  <Target Name="CompileRayTracingShaders"
-          BeforeTargets="ResolveReferences"
-          Inputs="@(ShaderSource);@(ShaderInclude)"
-          Outputs="@(ShaderSource->'%(SpvOutput)')">
-    <Message Text="Compiling shaders via glslc from PATH (incremental)." Importance="High" />
-    <Exec Command="glslc &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.SpvOutput)&quot; %(ShaderSource.Arguments)" LogStandardErrorAsError="true" />
+  <Target Name="CompileShaders"
+          BeforeTargets="Build"
+          Inputs="@(ShaderSource)"
+          Outputs="@(ShaderSource->'%(RootDir)%(Directory)%(Filename).spv')">
+
+    <Message Text="Compiling shaders via glslc..." Importance="High" />
+
+    <Exec Command='glslc %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv"'
+          LogStandardErrorAsError="true" />
+
+    <ItemGroup>
+      <EmbeddedResource Include="@(ShaderSource->'%(RootDir)%(Directory)%(Filename).spv')"
+                        Exclude="@(EmbeddedResource)" />
+    </ItemGroup>
   </Target>
   
   <ItemGroup>

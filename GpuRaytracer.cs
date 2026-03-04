@@ -98,6 +98,14 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     protected abstract void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants);
     protected abstract void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
+    protected abstract DescriptorSetLayout GetDescriptorSetLayout();
+
+    public bool TryGetBindlessTextureDescriptors(out DescriptorSetLayout layout, out DescriptorSet set)
+    {
+        layout = GetDescriptorSetLayout();
+        set = GetDescriptorSet();
+        return layout.Handle != default && set.Handle != default;
+    }
 
     protected void UpdateOutputImageBindings()
     {
