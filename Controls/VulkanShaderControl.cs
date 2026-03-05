@@ -12,35 +12,22 @@ namespace UniversalUmap.Rendering.Controls;
 
 public abstract class VulkanShaderControl : Control
 {
-    private static readonly IBrush HitTestBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
+    protected static readonly IBrush HitTestBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
 
     private CompositionSurfaceVisual? visual;
     private Compositor? compositor;
     private bool updateQueued;
     private bool frameDirty = true;
     private bool initialized;
+    private bool running;
+    private long lifecycleVersion;
     private readonly Action update;
     private Task pendingDisposeTask = Task.CompletedTask;
-    private GraphicsResources? resources;
+    private Size lastLayoutSize;
+    private double lastLayoutScaling = -1d;
 
-    private sealed class GraphicsResources : IAsyncDisposable
-    {
-        public SharedRendererContext.Lease RendererLease { get; }
-        public Renderer Renderer => RendererLease.Renderer;
-        public VulkanSurface Surface { get; }
-
-        public GraphicsResources(SharedRendererContext.Lease rendererLease, VulkanSurface surface)
-        {
-            RendererLease = rendererLease;
-            Surface = surface;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await Surface.DisposeAsync();
-            RendererLease.Dispose();
-        }
-    }
+    private Context? context;
+    private VulkanSurface? surface;
 
     protected VulkanShaderControl()
     {
@@ -50,39 +37,76 @@ public abstract class VulkanShaderControl : Control
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        Initialize();
+        StartControl();
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        if (initialized)
-            FreeGraphicsResources();
-
-        initialized = false;
+        PauseControl();
         base.OnDetachedFromVisualTree(e);
     }
 
     public override void Render(DrawingContext context)
     {
         base.Render(context);
-        context.FillRectangle(HitTestBrush, new Rect(Bounds.Size));
+        DrawHitTestBackground(context, new Rect(Bounds.Size));
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
-        if (change.Property == BoundsProperty)
+        if (change.Property == BoundsProperty || change.Property == IsVisibleProperty)
             InvalidateGpuFrame();
 
         base.OnPropertyChanged(change);
     }
 
-    protected abstract void OnRasterDraw(Renderer renderer, ImageResource target);
+    protected abstract void OnRasterDraw(Context context, ImageResource target);
+    protected virtual void DrawHitTestBackground(DrawingContext context, Rect bounds)
+    {
+        context.FillRectangle(HitTestBrush, bounds);
+    }
 
-    private async void Initialize()
+    protected virtual void OnGpuResourcesInvalidated()
+    {
+    }
+
+    private void StartControl()
+    {
+        if (running)
+            return;
+
+        running = true;
+        lifecycleVersion++;
+        LayoutUpdated += OnLayoutUpdated;
+        lastLayoutSize = default;
+        lastLayoutScaling = -1d;
+        if (initialized)
+        {
+            InvalidateGpuFrame();
+            return;
+        }
+
+        _ = InitializeAsync(lifecycleVersion);
+    }
+
+    private void PauseControl()
+    {
+        if (!running)
+            return;
+
+        running = false;
+        lifecycleVersion++;
+        LayoutUpdated -= OnLayoutUpdated;
+        updateQueued = false;
+    }
+
+    private async Task InitializeAsync(long version)
     {
         try
         {
             await pendingDisposeTask;
+            if (!IsCurrentLifecycle(version))
+                return;
 
             var selfVisual = ElementComposition.GetElementVisual(this)!;
             compositor = selfVisual.Compositor;
@@ -93,58 +117,83 @@ public abstract class VulkanShaderControl : Control
             ElementComposition.SetElementChildVisual(this, visual);
 
             var interop = await compositor.TryGetCompositionGpuInterop();
+            if (!IsCurrentLifecycle(version))
+                return;
             if (interop is null)
             {
+                ClearCompositionVisual();
                 initialized = false;
                 return;
             }
 
-            var rendererLease = await SharedRendererContext.AcquireAsync(compositor);
-            if (rendererLease is null)
+            context = await Context.AcquireAsync(compositor);
+            if (!IsCurrentLifecycle(version))
             {
+                return;
+            }
+            if (context is null)
+            {
+                ClearCompositionVisual();
                 initialized = false;
                 return;
             }
 
-            var surface = new VulkanSurface(rendererLease.Renderer.Context, interop, drawingSurface);
-            resources = new GraphicsResources(rendererLease, surface);
+            surface = new VulkanSurface(context, interop, drawingSurface);
             initialized = true;
             InvalidateGpuFrame();
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to initialize VulkanShaderControl.");
+            ClearCompositionVisual();
             initialized = false;
         }
     }
 
-    private void ReinitializeAfterDeviceLoss()
+    private async void ReinitializeAfterDeviceLoss()
     {
+        var version = lifecycleVersion;
         initialized = false;
         updateQueued = false;
         frameDirty = true;
-        SharedRendererContext.Reset();
         FreeGraphicsResources();
-        Initialize();
+        ClearCompositionVisual();
+        await pendingDisposeTask;
+        if (!IsCurrentLifecycle(version))
+            return;
+        _ = InitializeAsync(version);
     }
 
     private void FreeGraphicsResources()
     {
-        if (resources is null)
-            return;
+        OnGpuResourcesInvalidated();
 
-        var toDispose = resources;
-        resources = null;
-        var previousDisposeTask = pendingDisposeTask;
-        pendingDisposeTask = DisposeSurfaceChainAsync(previousDisposeTask, toDispose);
+        if (surface is not null)
+        {
+            var toDispose = surface;
+            surface = null;
+            var previousDisposeTask = pendingDisposeTask;
+            pendingDisposeTask = DisposeSurfaceChainAsync(previousDisposeTask, toDispose);
+        }
+
+        context = null;
     }
 
-    private static async Task DisposeSurfaceChainAsync(Task previousDisposeTask, GraphicsResources surfaceResources)
+    private void ClearCompositionVisual()
+    {
+        if (visual is not null)
+            ElementComposition.SetElementChildVisual(this, null);
+
+        visual = null;
+        compositor = null;
+    }
+
+    private static async Task DisposeSurfaceChainAsync(Task previousDisposeTask, VulkanSurface activeSurface)
     {
         try
         {
             await previousDisposeTask;
-            await surfaceResources.DisposeAsync();
+            await activeSurface.DisposeAsync();
         }
         catch (Exception ex)
         {
@@ -155,8 +204,11 @@ public abstract class VulkanShaderControl : Control
     private void UpdateFrame()
     {
         updateQueued = false;
+        if (!running)
+            return;
+
         var root = this.GetVisualRoot();
-        if (root is null || visual is null || resources is null)
+        if (root is null || visual is null || surface is null || context is null)
             return;
         if (!frameDirty)
             return;
@@ -164,20 +216,24 @@ public abstract class VulkanShaderControl : Control
         var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
         visual.Size = new(Bounds.Width, Bounds.Height);
         if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
-        {
             return;
-        }
 
         try
         {
-            if (!resources.Surface.TryBeginDraw(pixelSize, out var image, out var presentScope) || presentScope is null)
+            if (!surface.TryBeginDraw(pixelSize, out var image))
             {
                 QueueNextFrame();
                 return;
             }
 
-            using (presentScope)
-                OnRasterDraw(resources.Renderer, image);
+            try
+            {
+                OnRasterDraw(context, image);
+            }
+            finally
+            {
+                surface.Present();
+            }
             frameDirty = false;
         }
         catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
@@ -202,10 +258,25 @@ public abstract class VulkanShaderControl : Control
 
     private void QueueNextFrame()
     {
-        if (!initialized || !frameDirty || updateQueued || compositor is null)
+        if (!running || !initialized || !frameDirty || updateQueued || compositor is null || !IsVisible)
             return;
 
         updateQueued = true;
         compositor.RequestCompositionUpdate(update);
     }
+
+    private void OnLayoutUpdated(object? sender, EventArgs e)
+    {
+        var root = this.GetVisualRoot();
+        var scale = root?.RenderScaling ?? -1d;
+        var size = Bounds.Size;
+        if (size == lastLayoutSize && Math.Abs(scale - lastLayoutScaling) < 0.0001d)
+            return;
+
+        lastLayoutSize = size;
+        lastLayoutScaling = scale;
+        InvalidateGpuFrame();
+    }
+
+    private bool IsCurrentLifecycle(long version) => running && lifecycleVersion == version;
 }

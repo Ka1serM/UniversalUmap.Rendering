@@ -44,7 +44,7 @@ internal sealed unsafe class Accel : IDisposable
 
     public void BuildTopLevel(uint primitiveCount, ulong instancesDeviceAddress)
     {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         BuildTopLevel(commandBuffer, primitiveCount, instancesDeviceAddress);
         commandBuffer.SubmitAndWait();
@@ -150,7 +150,7 @@ internal sealed unsafe class Accel : IDisposable
         uint maxVertex,
         ulong indexAddress)
     {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         BuildBottomLevelTriangles(commandBuffer, primitiveCount, vertexAddress, vertexStride, maxVertex, indexAddress);
         commandBuffer.SubmitAndWait();

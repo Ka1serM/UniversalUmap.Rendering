@@ -16,10 +16,6 @@ public sealed class MeshAsset : IDisposable
 
     public string Name { get; }
     public uint MeshIndex { get; internal set; } = uint.MaxValue;
-    public IReadOnlyList<Vertex> Vertices { get; }
-    public IReadOnlyList<uint> Indices { get; }
-    public IReadOnlyList<Face> Faces { get; }
-    public IReadOnlyList<MaterialData> Materials { get; }
 
     internal GpuBuffer VertexBuffer { get; }
     internal GpuBuffer IndexBuffer { get; }
@@ -73,10 +69,6 @@ public sealed class MeshAsset : IDisposable
 
         this.context = context;
         Name = name;
-        Vertices = vertexArray;
-        Indices = indexArray;
-        Faces = faceArray;
-        Materials = materialArray;
         VertexBuffer = vertexBuffer;
         IndexBuffer = indexBuffer;
         FaceBuffer = faceBuffer;

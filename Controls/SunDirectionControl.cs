@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Serilog;
@@ -12,7 +13,7 @@ using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class SunDirectionWidget : VulkanShaderControl
+public sealed class SunDirectionControl : VulkanShaderControl
 {
     private const double RotateGizmoSize = 134d;
     private const double RotateGizmoRightInset = 15d;
@@ -30,26 +31,24 @@ public sealed class SunDirectionWidget : VulkanShaderControl
 
     private VulkanRasterShaderProgram? shaderProgram;
     private Context? shaderContext;
-    private VulkanViewer? subscribedSource;
+    private VulkanViewerControl? subscribedSource;
 
-    private readonly ControlCaptureApi capture;
     private Vector3 direction;
     private Quaternion directionRotation = Quaternion.Identity;
     private bool hasDirectionFromSource;
     private bool suppressUiEvents;
 
-    public static readonly StyledProperty<VulkanViewer?> SourceProperty =
-        AvaloniaProperty.Register<SunDirectionWidget, VulkanViewer?>(nameof(Source));
+    public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
+        AvaloniaProperty.Register<SunDirectionControl, VulkanViewerControl?>(nameof(Source));
 
-    public VulkanViewer? Source
+    public VulkanViewerControl? Source
     {
         get => GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
-    public SunDirectionWidget()
+    public SunDirectionControl()
     {
-        capture = new ControlCaptureApi(this);
         IsHitTestVisible = true;
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Right;
@@ -67,12 +66,16 @@ public sealed class SunDirectionWidget : VulkanShaderControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         UnsubscribeFromSource(subscribedSource);
-        capture.End();
+        SharedPointerCapture.End(this);
+        hasDirectionFromSource = false;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnGpuResourcesInvalidated()
+    {
         shaderProgram?.Dispose();
         shaderProgram = null;
         shaderContext = null;
-        hasDirectionFromSource = false;
-        base.OnDetachedFromVisualTree(e);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -87,9 +90,9 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         base.OnPropertyChanged(change);
         if (change.Property == SourceProperty)
         {
-            if (change.OldValue is VulkanViewer oldSource)
+            if (change.OldValue is VulkanViewerControl oldSource)
                 UnsubscribeFromSource(oldSource);
-            if (change.NewValue is VulkanViewer newSource)
+            if (change.NewValue is VulkanViewerControl newSource)
                 SubscribeToSource(newSource);
             RefreshFromSource();
         }
@@ -97,16 +100,28 @@ public sealed class SunDirectionWidget : VulkanShaderControl
 
     protected override Size MeasureOverride(Size availableSize) => new(SunWidgetSize, SunWidgetSize);
 
-    protected override void OnRasterDraw(Renderer renderer, ImageResource target)
+    protected override void DrawHitTestBackground(DrawingContext context, Rect bounds)
+    {
+        var radius = Math.Min(bounds.Width, bounds.Height) * 0.5;
+        var center = bounds.Center;
+        context.DrawEllipse(HitTestBrush, null, center, radius, radius);
+    }
+
+    protected override void OnRasterDraw(Context context, ImageResource target)
     {
         if (!hasDirectionFromSource)
             RefreshFromSource();
 
-        EnsureProgram(renderer.Context);
+        EnsureProgram(context);
         if (shaderProgram is null)
             return;
 
-        lock (renderer.Scene.SyncRoot)
+        var source = Source;
+        var sourceScene = source?.Scene;
+        if (sourceScene is null)
+            return;
+
+        lock (sourceScene.SyncRoot)
         {
             var push = new PushConstants
             {
@@ -119,19 +134,17 @@ public sealed class SunDirectionWidget : VulkanShaderControl
     private void RefreshFromSource()
     {
         var source = Source;
-        if (source is null || !source.TryGetEnvironmentSettings(out var settings))
+        if (source is null)
             return;
 
-        var normalizedDirection = NormalizeOrDefault(settings.DirectionalDirection);
+        var settings = source.Environment;
+        var normalizedDirection = settings.DirectionalDirection;
         suppressUiEvents = true;
-        if (Vector3.DistanceSquared(direction, normalizedDirection) > 0.000001f || !hasDirectionFromSource)
-        {
-            direction = normalizedDirection;
-            directionRotation = BuildRotationFromDirection(direction);
-            InvalidateGpuFrame();
-        }
+        direction = normalizedDirection;
+        directionRotation = BuildRotationFromDirection(direction);
         hasDirectionFromSource = true;
         suppressUiEvents = false;
+        InvalidateGpuFrame();
     }
 
     private void OnPointerPressedRouted(object? sender, PointerPressedEventArgs e)
@@ -159,7 +172,7 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         if (!inDisk)
             return;
 
-        var began = capture.Begin(e.Pointer, p);
+        var began = SharedPointerCapture.TryBegin(this, e.Pointer, p);
         Log.Information("SunDirectionWidget capture begin result={Began} Pos={Pos}", began, p);
         if (began)
             e.Handled = true;
@@ -167,17 +180,17 @@ public sealed class SunDirectionWidget : VulkanShaderControl
 
     private void OnPointerMovedRouted(object? sender, PointerEventArgs e)
     {
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
-        if (capture.TryConsumeWarpMove())
+        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
         }
 
         var p = e.GetPosition(this);
-        var delta = capture.GetDelta(p);
+        var delta = SharedPointerCapture.GetDelta(this, p);
         var yaw = (float)(-delta.X * 0.01);
         var pitch = (float)(-delta.Y * 0.01);
         if (Math.Abs(yaw) > float.Epsilon || Math.Abs(pitch) > float.Epsilon)
@@ -187,34 +200,34 @@ public sealed class SunDirectionWidget : VulkanShaderControl
             Log.Information("SunDirectionWidget rotate orbit direction={Direction}", direction);
             InvalidateGpuFrame();
 
-            if (!suppressUiEvents)
-                Source?.SetDirectionalLightDirection(direction);
+            if (!suppressUiEvents && Source is { } source)
+                source.Environment = source.Environment with { DirectionalDirection = direction };
         }
 
-        capture.TryWrap(p);
+        SharedPointerCapture.TryWrapAround(this, p);
         e.Handled = true;
     }
 
     private void OnPointerReleasedRouted(object? sender, PointerReleasedEventArgs e)
     {
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
         Log.Information("SunDirectionWidget capture end (release).");
-        capture.End(e.Pointer);
+        SharedPointerCapture.End(this, e.Pointer);
         e.Handled = true;
     }
 
     protected override void OnLostFocus(Avalonia.Interactivity.RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End();
+        SharedPointerCapture.End(this);
     }
 
     private void OnPointerCaptureLostRouted(object? sender, PointerCaptureLostEventArgs e)
     {
         Log.Information("SunDirectionWidget pointer capture lost.");
-        capture.End();
+        SharedPointerCapture.End(this);
     }
 
     private bool IsPointInsideDisk(Point p)
@@ -260,7 +273,7 @@ public sealed class SunDirectionWidget : VulkanShaderControl
             enableAlphaBlending: true);
     }
 
-    private void SubscribeToSource(VulkanViewer? source)
+    private void SubscribeToSource(VulkanViewerControl? source)
     {
         if (ReferenceEquals(subscribedSource, source))
             return;
@@ -273,7 +286,7 @@ public sealed class SunDirectionWidget : VulkanShaderControl
         source.EnvironmentSettingsChanged += OnEnvironmentSettingsChanged;
     }
 
-    private void UnsubscribeFromSource(VulkanViewer? source)
+    private void UnsubscribeFromSource(VulkanViewerControl? source)
     {
         if (source is null)
             return;
@@ -283,7 +296,7 @@ public sealed class SunDirectionWidget : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(VulkanViewer.EnvironmentSettings settings)
+    private void OnEnvironmentSettingsChanged(VulkanViewerControl.EnvironmentSettings settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
@@ -293,18 +306,11 @@ public sealed class SunDirectionWidget : VulkanShaderControl
 
         var normalizedDirection = NormalizeOrDefault(settings.DirectionalDirection);
         suppressUiEvents = true;
-        if (Vector3.DistanceSquared(direction, normalizedDirection) > 0.000001f || !hasDirectionFromSource)
-        {
-            direction = normalizedDirection;
-            directionRotation = BuildRotationFromDirection(direction);
-            hasDirectionFromSource = true;
-            InvalidateGpuFrame();
-        }
-        else
-        {
-            hasDirectionFromSource = true;
-        }
+        direction = normalizedDirection;
+        directionRotation = BuildRotationFromDirection(direction);
+        hasDirectionFromSource = true;
         suppressUiEvents = false;
+        InvalidateGpuFrame();
     }
 
     private static Vector3 NormalizeOrDefault(Vector3 v)

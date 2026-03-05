@@ -13,7 +13,7 @@ using Avalonia.VisualTree;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class RotateViewGizmo : Control
+public sealed class RotateViewGizmoControl : Control
 {
     private const float SnapDurationSeconds = 0.32f;
     private const float DefaultArcballPivotDistance = 10f;
@@ -55,13 +55,12 @@ public sealed class RotateViewGizmo : Control
     private readonly record struct AxisHandle(int Id, int AxisIndex, float Depth, Point ScreenPosition);
 
     private readonly DispatcherTimer animationTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
-    private readonly ControlCaptureApi capture;
-    private readonly AxisHandle[] handles = new AxisHandle[6];
+        private readonly AxisHandle[] handles = new AxisHandle[6];
     private readonly int[] drawOrder = [0, 1, 2, 3, 4, 5];
     private readonly float[] axisHoverFade = new float[6];
     private readonly float[] negativeLabelFade = new float[6];
 
-    private Renderer? renderer;
+    private VulkanViewerControl? viewer;
     private Scene? observedScene;
     private TopLevel? observedTopLevel;
     private Point localPointer;
@@ -83,11 +82,18 @@ public sealed class RotateViewGizmo : Control
     private Vector3 snapTargetPosition;
     private Quaternion snapTargetRotation;
     private double lastTickSeconds;
+    public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
+        AvaloniaProperty.Register<RotateViewGizmoControl, VulkanViewerControl?>(nameof(Source));
 
-    public RotateViewGizmo()
+    public VulkanViewerControl? Source
     {
-        capture = new ControlCaptureApi(this);
-        var diameter = (GizmoBigCircleRadius * 2f) + 2f;
+        get => GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
+    }
+
+    public RotateViewGizmoControl()
+    {
+                var diameter = (GizmoBigCircleRadius * 2f) + 2f;
         Width = diameter;
         Height = diameter;
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
@@ -111,11 +117,24 @@ public sealed class RotateViewGizmo : Control
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        capture.End();
+        SharedPointerCapture.End(this);
         DetachObservedScene();
         DetachTopLevel();
         animationTimer.Stop();
         base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == SourceProperty)
+        {
+            if (Source?.Scene is { } scene)
+                AttachObservedScene(scene);
+            else
+                DetachObservedScene();
+            InvalidateVisual();
+        }
     }
 
     public override void Render(DrawingContext context)
@@ -202,7 +221,7 @@ public sealed class RotateViewGizmo : Control
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (capture.IsActive)
+        if (SharedPointerCapture.IsOwnedBy(this))
             return;
 
         ClearHoverState();
@@ -227,7 +246,7 @@ public sealed class RotateViewGizmo : Control
             snapAnimating = false;
             rotating = true;
             orbitCaptureMode = true;
-            capture.Begin(e.Pointer, localPointer);
+            SharedPointerCapture.TryBegin(this, e.Pointer, localPointer);
             centerFadeTarget = CenterFadeStrength;
             EnsureAnimationRunning(resetClock: true);
             InvalidateVisual();
@@ -241,7 +260,7 @@ public sealed class RotateViewGizmo : Control
             pressedPointer = localPointer;
             pressedAxisWorldDirection = AxisDirections[pressedAxisId];
             orbitCaptureMode = false;
-            capture.Begin(e.Pointer, localPointer);
+            SharedPointerCapture.TryBegin(this, e.Pointer, localPointer);
             e.Handled = true;
         }
     }
@@ -252,13 +271,13 @@ public sealed class RotateViewGizmo : Control
         localPointer = e.GetPosition(this);
         hasTrackedPointer = true;
 
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
         {
             RecomputeHover(localPointer, startAnimations: true);
             return;
         }
 
-        if (capture.TryConsumeWarpMove())
+        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
@@ -273,7 +292,7 @@ public sealed class RotateViewGizmo : Control
             return;
         }
 
-        var delta = capture.GetDelta(localPointer);
+        var delta = SharedPointerCapture.GetDelta(this, localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
             activeRenderer.Scene.Mutate(scene =>
@@ -283,7 +302,7 @@ public sealed class RotateViewGizmo : Control
             InvalidateVisual();
         }
 
-        capture.TryWrap(localPointer);
+        SharedPointerCapture.TryWrapAround(this, localPointer);
         e.Handled = true;
     }
 
@@ -291,9 +310,9 @@ public sealed class RotateViewGizmo : Control
     {
         base.OnPointerReleased(e);
 
-        if (capture.IsActive)
+        if (SharedPointerCapture.IsOwnedBy(this))
         {
-            capture.End(e.Pointer);
+            SharedPointerCapture.End(this, e.Pointer);
             var wasOrbitCapture = orbitCaptureMode;
             orbitCaptureMode = false;
             rotating = false;
@@ -333,7 +352,7 @@ public sealed class RotateViewGizmo : Control
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End();
+        SharedPointerCapture.End(this);
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
@@ -348,19 +367,19 @@ public sealed class RotateViewGizmo : Control
             return;
         }
 
-        if (!capture.IsActive && hasTrackedPointer)
+        if (!SharedPointerCapture.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
 
         var deltaSeconds = GetTickDeltaSeconds();
         var changed = AdvanceAnimations(deltaSeconds);
 
-        if (changed || rotating || capture.IsActive)
+        if (changed || rotating || SharedPointerCapture.IsOwnedBy(this))
             InvalidateVisual();
     }
 
     private bool NeedsAnimation()
     {
-        if (rotating || capture.IsActive || snapAnimating)
+        if (rotating || SharedPointerCapture.IsOwnedBy(this) || snapAnimating)
             return true;
 
         if (Math.Abs(centerFadeCurrent - centerFadeTarget) > AnimationEpsilon)
@@ -435,11 +454,11 @@ public sealed class RotateViewGizmo : Control
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        capture.End();
+        SharedPointerCapture.End(this);
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
-        if (!capture.IsActive && hasTrackedPointer)
+        if (!SharedPointerCapture.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
         InvalidateVisual();
     }
@@ -553,16 +572,19 @@ public sealed class RotateViewGizmo : Control
         return (float)deltaSeconds;
     }
 
-    private void StartSnapToAxis(Renderer activeRenderer, Vector3 axisDirectionFromPivot)
+    private void StartSnapToAxis(VulkanViewerControl activeViewer, Vector3 axisDirectionFromPivot)
     {
         if (axisDirectionFromPivot.LengthSquared() < 0.000001f)
             return;
 
-        activeRenderer.Scene.Mutate(scene => scene.CameraController.SetArcballPivot(GetDefaultArcballPivot(activeRenderer)));
+        if (activeViewer.Scene is null)
+            return;
 
-        var pivot = activeRenderer.Scene.CameraController.ArcballPivot;
-        var currentPosition = activeRenderer.Scene.CameraController.Position;
-        var currentRotation = activeRenderer.Scene.CameraController.Rotation;
+        activeViewer.Scene.Mutate(scene => scene.CameraController.SetArcballPivot(GetDefaultArcballPivot(activeViewer)));
+
+        var pivot = activeViewer.Scene.CameraController.ArcballPivot;
+        var currentPosition = activeViewer.Scene.CameraController.Position;
+        var currentRotation = activeViewer.Scene.CameraController.Rotation;
         var distance = Math.Max(1f, Vector3.Distance(currentPosition, pivot));
         var targetDirection = Vector3.Normalize(axisDirectionFromPivot);
         var targetPosition = pivot + targetDirection * distance;
@@ -587,21 +609,22 @@ public sealed class RotateViewGizmo : Control
         InvalidateVisual();
     }
 
-    private bool TryGetActiveRenderer(out Renderer activeRenderer)
+    private bool TryGetActiveRenderer(out VulkanViewerControl activeViewer)
     {
-        if (RendererHost.TryGetRenderer(out var resolved) && resolved is not null)
+        var resolved = Source;
+        if (resolved is not null && resolved.Scene is not null)
         {
-            if (!ReferenceEquals(renderer, resolved))
-                renderer = resolved;
+            if (!ReferenceEquals(viewer, resolved))
+                viewer = resolved;
 
             AttachObservedScene(resolved.Scene);
-            activeRenderer = resolved;
+            activeViewer = resolved;
             return true;
         }
 
         DetachObservedScene();
-        renderer = null;
-        activeRenderer = null!;
+        viewer = null;
+        activeViewer = null!;
         return false;
     }
 
@@ -631,7 +654,7 @@ public sealed class RotateViewGizmo : Control
             if (this.GetVisualRoot() is null)
                 return;
 
-            if (IsPointerOver && !capture.IsActive)
+            if (IsPointerOver && !SharedPointerCapture.IsOwnedBy(this))
                 RecomputeHover(localPointer, startAnimations: true);
             else
                 InvalidateVisual();
@@ -663,7 +686,7 @@ public sealed class RotateViewGizmo : Control
 
     private void OnTopLevelPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (this.GetVisualRoot() is null || capture.IsActive)
+        if (this.GetVisualRoot() is null || SharedPointerCapture.IsOwnedBy(this))
             return;
 
         localPointer = e.GetPosition(this);
@@ -699,15 +722,16 @@ public sealed class RotateViewGizmo : Control
         }
     }
 
-    private static Vector3 GetDefaultArcballPivot(Renderer activeRenderer)
+    private static Vector3 GetDefaultArcballPivot(VulkanViewerControl activeViewer)
     {
-        var forward = Vector3.Transform(Vector3.UnitZ, activeRenderer.Scene.CameraController.Rotation);
+        var scene = activeViewer.Scene!;
+        var forward = Vector3.Transform(Vector3.UnitZ, scene.CameraController.Rotation);
         if (forward.LengthSquared() < 0.000001f)
             forward = Vector3.UnitZ;
         else
             forward = Vector3.Normalize(forward);
 
-        return activeRenderer.Scene.CameraController.Position + (forward * DefaultArcballPivotDistance);
+        return scene.CameraController.Position + (forward * DefaultArcballPivotDistance);
     }
 
     private static Quaternion FromToRotation(Vector3 from, Vector3 to)

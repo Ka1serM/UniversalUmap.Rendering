@@ -357,7 +357,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
     private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer stagingBuffer, int pixelX, int pixelY)
     {
-        var commandBuffer = Context.Pool.CreateCommandBuffer();
+        var commandBuffer = Context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
 
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);

@@ -1,5 +1,3 @@
-using System;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Platform;
 using Avalonia.Rendering.Composition;
@@ -13,7 +11,16 @@ internal sealed class VulkanSurface : IAsyncDisposable
     private readonly Context context;
     private readonly ICompositionGpuInterop interop;
     private readonly CompositionDrawingSurface target;
-    private VulkanSurfaceImage? currentImage;
+
+    private PixelSize? currentSize;
+    private PixelSize? pendingResizeSize;
+    private ImageResource? image;
+    private SemaphorePair? semaphorePair;
+    private ICompositionImportedGpuSemaphore? availableSemaphore;
+    private ICompositionImportedGpuSemaphore? renderCompletedSemaphore;
+    private ICompositionImportedGpuImage? importedImage;
+    private Task? lastPresent;
+    private bool initialSubmit = true;
     private Task pendingDisposeTask = Task.CompletedTask;
 
     public VulkanSurface(Context context, ICompositionGpuInterop interop, CompositionDrawingSurface target)
@@ -23,118 +30,148 @@ internal sealed class VulkanSurface : IAsyncDisposable
         this.target = target;
     }
 
-    public bool TryBeginDraw(PixelSize size, out ImageResource image, out IDisposable? presentScope)
+    public bool TryBeginDraw(PixelSize size, out ImageResource drawImage)
     {
-        if (currentImage is null)
+        var recreatedImageThisFrame = false;
+        if (image is null)
         {
-            currentImage = new VulkanSurfaceImage(context, size, interop, target);
+            CreateResources(size);
+            recreatedImageThisFrame = true;
         }
 
-        if (currentImage.Size != size)
+        if (currentSize != size)
+            pendingResizeSize = size;
+
+        // Coalesce rapid resize events and only recreate backing resources once previous present completed.
+        if (pendingResizeSize is { } resizeSize && lastPresent is not { IsCompleted: false })
         {
-            QueueDispose(currentImage);
-            currentImage = new VulkanSurfaceImage(context, size, interop, target);
+            // NoorRay-style resize safety: do not swap targets while GPU work is in flight.
+            WaitForDeviceIdle();
+            QueueDisposeCurrentResources();
+            CreateResources(resizeSize);
+            pendingResizeSize = null;
+            recreatedImageThisFrame = true;
         }
 
-        if (currentImage.LastPresent is { IsCompleted: false })
+        if (image is null)
+            throw new InvalidOperationException("VulkanSurface failed to initialize image resources.");
+
+        // Match NoorRay flow: skip one frame after recreation to settle lifecycle.
+        if (recreatedImageThisFrame)
         {
-            image = currentImage.Image;
-            presentScope = null;
+            drawImage = image;
             return false;
         }
 
-        image = currentImage.Image;
-        currentImage.BeginDraw();
-        presentScope = new PresentScope(currentImage);
+        if (currentSize != size)
+        {
+            drawImage = image;
+            return false;
+        }
+
+        if (lastPresent is { IsCompleted: false })
+        {
+            drawImage = image;
+            return false;
+        }
+
+        drawImage = image;
+        BeginDraw();
         return true;
     }
 
-    private void QueueDispose(VulkanSurfaceImage image)
+    private void CreateResources(PixelSize size)
     {
-        var previousDisposeTask = pendingDisposeTask;
-        pendingDisposeTask = DisposeImageChainAsync(previousDisposeTask, image);
+        currentSize = size;
+        image = new ImageResource(context, (uint)Format.R8G8B8A8Unorm, size, true, interop.SupportedImageHandleTypes);
+        semaphorePair = new SemaphorePair(context, true);
+        availableSemaphore = null;
+        renderCompletedSemaphore = null;
+        importedImage = null;
+        lastPresent = null;
+        initialSubmit = true;
     }
 
-    private static async Task DisposeImageChainAsync(Task previousDisposeTask, VulkanSurfaceImage image)
+    private void QueueDisposeCurrentResources()
+    {
+        if (image is null || semaphorePair is null)
+            return;
+
+        var imageToDispose = image;
+        var semaphorePairToDispose = semaphorePair;
+        var availableSemaphoreToDispose = availableSemaphore;
+        var renderCompletedSemaphoreToDispose = renderCompletedSemaphore;
+        var importedImageToDispose = importedImage;
+        var lastPresentToWait = lastPresent;
+
+        image = null;
+        semaphorePair = null;
+        availableSemaphore = null;
+        renderCompletedSemaphore = null;
+        importedImage = null;
+        lastPresent = null;
+        currentSize = null;
+
+        var previousDisposeTask = pendingDisposeTask;
+        pendingDisposeTask = DisposeSurfaceResourcesChainAsync(
+            previousDisposeTask,
+            context,
+            imageToDispose,
+            semaphorePairToDispose,
+            availableSemaphoreToDispose,
+            renderCompletedSemaphoreToDispose,
+            importedImageToDispose,
+            lastPresentToWait);
+    }
+
+    private static async Task DisposeSurfaceResourcesChainAsync(
+        Task previousDisposeTask,
+        Context context,
+        ImageResource image,
+        SemaphorePair semaphorePair,
+        ICompositionImportedGpuSemaphore? availableSemaphore,
+        ICompositionImportedGpuSemaphore? renderCompletedSemaphore,
+        ICompositionImportedGpuImage? importedImage,
+        Task? lastPresent)
     {
         try
         {
             await previousDisposeTask;
-            await image.DisposeAsync();
+            if (lastPresent is not null)
+                await lastPresent;
+
+            // Ensure no GPU work can still reference these resources.
+            try
+            {
+                context.Api.DeviceWaitIdle(context.Device).ThrowOnError();
+            }
+            catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
+            {
+                Log.Warning(ex, "Device lost while waiting for idle before disposing Vulkan surface resources.");
+            }
+
+            if (importedImage is not null)
+                await importedImage.DisposeAsync();
+            if (availableSemaphore is not null)
+                await availableSemaphore.DisposeAsync();
+            if (renderCompletedSemaphore is not null)
+                await renderCompletedSemaphore.DisposeAsync();
+
+            semaphorePair.Dispose();
+            image.Dispose();
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed disposing Vulkan surface image.");
+            Log.Warning(ex, "Failed disposing Vulkan surface resources.");
         }
     }
 
-    private sealed class PresentScope : IDisposable
+    private void BeginDraw()
     {
-        private readonly VulkanSurfaceImage image;
-        private bool disposed;
+        if (image is null || semaphorePair is null)
+            throw new InvalidOperationException("VulkanSurface resources are unavailable.");
 
-        public PresentScope(VulkanSurfaceImage image)
-        {
-            this.image = image;
-        }
-
-        public void Dispose()
-        {
-            if (disposed)
-                return;
-
-            disposed = true;
-            image.Present();
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (currentImage is not null)
-        {
-            QueueDispose(currentImage);
-            currentImage = null;
-        }
-
-        await pendingDisposeTask;
-    }
-}
-
-internal sealed class VulkanSurfaceImage : IAsyncDisposable
-{
-    private readonly Context context;
-    private readonly ICompositionGpuInterop interop;
-    private readonly CompositionDrawingSurface target;
-    private readonly SemaphorePair semaphorePair;
-    private readonly ImageResource image;
-
-    private ICompositionImportedGpuSemaphore? availableSemaphore;
-    private ICompositionImportedGpuSemaphore? renderCompletedSemaphore;
-    private ICompositionImportedGpuImage? importedImage;
-    private Task? lastPresent;
-    private bool initialSubmit = true;
-
-    public VulkanSurfaceImage(
-        Context context,
-        PixelSize size,
-        ICompositionGpuInterop interop,
-        CompositionDrawingSurface target)
-    {
-        this.context = context;
-        this.interop = interop;
-        this.target = target;
-        Size = size;
-        image = new ImageResource(context, (uint)Format.R8G8B8A8Unorm, size, true, interop.SupportedImageHandleTypes);
-        semaphorePair = new SemaphorePair(context, true);
-    }
-
-    public PixelSize Size { get; }
-    public Task? LastPresent => lastPresent;
-    public ImageResource Image => image;
-
-    public void BeginDraw()
-    {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit);
 
@@ -150,9 +187,12 @@ internal sealed class VulkanSurfaceImage : IAsyncDisposable
             [PipelineStageFlags.TransferBit]);
     }
 
-    public void Present()
+    internal void Present()
     {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        if (image is null || semaphorePair is null || currentSize is null)
+            return;
+
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
         commandBuffer.Submit(signalSemaphores: [semaphorePair.RenderFinishedSemaphore]);
@@ -164,8 +204,8 @@ internal sealed class VulkanSurfaceImage : IAsyncDisposable
             new PlatformGraphicsExternalImageProperties
             {
                 Format = PlatformGraphicsExternalImageFormat.R8G8B8A8UNorm,
-                Width = Size.Width,
-                Height = Size.Height,
+                Width = currentSize.Value.Width,
+                Height = currentSize.Value.Height,
                 MemorySize = image.MemorySize
             });
 
@@ -174,17 +214,21 @@ internal sealed class VulkanSurfaceImage : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (lastPresent is not null)
-            await lastPresent;
+        QueueDisposeCurrentResources();
+        pendingResizeSize = null;
+        await pendingDisposeTask;
+    }
 
-        if (importedImage is not null)
-            await importedImage.DisposeAsync();
-        if (availableSemaphore is not null)
-            await availableSemaphore.DisposeAsync();
-        if (renderCompletedSemaphore is not null)
-            await renderCompletedSemaphore.DisposeAsync();
-
-        semaphorePair.Dispose();
-        image.Dispose();
+    private void WaitForDeviceIdle()
+    {
+        try
+        {
+            context.Api.DeviceWaitIdle(context.Device).ThrowOnError();
+        }
+        catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
+        {
+            // Device loss is handled by upper layers; best effort sync only.
+            Log.Warning(ex, "Device lost while waiting for idle during Vulkan surface synchronization.");
+        }
     }
 }

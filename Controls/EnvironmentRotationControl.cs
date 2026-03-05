@@ -5,13 +5,14 @@ using Avalonia;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class EnvironmentRotationWidget : VulkanShaderControl
+public sealed class EnvironmentRotationControl : VulkanShaderControl
 {
     private const double WidgetSize = 67d;
     private const double RightInset = 15d + WidgetSize + 10d;
@@ -23,28 +24,26 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         public Vector4 Params0; // x = rotationDeg, y = bindless texture index
     }
 
-    private readonly ControlCaptureApi capture;
     private VulkanRasterShaderProgram? shaderProgram;
     private Context? shaderContext;
-    private VulkanViewer? subscribedSource;
+    private VulkanViewerControl? subscribedSource;
 
     private bool suppressUiEvents;
     private bool hasRotationFromSource;
     private float rotationDegrees;
     private int environmentTextureIndex = -1;
 
-    public static readonly StyledProperty<VulkanViewer?> SourceProperty =
-        AvaloniaProperty.Register<EnvironmentRotationWidget, VulkanViewer?>(nameof(Source));
+    public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
+        AvaloniaProperty.Register<EnvironmentRotationControl, VulkanViewerControl?>(nameof(Source));
 
-    public VulkanViewer? Source
+    public VulkanViewerControl? Source
     {
         get => GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
-    public EnvironmentRotationWidget()
+    public EnvironmentRotationControl()
     {
-        capture = new ControlCaptureApi(this);
         IsHitTestVisible = true;
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Right;
@@ -69,12 +68,16 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         UnsubscribeFromSource(subscribedSource);
-        capture.End();
+        SharedPointerCapture.End(this);
+        hasRotationFromSource = false;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnGpuResourcesInvalidated()
+    {
         shaderProgram?.Dispose();
         shaderProgram = null;
         shaderContext = null;
-        hasRotationFromSource = false;
-        base.OnDetachedFromVisualTree(e);
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
@@ -82,9 +85,9 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         base.OnPropertyChanged(change);
         if (change.Property == SourceProperty)
         {
-            if (change.OldValue is VulkanViewer oldSource)
+            if (change.OldValue is VulkanViewerControl oldSource)
                 UnsubscribeFromSource(oldSource);
-            if (change.NewValue is VulkanViewer newSource)
+            if (change.NewValue is VulkanViewerControl newSource)
                 SubscribeToSource(newSource);
             RefreshFromSource();
         }
@@ -92,16 +95,28 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
 
     protected override Size MeasureOverride(Size availableSize) => new(WidgetSize, WidgetSize);
 
-    protected override void OnRasterDraw(Renderer renderer, ImageResource target)
+    protected override void DrawHitTestBackground(DrawingContext context, Rect bounds)
+    {
+        var radius = Math.Min(bounds.Width, bounds.Height) * 0.5;
+        var center = bounds.Center;
+        context.DrawEllipse(HitTestBrush, null, center, radius, radius);
+    }
+
+    protected override void OnRasterDraw(Context context, ImageResource target)
     {
         if (!hasRotationFromSource)
             RefreshFromSource();
 
-        EnsureProgram(renderer);
+        EnsureProgram(context);
         if (shaderProgram is null)
             return;
 
-        lock (renderer.Scene.SyncRoot)
+        var source = Source;
+        var sourceScene = source?.Scene;
+        if (sourceScene is null)
+            return;
+
+        lock (sourceScene.SyncRoot)
         {
             var push = new PushConstants
             {
@@ -114,19 +129,16 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
     private void RefreshFromSource()
     {
         var source = Source;
-        if (source is null || !source.TryGetEnvironmentSettings(out var settings))
+        if (source is null)
             return;
 
+        var settings = source.Environment;
         suppressUiEvents = true;
-        var changed = !hasRotationFromSource ||
-                      MathF.Abs(rotationDegrees - settings.Rotation) > 0.0001f ||
-                      environmentTextureIndex != settings.TextureIndex;
         rotationDegrees = settings.Rotation;
         environmentTextureIndex = settings.TextureIndex;
         hasRotationFromSource = true;
         suppressUiEvents = false;
-        if (changed)
-            InvalidateGpuFrame();
+        InvalidateGpuFrame();
     }
 
     private void OnPointerPressedRouted(object? sender, PointerPressedEventArgs e)
@@ -143,53 +155,53 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         if (!IsPointInsideDisk(local))
             return;
 
-        if (capture.Begin(e.Pointer, local))
+        if (SharedPointerCapture.TryBegin(this, e.Pointer, local))
             e.Handled = true;
     }
 
     private void OnPointerMovedRouted(object? sender, PointerEventArgs e)
     {
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
-        if (capture.TryConsumeWarpMove())
+        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
         }
 
         var p = e.GetPosition(this);
-        var delta = capture.GetDelta(p);
+        var delta = SharedPointerCapture.GetDelta(this, p);
         if (Math.Abs(delta.X) > double.Epsilon)
         {
             rotationDegrees = WrapDegrees(rotationDegrees + (float)(delta.X * 0.35));
             InvalidateGpuFrame();
-            if (!suppressUiEvents)
-                Source?.SetEnvironmentRotation(rotationDegrees);
+            if (!suppressUiEvents && Source is { } source)
+                source.Environment = source.Environment with { Rotation = rotationDegrees };
         }
 
-        capture.TryWrap(p);
+        SharedPointerCapture.TryWrapAround(this, p);
         e.Handled = true;
     }
 
     private void OnPointerReleasedRouted(object? sender, PointerReleasedEventArgs e)
     {
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
-        capture.End(e.Pointer);
+        SharedPointerCapture.End(this, e.Pointer);
         e.Handled = true;
     }
 
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End();
+        SharedPointerCapture.End(this);
     }
 
     private void OnPointerCaptureLostRouted(object? sender, PointerCaptureLostEventArgs e)
     {
-        capture.End();
+        SharedPointerCapture.End(this);
     }
 
     private bool IsPointInsideDisk(Point p)
@@ -215,15 +227,14 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         return wrapped;
     }
 
-    private void EnsureProgram(Renderer renderer)
+    private void EnsureProgram(Context context)
     {
-        var context = renderer.Context;
         if (shaderProgram is not null && ReferenceEquals(shaderContext, context))
             return;
 
         shaderProgram?.Dispose();
         shaderContext = context;
-        if (!renderer.TryGetBindlessTextureDescriptors(out var bindlessSetLayout, out var bindlessSet))
+        if (Source is null || !Source.TryGetBindlessTextureDescriptors(out var bindlessSetLayout, out var bindlessSet))
         {
             shaderProgram = null;
             return;
@@ -240,7 +251,7 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
             externalDescriptorSet: bindlessSet);
     }
 
-    private void SubscribeToSource(VulkanViewer? source)
+    private void SubscribeToSource(VulkanViewerControl? source)
     {
         if (ReferenceEquals(subscribedSource, source))
             return;
@@ -253,7 +264,7 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         source.EnvironmentSettingsChanged += OnEnvironmentSettingsChanged;
     }
 
-    private void UnsubscribeFromSource(VulkanViewer? source)
+    private void UnsubscribeFromSource(VulkanViewerControl? source)
     {
         if (source is null)
             return;
@@ -263,7 +274,7 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(VulkanViewer.EnvironmentSettings settings)
+    private void OnEnvironmentSettingsChanged(VulkanViewerControl.EnvironmentSettings settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
@@ -272,14 +283,10 @@ public sealed class EnvironmentRotationWidget : VulkanShaderControl
         }
 
         suppressUiEvents = true;
-        var changed = !hasRotationFromSource ||
-                      MathF.Abs(rotationDegrees - settings.Rotation) > 0.0001f ||
-                      environmentTextureIndex != settings.TextureIndex;
         rotationDegrees = settings.Rotation;
         environmentTextureIndex = settings.TextureIndex;
         hasRotationFromSource = true;
         suppressUiEvents = false;
-        if (changed)
-            InvalidateGpuFrame();
+        InvalidateGpuFrame();
     }
 }

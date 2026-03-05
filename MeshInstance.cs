@@ -6,9 +6,7 @@ namespace UniversalUmap.Rendering;
 
 public sealed class MeshInstance
 {
-    private static int rtxTransformLogCount;
     private readonly IScene owner;
-
     public string Name { get; }
     public MeshAsset MeshAsset { get; }
     public Matrix4x4 Transform { get; private set; }
@@ -46,6 +44,19 @@ public sealed class MeshInstance
         owner.SetTlasDirty();
     }
 
+    internal ComputeInstanceGpu BuildComputeInstanceData()
+    {
+        var transform = Transform;
+        Matrix4x4.Invert(transform, out var inverse);
+
+        return new ComputeInstanceGpu
+        {
+            Transform = transform,
+            InverseTransform = inverse,
+            MeshId = MeshAsset.MeshIndex
+        };
+    }
+
     internal unsafe AccelerationStructureInstanceKHR BuildRtxInstanceData()
     {
         var m = Transform;
@@ -62,26 +73,13 @@ public sealed class MeshInstance
         var instance = new AccelerationStructureInstanceKHR
         {
             Transform = vkTransform,
-            AccelerationStructureReference = MeshAsset.GetBlasAddress()
+            AccelerationStructureReference = MeshAsset.GetBlasAddress(),
+            InstanceCustomIndex = MeshAsset.MeshIndex,
+            Mask = 0xFF,
+            InstanceShaderBindingTableRecordOffset = 0,
+            Flags = GeometryInstanceFlagsKHR.TriangleFacingCullDisableBitKhr
         };
-        instance.InstanceCustomIndex = MeshAsset.MeshIndex;
-        instance.Mask = 0xFF;
-        instance.InstanceShaderBindingTableRecordOffset = 0;
-        instance.Flags = GeometryInstanceFlagsKHR.TriangleFacingCullDisableBitKhr;
 
-        if (rtxTransformLogCount < 10)
-        {
-            rtxTransformLogCount++;
-            Serilog.Log.Debug(
-                "RTX instance sample: name={Name}, col3Translation=({Tx:0.###},{Ty:0.###},{Tz:0.###}), row4=({R41:0.###},{R42:0.###},{R43:0.###})",
-                Name,
-                m.M14,
-                m.M24,
-                m.M34,
-                m.M41,
-                m.M42,
-                m.M43);
-        }
         return instance;
     }
 }

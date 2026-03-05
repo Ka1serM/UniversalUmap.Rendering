@@ -272,7 +272,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Log.Information("RTX raytracer pipeline and descriptors created.");
 
         BuildShaderBindingTable();
-        var initCommandBuffer = Context.Pool.CreateCommandBuffer();
+        var initCommandBuffer = Context.CreateCommandBuffer();
         initCommandBuffer.BeginRecording();
         UpdateSceneResources(initCommandBuffer, force: true);
         initCommandBuffer.SubmitAndWait();

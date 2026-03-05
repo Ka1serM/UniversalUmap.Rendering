@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Avalonia;
+using CUE4Parse.UE4.Assets.Exports.Texture;
 using Serilog;
 using Silk.NET.Vulkan;
 using StbImageSharp;
@@ -20,9 +22,7 @@ public sealed unsafe class TextureAsset : IDisposable
     public string SourcePath { get; }
     public int Index { get; internal set; } = -1;
 
-    internal Image Image { get; }
-    internal DeviceMemory Memory { get; }
-    internal ImageView View { get; }
+    internal ImageResource Image { get; }
     internal Sampler Sampler { get; }
 
     private TextureAsset(
@@ -45,52 +45,12 @@ public sealed unsafe class TextureAsset : IDisposable
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         staging.Upload(pixelBytes);
 
-        var imageInfo = new ImageCreateInfo
-        {
-            SType = StructureType.ImageCreateInfo,
-            ImageType = ImageType.Type2D,
-            Format = format,
-            Extent = new Extent3D(width, height, 1),
-            MipLevels = 1,
-            ArrayLayers = 1,
-            Samples = SampleCountFlags.Count1Bit,
-            Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit,
-            SharingMode = SharingMode.Exclusive,
-            InitialLayout = ImageLayout.Undefined
-        };
-        context.Api.CreateImage(context.Device, in imageInfo, default, out var image).ThrowOnError();
-        Image = image;
-
-        context.Api.GetImageMemoryRequirements(context.Device, image, out var requirements);
-        var memoryTypeIndex = MemoryHelper.FindSuitableMemoryTypeIndex(
-            context.Api,
-            context.PhysicalDevice,
-            requirements.MemoryTypeBits,
-            MemoryPropertyFlags.DeviceLocalBit);
-        if (memoryTypeIndex < 0)
-            throw new InvalidOperationException("Could not find suitable memory type for texture image");
-
-        var allocInfo = new MemoryAllocateInfo
-        {
-            SType = StructureType.MemoryAllocateInfo,
-            AllocationSize = requirements.Size,
-            MemoryTypeIndex = (uint)memoryTypeIndex
-        };
-        context.Api.AllocateMemory(context.Device, in allocInfo, default, out var memory).ThrowOnError();
-        Memory = memory;
-        context.Api.BindImageMemory(context.Device, Image, Memory, 0).ThrowOnError();
-
-        var viewInfo = new ImageViewCreateInfo
-        {
-            SType = StructureType.ImageViewCreateInfo,
-            Image = Image,
-            ViewType = ImageViewType.Type2D,
-            Format = format,
-            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1)
-        };
-        context.Api.CreateImageView(context.Device, in viewInfo, default, out var view).ThrowOnError();
-        View = view;
+        Image = new ImageResource(
+            context,
+            (uint)format,
+            new PixelSize((int)width, (int)height),
+            exportable: false,
+            supportedHandleTypes: Array.Empty<string>());
 
         var samplerInfo = new SamplerCreateInfo
         {
@@ -106,17 +66,12 @@ public sealed unsafe class TextureAsset : IDisposable
         context.Api.CreateSampler(context.Device, in samplerInfo, default, out var sampler).ThrowOnError();
         Sampler = sampler;
 
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
-        MemoryHelper.TransitionLayout(
-            context.Api,
+        Image.TransitionLayout(
             commandBuffer.InternalHandle,
-            Image,
-            ImageLayout.Undefined,
-            AccessFlags.None,
             ImageLayout.TransferDstOptimal,
-            AccessFlags.TransferWriteBit,
-            1);
+            AccessFlags.TransferWriteBit);
 
         var copy = new BufferImageCopy
         {
@@ -130,20 +85,15 @@ public sealed unsafe class TextureAsset : IDisposable
         context.Api.CmdCopyBufferToImage(
             commandBuffer.InternalHandle,
             staging.Handle,
-            Image,
+            Image.InternalHandle,
             ImageLayout.TransferDstOptimal,
             1,
             in copy);
 
-        MemoryHelper.TransitionLayout(
-            context.Api,
+        Image.TransitionLayout(
             commandBuffer.InternalHandle,
-            Image,
-            ImageLayout.TransferDstOptimal,
-            AccessFlags.TransferWriteBit,
             ImageLayout.ShaderReadOnlyOptimal,
-            AccessFlags.ShaderReadBit,
-            1);
+            AccessFlags.ShaderReadBit);
         commandBuffer.RetainForExecution(staging);
         commandBuffer.SubmitAndWait();
         Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
@@ -151,7 +101,7 @@ public sealed unsafe class TextureAsset : IDisposable
 
     internal DescriptorImageInfo GetDescriptorImageInfo()
     {
-        return new DescriptorImageInfo(Sampler, View, ImageLayout.ShaderReadOnlyOptimal);
+        return new DescriptorImageInfo(Sampler, Image.InternalView, ImageLayout.ShaderReadOnlyOptimal);
     }
 
     public static TextureAsset CreateHdr(Context context, string sourcePath)
@@ -233,6 +183,37 @@ public sealed unsafe class TextureAsset : IDisposable
             Format.R8G8B8A8Unorm);
     }
 
+    public static bool TryCreateFromUTexture(
+        Context context,
+        UTexture texture,
+        string sourcePath,
+        int maxDimension,
+        out TextureAsset? asset)
+    {
+        asset = null;
+        try
+        {
+            var mipIndex = texture.GetMipIndexByMaxSize(maxDimension);
+            var mip = mipIndex >= 0 ? texture.GetMip(mipIndex) : texture.GetFirstMip();
+            if (mip?.BulkData?.Data is not { Length: > 0 } bulkData)
+                return false;
+
+            if (!TryMapUnrealToVulkanFormat(texture.Format, out var format))
+                return false;
+
+            var width = (uint)Math.Max(1, mip.SizeX);
+            var height = (uint)Math.Max(1, mip.SizeY);
+            var name = string.IsNullOrWhiteSpace(sourcePath) ? texture.Name : sourcePath;
+            asset = new TextureAsset(context, name, sourcePath, bulkData, width, height, format);
+            return true;
+        }
+        catch
+        {
+            asset = null;
+            return false;
+        }
+    }
+
     public static TextureAsset LoadHdr(Context context, string sourcePath)
     {
         return CreateHdrWithCdf(context, sourcePath).Environment;
@@ -252,12 +233,7 @@ public sealed unsafe class TextureAsset : IDisposable
     {
         if (Sampler.Handle != default)
             context.Api.DestroySampler(context.Device, Sampler, default);
-        if (View.Handle != default)
-            context.Api.DestroyImageView(context.Device, View, default);
-        if (Image.Handle != default)
-            context.Api.DestroyImage(context.Device, Image, default);
-        if (Memory.Handle != default)
-            context.Api.FreeMemory(context.Device, Memory, default);
+        Image.Dispose();
     }
 
     private static HdrTextureSet CreateHdrWithCdfFromDecoded(
@@ -371,5 +347,68 @@ public sealed unsafe class TextureAsset : IDisposable
         }
 
         return outPixels;
+    }
+
+    private static bool TryMapUnrealToVulkanFormat(EPixelFormat format, out Format vkFormat)
+    {
+        switch (format)
+        {
+            case EPixelFormat.PF_B8G8R8A8:
+                vkFormat = Format.B8G8R8A8Unorm;
+                return true;
+            case EPixelFormat.PF_R8G8B8A8:
+            case EPixelFormat.PF_A8R8G8B8:
+                vkFormat = Format.R8G8B8A8Unorm;
+                return true;
+            case EPixelFormat.PF_G8:
+            case EPixelFormat.PF_R8:
+                vkFormat = Format.R8Unorm;
+                return true;
+            case EPixelFormat.PF_G16:
+                vkFormat = Format.R16Unorm;
+                return true;
+            case EPixelFormat.PF_G16R16:
+                vkFormat = Format.R16G16Unorm;
+                return true;
+            case EPixelFormat.PF_G16R16F:
+                vkFormat = Format.R16G16Sfloat;
+                return true;
+            case EPixelFormat.PF_R16F:
+                vkFormat = Format.R16Sfloat;
+                return true;
+            case EPixelFormat.PF_R32_FLOAT:
+                vkFormat = Format.R32Sfloat;
+                return true;
+            case EPixelFormat.PF_A16B16G16R16:
+                vkFormat = Format.R16G16B16A16Unorm;
+                return true;
+            case EPixelFormat.PF_A32B32G32R32F:
+                vkFormat = Format.R32G32B32A32Sfloat;
+                return true;
+            case EPixelFormat.PF_DXT1:
+                vkFormat = Format.BC1RgbaUnormBlock;
+                return true;
+            case EPixelFormat.PF_DXT3:
+                vkFormat = Format.BC2UnormBlock;
+                return true;
+            case EPixelFormat.PF_DXT5:
+                vkFormat = Format.BC3UnormBlock;
+                return true;
+            case EPixelFormat.PF_BC4:
+                vkFormat = Format.BC4UnormBlock;
+                return true;
+            case EPixelFormat.PF_BC5:
+                vkFormat = Format.BC5UnormBlock;
+                return true;
+            case EPixelFormat.PF_BC6H:
+                vkFormat = Format.BC6HSfloatBlock;
+                return true;
+            case EPixelFormat.PF_BC7:
+                vkFormat = Format.BC7UnormBlock;
+                return true;
+            default:
+                vkFormat = default;
+                return false;
+        }
     }
 }

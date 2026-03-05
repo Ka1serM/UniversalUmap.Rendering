@@ -1,6 +1,4 @@
 using System.Runtime.InteropServices;
-using System.IO;
-using System.Linq;
 using Avalonia.Platform;
 using Avalonia.Rendering.Composition;
 using Serilog;
@@ -10,8 +8,11 @@ using Silk.NET.Vulkan.Extensions.KHR;
 
 namespace UniversalUmap.Rendering;
 
-public sealed unsafe class Context : IDisposable
+public sealed class Context : IDisposable
 {
+    private static readonly object SharedSync = new();
+    private static Context? shared;
+
     public Vk Api { get; private set; }
     public Instance Instance { get; private set; }
     public PhysicalDevice PhysicalDevice { get; private set; }
@@ -22,7 +23,44 @@ public sealed unsafe class Context : IDisposable
     public bool RayTracingSupported { get; private set; }
     public string DeviceName { get; private set; } = string.Empty;
 
-    public Context(ICompositionGpuInterop gpuInterop)
+    public CommandBufferPool.PooledCommandBuffer CreateCommandBuffer()
+    {
+        return Pool.CreateCommandBuffer();
+    }
+
+    public void WaitForSubmittedCommandBuffers()
+    {
+        Pool.WaitForSubmittedCommandBuffers();
+    }
+    public static async Task<Context?> AcquireAsync(Compositor compositor)
+    {
+        lock (SharedSync)
+        {
+            if (shared is not null)
+                return shared;
+        }
+
+        var interop = await compositor.TryGetCompositionGpuInterop();
+        if (interop is null)
+            return null;
+
+        lock (SharedSync)
+        {
+            shared ??= new Context(interop);
+            return shared;
+        }
+    }
+
+    public static bool TryGetShared(out Context? context)
+    {
+        lock (SharedSync)
+        {
+            context = shared;
+            return context is not null;
+        }
+    }
+
+    public unsafe Context(ICompositionGpuInterop gpuInterop)
     {
         ConfigureValidationLayerPath();
 
@@ -413,6 +451,7 @@ public sealed unsafe class Context : IDisposable
                 api.DestroyInstance(vkInstance, default);
             }
         }
+
     }
 
     private readonly record struct DeviceCandidate(
@@ -473,7 +512,7 @@ public sealed unsafe class Context : IDisposable
 #endif
     }
 
-    private static HashSet<string> EnumerateInstanceLayers(Vk api)
+    private static unsafe HashSet<string> EnumerateInstanceLayers(Vk api)
     {
         uint layerCount = 0;
         api.EnumerateInstanceLayerProperties(ref layerCount, null).ThrowOnError();
@@ -536,11 +575,17 @@ public sealed unsafe class Context : IDisposable
         }
     }
 
-    public void Dispose()
+    public unsafe void Dispose()
     {
         TextureAsset.DisposeSharedStagingRing();
         Pool.Dispose();
         Api.DestroyDevice(Device, default);
         Api.DestroyInstance(Instance, default);
+
+        lock (SharedSync)
+        {
+            if (ReferenceEquals(shared, this))
+                shared = null;
+        }
     }
 }

@@ -6,7 +6,7 @@ using Serilog;
 
 namespace UniversalUmap.Rendering;
 
-internal sealed class PerspectiveCamera : ISceneTickable
+internal sealed class PerspectiveCamera
 {
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
     private static readonly Vector3 LocalForward = new(0f, 0f, 1f);
@@ -142,12 +142,6 @@ internal sealed class PerspectiveCamera : ISceneTickable
 
         cameraData = BuildCameraData(renderSize);
         return changed;
-    }
-
-    public void Tick(Scene scene, PixelSize renderSize, float deltaTimeSeconds)
-    {
-        var changed = Update(renderSize, deltaTimeSeconds, out var cameraData);
-        scene.SetCameraData(cameraData, changed);
     }
 
     internal static bool IsCameraDataEquivalent(in CameraDataGpu a, in CameraDataGpu b)

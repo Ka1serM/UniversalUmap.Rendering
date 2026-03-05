@@ -149,7 +149,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         pipeline = pipelineLocal;
         Log.Information("Compute raytracer pipeline and descriptors created.");
 
-        var initCommandBuffer = Context.Pool.CreateCommandBuffer();
+        var initCommandBuffer = Context.CreateCommandBuffer();
         initCommandBuffer.BeginRecording();
         UpdateSceneResources(initCommandBuffer, force: true);
         initCommandBuffer.SubmitAndWait();

@@ -10,7 +10,7 @@ using Avalonia.Threading;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class DebugOverlay : Control
+public sealed class DebugOverlayControl : Control
 {
     private static readonly IBrush OverlayBackgroundBrush = new SolidColorBrush(Color.FromArgb(155, 12, 12, 12));
     private static readonly IBrush OverlayTextBrush = Brushes.White;
@@ -25,16 +25,16 @@ public sealed class DebugOverlay : Control
     private Rect overlayPanelRect;
     private bool overlayDirty = true;
 
-    public static readonly StyledProperty<VulkanViewer?> SourceProperty =
-        AvaloniaProperty.Register<DebugOverlay, VulkanViewer?>(nameof(Source));
+    public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
+        AvaloniaProperty.Register<DebugOverlayControl, VulkanViewerControl?>(nameof(Source));
 
-    public VulkanViewer? Source
+    public VulkanViewerControl? Source
     {
         get => GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
-    public DebugOverlay()
+    public DebugOverlayControl()
     {
         IsHitTestVisible = false;
         HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -75,13 +75,13 @@ public sealed class DebugOverlay : Control
         }
     }
 
-    private void SubscribeToSource(VulkanViewer source)
+    private void SubscribeToSource(VulkanViewerControl source)
     {
         source.FrameRendered += OnFrameRendered;
         source.DebugOverlayToggleRequested += OnDebugOverlayToggleRequested;
     }
 
-    private void UnsubscribeFromSource(VulkanViewer source)
+    private void UnsubscribeFromSource(VulkanViewerControl source)
     {
         source.FrameRendered -= OnFrameRendered;
         source.DebugOverlayToggleRequested -= OnDebugOverlayToggleRequested;
@@ -185,9 +185,9 @@ public sealed class DebugOverlay : Control
         if (change.Property != SourceProperty)
             return;
 
-        if (change.OldValue is VulkanViewer oldSource)
+        if (change.OldValue is VulkanViewerControl oldSource)
             UnsubscribeFromSource(oldSource);
-        if (change.NewValue is VulkanViewer newSource)
+        if (change.NewValue is VulkanViewerControl newSource)
             SubscribeToSource(newSource);
 
         showDebugOverlay = true;

@@ -19,6 +19,8 @@ public sealed unsafe class ImageResource : IDisposable
     private AccessFlags currentAccessFlags;
 
     internal Image InternalHandle { get; }
+    internal ImageView InternalView => imageView;
+    internal DeviceMemory InternalMemory => imageMemory;
     public PixelSize Size { get; }
     public uint MipLevels { get; } = 1;
     public ulong MemorySize { get; }
@@ -47,16 +49,19 @@ public sealed unsafe class ImageResource : IDisposable
             ? ExternalMemoryHandleTypeFlags.OpaqueWin32Bit
             : ExternalMemoryHandleTypeFlags.OpaqueFDBit;
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            && !supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle))
+        if (exportable)
         {
-            throw new NotSupportedException("Vulkan Opaque NT export is not supported by compositor");
-        }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                && !supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle))
+            {
+                throw new NotSupportedException("Vulkan Opaque NT export is not supported by compositor");
+            }
 
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            && !supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaquePosixFileDescriptor))
-        {
-            throw new NotSupportedException("Vulkan Opaque FD export is not supported by compositor");
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                && !supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaquePosixFileDescriptor))
+            {
+                throw new NotSupportedException("Vulkan Opaque FD export is not supported by compositor");
+            }
         }
 
         var externalImageInfo = new ExternalMemoryImageCreateInfo

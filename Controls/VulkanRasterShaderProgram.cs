@@ -208,7 +208,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         in TPushConstants pushConstants)
         where TPushConstants : unmanaged
     {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         BeginRenderPass(commandBuffer, target);
 
@@ -244,7 +244,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         in TPushConstants pushConstants)
         where TPushConstants : unmanaged
     {
-        var commandBuffer = context.Pool.CreateCommandBuffer();
+        var commandBuffer = context.CreateCommandBuffer();
         commandBuffer.BeginRecording();
         BeginRenderPass(commandBuffer, target);
 

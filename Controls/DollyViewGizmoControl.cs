@@ -10,7 +10,7 @@ using FluentIcons.Common;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class DollyViewGizmo : ContentControl
+public sealed class DollyViewGizmoControl : ContentControl
 {
     private const float HoverScaleBoost = 0.06f;
     private static readonly Color FillColor = Color.FromArgb(166, 58, 58, 58);
@@ -21,12 +21,18 @@ public sealed class DollyViewGizmo : ContentControl
 
     private readonly Border chrome;
     private readonly ScaleTransform hoverScale = new(1, 1);
-    private readonly ControlCaptureApi capture;
     private bool isHovering;
+    public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
+        AvaloniaProperty.Register<DollyViewGizmoControl, VulkanViewerControl?>(nameof(Source));
 
-    public DollyViewGizmo()
+    public VulkanViewerControl? Source
     {
-        capture = new ControlCaptureApi(this);
+        get => GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
+    }
+
+    public DollyViewGizmoControl()
+    {
         Width = 38;
         Height = 38;
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
@@ -53,7 +59,7 @@ public sealed class DollyViewGizmo : ContentControl
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        capture.End();
+        SharedPointerCapture.End(this);
         base.OnDetachedFromVisualTree(e);
     }
 
@@ -67,7 +73,7 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (capture.IsActive)
+        if (SharedPointerCapture.IsOwnedBy(this))
             return;
         isHovering = false;
         ApplyVisualState();
@@ -80,7 +86,7 @@ public sealed class DollyViewGizmo : ContentControl
         if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
-        capture.Begin(e.Pointer, e.GetPosition(this));
+        SharedPointerCapture.TryBegin(this, e.Pointer, e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
     }
@@ -88,34 +94,35 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
-        if (capture.TryConsumeWarpMove())
+        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
         }
 
-        if (!RendererHost.TryGetRenderer(out var activeRenderer) || activeRenderer is null)
+        var viewer = Source;
+        if (viewer?.Scene is null)
             return;
 
         var position = e.GetPosition(this);
-        var delta = capture.GetDelta(position);
+        var delta = SharedPointerCapture.GetDelta(this, position);
         if (Math.Abs(delta.Y) > double.Epsilon)
-            activeRenderer.Scene.Mutate(scene => scene.CameraController.Dolly((float)(-delta.Y * 0.05)));
+            viewer.Scene.Mutate(scene => scene.CameraController.Dolly((float)(-delta.Y * 0.05)));
 
-        capture.TryWrap(position);
+        SharedPointerCapture.TryWrapAround(this, position);
         e.Handled = true;
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
-        if (!capture.IsActive)
+        if (!SharedPointerCapture.IsOwnedBy(this))
             return;
 
-        capture.End(e.Pointer);
+        SharedPointerCapture.End(this, e.Pointer);
         isHovering = Bounds.Contains(e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
@@ -124,7 +131,7 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        capture.End();
+        SharedPointerCapture.End(this);
         isHovering = false;
         ApplyVisualState();
     }
@@ -132,14 +139,14 @@ public sealed class DollyViewGizmo : ContentControl
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        capture.End();
+        SharedPointerCapture.End(this);
         isHovering = false;
         ApplyVisualState();
     }
 
     private void ApplyVisualState()
     {
-        if (capture.IsActive)
+        if (SharedPointerCapture.IsOwnedBy(this))
         {
             chrome.Background = PressBrush;
             hoverScale.ScaleX = 1d + HoverScaleBoost;
