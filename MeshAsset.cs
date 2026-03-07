@@ -2,6 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
+using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Meshes.PSK;
+using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 
@@ -9,6 +14,28 @@ namespace UniversalUmap.Rendering;
 
 public sealed class MeshAsset : IDisposable
 {
+    private const float UnrealToRendererScale = 0.01f;
+    private static readonly Matrix4x4 UnrealToRendererBasis = new()
+    {
+        M11 = 0f,
+        M21 = 1f,
+        M31 = 0f,
+        M41 = 0f,
+        M12 = 0f,
+        M22 = 0f,
+        M32 = -1f,
+        M42 = 0f,
+        M13 = 1f,
+        M23 = 0f,
+        M33 = 0f,
+        M43 = 0f,
+        M14 = 0f,
+        M24 = 0f,
+        M34 = 0f,
+        M44 = 1f
+    };
+    private static readonly bool UnrealToRendererFlipsHandedness = UnrealToRendererBasis.GetDeterminant() < 0f;
+
     private readonly Context context;
     private readonly Accel? blasRtx;
     private readonly GpuBuffer? bvhNodesBuffer;
@@ -120,6 +147,48 @@ public sealed class MeshAsset : IDisposable
         IReadOnlyList<MaterialData>? materials = null)
     {
         return new MeshAsset(context, name, vertices, indices, faces, materials);
+    }
+
+    public static string BuildNameFromSourcePath(string meshPath, string fallbackName)
+    {
+        var baseName = string.IsNullOrWhiteSpace(fallbackName) ? "Mesh" : fallbackName;
+        var cleanBase = new string(baseName.Select(ch => char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray());
+        if (string.IsNullOrWhiteSpace(cleanBase))
+            cleanBase = "Mesh";
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(meshPath));
+        var suffix = Convert.ToHexString(hash.AsSpan(0, 8));
+        return $"{cleanBase}_{suffix}";
+    }
+
+    public static bool TryCreateFromUStaticMesh(
+        Context context,
+        UStaticMesh staticMesh,
+        string meshAssetName,
+        out MeshAsset? mesh,
+        IReadOnlyList<MaterialData>? materials = null)
+    {
+        mesh = null;
+        if (!staticMesh.TryConvert(out var converted))
+            return false;
+
+        using (converted)
+        {
+            var lod = converted.LODs.FirstOrDefault(x => !x.SkipLod && x.Verts is not null && x.Indices is not null);
+            return lod is not null && TryCreateFromConvertedLod(context, meshAssetName, lod, out mesh, materials);
+        }
+    }
+
+    public static bool TryCreateFromConvertedStaticMesh(
+        Context context,
+        CStaticMesh staticMesh,
+        string meshAssetName,
+        out MeshAsset? mesh,
+        IReadOnlyList<MaterialData>? materials = null)
+    {
+        mesh = null;
+        var lod = staticMesh.LODs.FirstOrDefault(x => !x.SkipLod && x.Verts is not null && x.Indices is not null);
+        return lod is not null && TryCreateFromConvertedLod(context, meshAssetName, lod, out mesh, materials);
     }
 
     public static bool TryCreate(
@@ -356,5 +425,131 @@ public sealed class MeshAsset : IDisposable
         FaceBuffer.Dispose();
         IndexBuffer.Dispose();
         VertexBuffer.Dispose();
+    }
+
+    private static Vector3 ConvertUnrealPosition(Vector3 unrealPosition)
+    {
+        var remapped = Vector3.TransformNormal(unrealPosition, UnrealToRendererBasis);
+        return remapped * UnrealToRendererScale;
+    }
+
+    private static Vector3 ConvertUnrealDirection(Vector3 unrealDirection)
+    {
+        var remapped = Vector3.TransformNormal(unrealDirection, UnrealToRendererBasis);
+        if (remapped.LengthSquared() <= 1e-12f)
+            return Vector3.UnitZ;
+        return Vector3.Normalize(remapped);
+    }
+
+    private static uint[] SanitizeIndices(
+        IReadOnlyList<uint> indices,
+        IReadOnlyList<Vertex> vertices,
+        IReadOnlyList<Face> faces,
+        bool flipWinding,
+        out Face[] sanitizedFaces)
+    {
+        var triangleCount = indices.Count / 3;
+        var sanitizedIndices = new List<uint>(indices.Count);
+        var sanitizedFaceList = new List<Face>(triangleCount);
+
+        for (var triangleIndex = 0; triangleIndex < triangleCount; triangleIndex++)
+        {
+            var i0 = indices[(triangleIndex * 3) + 0];
+            var i1 = indices[(triangleIndex * 3) + 1];
+            var i2 = indices[(triangleIndex * 3) + 2];
+            if (i0 >= vertices.Count || i1 >= vertices.Count || i2 >= vertices.Count)
+                continue;
+
+            if (i0 == i1 || i1 == i2 || i2 == i0)
+                continue;
+
+            if (IsDegenerateTriangle(vertices[(int)i0].Position, vertices[(int)i1].Position, vertices[(int)i2].Position))
+                continue;
+
+            sanitizedIndices.Add(i0);
+            sanitizedIndices.Add(flipWinding ? i2 : i1);
+            sanitizedIndices.Add(flipWinding ? i1 : i2);
+            sanitizedFaceList.Add(triangleIndex < faces.Count ? faces[triangleIndex] : new Face { MaterialIndex = 0 });
+        }
+
+        sanitizedFaces = sanitizedFaceList.ToArray();
+        return sanitizedIndices.ToArray();
+    }
+
+    private static bool HasFiniteVertices(IReadOnlyList<Vertex> vertices)
+    {
+        for (var i = 0; i < vertices.Count; i++)
+        {
+            var p = vertices[i].Position;
+            if (!float.IsFinite(p.X) || !float.IsFinite(p.Y) || !float.IsFinite(p.Z))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryCreateFromConvertedLod(
+        Context context,
+        string meshAssetName,
+        CStaticMeshLod lod,
+        out MeshAsset? mesh,
+        IReadOnlyList<MaterialData>? materials = null)
+    {
+        mesh = null;
+        if (lod.Verts is null || lod.Indices is null || lod.Verts.Length < 3)
+            return false;
+
+        var indices = lod.Indices.Value;
+        if (indices.Length < 3)
+            return false;
+
+        var vertices = new Vertex[lod.Verts.Length];
+        for (var i = 0; i < lod.Verts.Length; i++)
+        {
+            var src = lod.Verts[i];
+            vertices[i] = new Vertex
+            {
+                Position = ConvertUnrealPosition(new Vector3(src.Position.X, src.Position.Y, src.Position.Z)),
+                Normal = ConvertUnrealDirection(new Vector3(src.Normal.X, src.Normal.Y, src.Normal.Z)),
+                Tangent = ConvertUnrealDirection(new Vector3(src.Tangent.X, src.Tangent.Y, src.Tangent.Z)),
+                UV = new Vector2(src.UV.U, src.UV.V)
+            };
+        }
+
+        if (!HasFiniteVertices(vertices))
+            return false;
+
+        var faces = new Face[indices.Length / 3];
+        for (var i = 0; i < faces.Length; i++)
+            faces[i] = new Face { MaterialIndex = 0 };
+
+        if (lod.Sections is { } sectionsLazy)
+        {
+            foreach (var section in sectionsLazy.Value)
+            {
+                if (section.NumFaces <= 0)
+                    continue;
+
+                var materialIndex = Math.Max(0, section.MaterialIndex);
+                var startFace = Math.Max(0, section.FirstIndex / 3);
+                var endFace = Math.Min(faces.Length, startFace + section.NumFaces);
+                for (var faceIndex = startFace; faceIndex < endFace; faceIndex++)
+                    faces[faceIndex].MaterialIndex = materialIndex;
+            }
+        }
+
+        var sanitizedIndices = SanitizeIndices(indices, vertices, faces, UnrealToRendererFlipsHandedness, out var sanitizedFaces);
+        if (sanitizedIndices.Length < 3)
+            return false;
+
+        return TryCreate(context, meshAssetName, vertices, sanitizedIndices, out mesh, sanitizedFaces, materials);
+    }
+
+    private static bool IsDegenerateTriangle(Vector3 a, Vector3 b, Vector3 c)
+    {
+        var ab = b - a;
+        var ac = c - a;
+        var area2 = Vector3.Cross(ab, ac).LengthSquared();
+        return area2 <= 1e-12f;
     }
 }

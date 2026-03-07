@@ -110,7 +110,7 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
         var position = e.GetPosition(this);
         var delta = GetCaptureDelta(position);
         if (Math.Abs(delta.Y) > double.Epsilon)
-            viewer.Scene.Mutate(scene => scene.CameraController.Dolly((float)(-delta.Y * 0.05)));
+            viewer.Scene.DollyCamera((float)(-delta.Y * 0.05));
 
         TryWrapCapture(position);
         e.Handled = true;

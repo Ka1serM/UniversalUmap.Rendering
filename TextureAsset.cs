@@ -187,14 +187,12 @@ public sealed unsafe class TextureAsset : IDisposable
         Context context,
         UTexture texture,
         string sourcePath,
-        int maxDimension,
         out TextureAsset? asset)
     {
         asset = null;
         try
         {
-            var mipIndex = texture.GetMipIndexByMaxSize(maxDimension);
-            var mip = mipIndex >= 0 ? texture.GetMip(mipIndex) : texture.GetFirstMip();
+            var mip = texture.GetFirstMip();
             if (mip?.BulkData?.Data is not { Length: > 0 } bulkData)
                 return false;
 

@@ -110,7 +110,7 @@ public sealed class PanViewGizmoControl : CapturingControlBase
         var position = e.GetPosition(this);
         var delta = GetCaptureDelta(position);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
-            viewer.Scene.Mutate(scene => scene.CameraController.PanInViewPlane((float)delta.X, (float)delta.Y));
+            viewer.Scene.PanCameraInViewPlane((float)delta.X, (float)delta.Y);
 
         TryWrapCapture(position);
         e.Handled = true;

@@ -67,8 +67,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     internal event Action<CameraSettings>? CameraSettingsChanged;
 
     internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
-    internal Vector3 CameraPositionDebug => scene?.CameraController.Position ?? Vector3.Zero;
-    internal Vector3 ArcballPivotDebug => scene?.CameraController.ArcballPivot ?? Vector3.Zero;
+    internal Vector3 CameraPositionDebug => scene?.GetCameraViewSnapshot().Position ?? Vector3.Zero;
+    internal Vector3 ArcballPivotDebug => scene?.GetCameraViewSnapshot().ArcballPivot ?? Vector3.Zero;
     protected override bool UseTimedHoldCapture => true;
 
     public Scene? Scene => scene;
@@ -94,7 +94,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             renderMode = value;
             Log.Information("Viewer render mode set to {RenderMode}.", value);
             if (scene is not null)
-                scene.Mutate(s => s.SetRenderMode(value));
+                scene.SetRenderMode(value);
             QueueNextFrame();
         }
     }
@@ -106,7 +106,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             if (scene is null)
                 return camera;
 
-            camera = scene.Mutate(ReadCameraFromScene);
+            camera = ReadCameraFromScene(scene);
             hasCameraState = true;
             return camera;
         }
@@ -551,19 +551,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         if (scene is null)
             return;
 
-        scene.Mutate(current =>
-        {
-            var env = current.Environment;
-            env.Rotation = settings.Rotation;
-            env.VisibleExposure = settings.VisibleExposure;
-            env.LightingExposure = settings.LightingExposure;
-            env.Visible = settings.Visible ? 1 : 0;
-            env.TextureIndex = settings.TextureIndex;
-            env.DirectionalDirection = settings.DirectionalDirection;
-            env.DirectionalIntensity = settings.DirectionalIntensity;
-            current.SetEnvironmentData(env);
-            return true;
-        });
+        scene.ApplyEnvironmentSettings(new Scene.EnvironmentSnapshot(
+            settings.Rotation,
+            settings.VisibleExposure,
+            settings.LightingExposure,
+            settings.Visible,
+            settings.TextureIndex,
+            settings.DirectionalDirection,
+            settings.DirectionalIntensity));
     }
 
     private void SyncEnvironmentFromScene()
@@ -571,12 +566,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         if (scene is null)
             return;
 
-        var env = scene.Mutate(current => current.Environment);
+        var env = scene.GetEnvironmentSnapshot();
         environment = new EnvironmentSettings(
             env.Rotation,
             env.VisibleExposure,
             env.LightingExposure,
-            env.Visible != 0,
+            env.Visible,
             env.TextureIndex,
             env.DirectionalDirection,
             env.DirectionalIntensity);
@@ -591,16 +586,11 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         if (scene is null)
             return;
 
-        scene.Mutate(current =>
-        {
-            var controller = current.CameraController;
-            controller.FocalLengthMm = Math.Max(0.001f, settings.FocalLengthMm);
-            controller.Aperture = Math.Max(0f, settings.Aperture);
-            controller.FocusDistance = Math.Max(0.001f, settings.FocusDistance);
-            controller.BokehBias = Math.Max(0.001f, settings.BokehBias);
-            current.SetDirty(SceneDirtyFlags.Accumulation);
-            return true;
-        });
+        scene.ApplyCameraLensSettings(new Scene.CameraLensSnapshot(
+            settings.FocalLengthMm,
+            settings.Aperture,
+            settings.FocusDistance,
+            settings.BokehBias));
     }
 
     private void SyncCameraFromScene()
@@ -608,7 +598,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         if (scene is null)
             return;
 
-        camera = scene.Mutate(ReadCameraFromScene);
+        camera = ReadCameraFromScene(scene);
         hasCameraState = true;
         RaiseCameraSettingsChanged();
     }
@@ -617,7 +607,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private static CameraSettings ReadCameraFromScene(Scene current)
     {
-        var controller = current.CameraController;
+        var controller = current.GetCameraLensSnapshot();
         return new CameraSettings(
             controller.FocalLengthMm,
             controller.Aperture,

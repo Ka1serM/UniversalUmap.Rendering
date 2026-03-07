@@ -149,7 +149,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             TextElement.GetFontStyle(this),
             TextElement.GetFontWeight(this));
 
-        BuildHandles(activeRenderer.Scene.CameraController.Rotation, center, GizmoAxisLineLength, handles, drawOrder);
+        BuildHandles(activeRenderer.Scene.GetCameraViewSnapshot().Rotation, center, GizmoAxisLineLength, handles, drawOrder);
 
         if (hoveredCenter || rotating || centerFadeCurrent > 0.001f)
         {
@@ -241,7 +241,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         if (hoveredCenter)
         {
             if (TryGetActiveRenderer(out var activeRenderer))
-                activeRenderer.Scene.Mutate(scene => scene.CameraController.SetArcballPivot(GetDefaultArcballPivot(activeRenderer)));
+                activeRenderer.Scene.SetArcballPivot(GetDefaultArcballPivot(activeRenderer));
 
             snapAnimating = false;
             rotating = true;
@@ -295,8 +295,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         var delta = GetCaptureDelta(localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
-            activeRenderer.Scene.Mutate(scene =>
-                scene.CameraController.OrbitAroundPivot((float)(-delta.X * 0.01), (float)(-delta.Y * 0.01)));
+            activeRenderer.Scene.OrbitAroundPivot((float)(-delta.X * 0.01), (float)(-delta.Y * 0.01));
 
             EnsureAnimationRunning();
             InvalidateVisual();
@@ -407,7 +406,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         if (!TryGetActiveRenderer(out var activeRenderer))
             return;
 
-        BuildHandles(activeRenderer.Scene.CameraController.Rotation, GetCenter(), GizmoAxisLineLength, handles, drawOrder);
+        BuildHandles(activeRenderer.Scene.GetCameraViewSnapshot().Rotation, GetCenter(), GizmoAxisLineLength, handles, drawOrder);
 
         var previousHoveredAxis = hoveredAxisId;
         var previousHoveredCenter = hoveredCenter;
@@ -491,17 +490,17 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         if (!snapAnimating || !TryGetActiveRenderer(out var activeRenderer))
             return false;
 
+        var scene = activeRenderer.Scene;
+        if (scene is null)
+            return false;
+
         snapTimeSeconds += deltaSeconds;
         var t = Math.Clamp(snapTimeSeconds / SnapDurationSeconds, 0f, 1f);
         var eased = 1f - MathF.Pow(1f - t, 3f);
         var position = Vector3.Lerp(snapStartPosition, snapTargetPosition, eased);
         var rotation = Quaternion.Slerp(snapStartRotation, snapTargetRotation, eased);
 
-        activeRenderer.Scene.Mutate(scene =>
-        {
-            scene.CameraController.SetPosition(position);
-            scene.CameraController.SetRotation(rotation);
-        });
+        scene.SetCameraView(position, rotation);
 
         if (t >= 1f)
             snapAnimating = false;
@@ -580,11 +579,12 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         if (activeViewer.Scene is null)
             return;
 
-        activeViewer.Scene.Mutate(scene => scene.CameraController.SetArcballPivot(GetDefaultArcballPivot(activeViewer)));
+        activeViewer.Scene.SetArcballPivot(GetDefaultArcballPivot(activeViewer));
 
-        var pivot = activeViewer.Scene.CameraController.ArcballPivot;
-        var currentPosition = activeViewer.Scene.CameraController.Position;
-        var currentRotation = activeViewer.Scene.CameraController.Rotation;
+        var cameraView = activeViewer.Scene.GetCameraViewSnapshot();
+        var pivot = cameraView.ArcballPivot;
+        var currentPosition = cameraView.Position;
+        var currentRotation = cameraView.Rotation;
         var distance = Math.Max(1f, Vector3.Distance(currentPosition, pivot));
         var targetDirection = Vector3.Normalize(axisDirectionFromPivot);
         var targetPosition = pivot + targetDirection * distance;
@@ -725,13 +725,13 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
     private static Vector3 GetDefaultArcballPivot(VulkanViewerControl activeViewer)
     {
         var scene = activeViewer.Scene!;
-        var forward = Vector3.Transform(Vector3.UnitZ, scene.CameraController.Rotation);
+        var forward = Vector3.Transform(Vector3.UnitZ, scene.GetCameraViewSnapshot().Rotation);
         if (forward.LengthSquared() < 0.000001f)
             forward = Vector3.UnitZ;
         else
             forward = Vector3.Normalize(forward);
 
-        return scene.CameraController.Position + (forward * DefaultArcballPivotDistance);
+        return scene.GetCameraViewSnapshot().Position + (forward * DefaultArcballPivotDistance);
     }
 
     private static Quaternion FromToRotation(Vector3 from, Vector3 to)
