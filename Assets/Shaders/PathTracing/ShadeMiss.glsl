@@ -95,4 +95,15 @@ void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in
     payload.flags |= RAY_TERMINATED;
 }
 
+void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, inout AoPayload payload) {
+    payload.emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
+    payload.albedo = payload.emission;
+    payload.normal = vec3(0.0);
+
+    if (environmentData.visible == 0)
+        payload.flags |= ENV_TRANSPARENT;
+
+    payload.flags |= RAY_TERMINATED;
+}
+
 #endif

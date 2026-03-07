@@ -139,7 +139,7 @@ internal struct PushDataGpu
     public float Exposure;
     public int Frame;
     public int IsMoving;
-    public int VisualizeBvh;
+    public int RenderMode;
 
     public PushDataGpu()
     {
@@ -150,7 +150,7 @@ internal struct PushDataGpu
         Exposure = 0f;
         Frame = 0;
         IsMoving = 0;
-        VisualizeBvh = 0;
+        RenderMode = 0;
     }
 }
 
@@ -234,7 +234,7 @@ internal static class GpuStructLayoutValidator
         ValidateType<ComputeInstanceGpu>(144, (nameof(ComputeInstanceGpu.Transform), 0), (nameof(ComputeInstanceGpu.InverseTransform), 64), (nameof(ComputeInstanceGpu.MeshId), 128), (nameof(ComputeInstanceGpu.Pad1), 132), (nameof(ComputeInstanceGpu.Pad2), 136), (nameof(ComputeInstanceGpu.Pad3), 140));
         ValidateType<AabbGpu>(32, (nameof(AabbGpu.MinBounds), 0), (nameof(AabbGpu.Pad0), 12), (nameof(AabbGpu.MaxBounds), 16), (nameof(AabbGpu.Pad1), 28));
         ValidateType<BvhNodeGpu>(76, (nameof(BvhNodeGpu.LeftBounds), 0), (nameof(BvhNodeGpu.RightBounds), 32), (nameof(BvhNodeGpu.RightChildOrPrimIndex), 64), (nameof(BvhNodeGpu.PrimCount), 68), (nameof(BvhNodeGpu.SplitAxis), 72));
-        ValidateType<PushDataGpu>(32, (nameof(PushDataGpu.Samples), 0), (nameof(PushDataGpu.DiffuseBounces), 4), (nameof(PushDataGpu.SpecularBounces), 8), (nameof(PushDataGpu.TransmissionBounces), 12), (nameof(PushDataGpu.Exposure), 16), (nameof(PushDataGpu.Frame), 20), (nameof(PushDataGpu.IsMoving), 24), (nameof(PushDataGpu.VisualizeBvh), 28));
+        ValidateType<PushDataGpu>(32, (nameof(PushDataGpu.Samples), 0), (nameof(PushDataGpu.DiffuseBounces), 4), (nameof(PushDataGpu.SpecularBounces), 8), (nameof(PushDataGpu.TransmissionBounces), 12), (nameof(PushDataGpu.Exposure), 16), (nameof(PushDataGpu.Frame), 20), (nameof(PushDataGpu.IsMoving), 24), (nameof(PushDataGpu.RenderMode), 28));
         ValidateType<EnvironmentDataGpu>(48, (nameof(EnvironmentDataGpu.TextureIndex), 0), (nameof(EnvironmentDataGpu.CdfTextureIndex), 4), (nameof(EnvironmentDataGpu.Rotation), 8), (nameof(EnvironmentDataGpu.VisibleExposure), 12), (nameof(EnvironmentDataGpu.LightingExposure), 16), (nameof(EnvironmentDataGpu.Visible), 20), (nameof(EnvironmentDataGpu.DirectionalDirection), 24), (nameof(EnvironmentDataGpu.DirectionalIntensity), 36), (nameof(EnvironmentDataGpu.Pad0), 40), (nameof(EnvironmentDataGpu.Pad1), 44));
         ValidateType<CameraDataGpu>(64, (nameof(CameraDataGpu.Position), 0), (nameof(CameraDataGpu.Aperture), 12), (nameof(CameraDataGpu.Direction), 16), (nameof(CameraDataGpu.FocusDistance), 28), (nameof(CameraDataGpu.Horizontal), 32), (nameof(CameraDataGpu.FocalLength), 44), (nameof(CameraDataGpu.Vertical), 48), (nameof(CameraDataGpu.BokehBias), 60));
         ValidateType<PushConstantsDataGpu>(144, (nameof(PushConstantsDataGpu.Push), 0), (nameof(PushConstantsDataGpu.Camera), 32), (nameof(PushConstantsDataGpu.Environment), 96));

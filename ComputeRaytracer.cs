@@ -10,7 +10,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
-    private readonly Pipeline pipeline;
+    private readonly Pipeline fullPathPipeline;
+    private readonly Pipeline aoPipeline;
 
     private GpuBuffer instancesBuffer;
     private GpuBuffer meshBuffer;
@@ -18,20 +19,12 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     public ComputeRaytracer(Context context, Scene scene)
         : base(context, scene)
     {
-        var shaderBytes = EmbeddedAssets.ReadByFileName("PathTracer.spv");
+        var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("PathTracer.spv");
+        var aoShaderBytes = EmbeddedAssets.ReadByFileName("PathTracerAo.spv");
         using var mainName = new ByteString("main");
 
-        ShaderModule computeModule;
-        fixed (byte* pShader = shaderBytes)
-        {
-            var shaderInfo = new ShaderModuleCreateInfo
-            {
-                SType = StructureType.ShaderModuleCreateInfo,
-                CodeSize = (nuint)shaderBytes.Length,
-                PCode = (uint*)pShader
-            };
-            Context.Api.CreateShaderModule(Context.Device, in shaderInfo, default, out computeModule).ThrowOnError();
-        }
+        var fullPathModule = CreateShaderModule(fullPathShaderBytes);
+        var aoModule = CreateShaderModule(aoShaderBytes);
 
         var layoutBindings = stackalloc DescriptorSetLayoutBinding[8];
         layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
@@ -113,21 +106,11 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         };
         Context.Api.CreatePipelineLayout(Context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
 
-        var stageInfo = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.ComputeBit,
-            Module = computeModule,
-            PName = mainName
-        };
-        var pipelineInfo = new ComputePipelineCreateInfo
-        {
-            SType = StructureType.ComputePipelineCreateInfo,
-            Stage = stageInfo,
-            Layout = pipelineLayoutLocal
-        };
-        Context.Api.CreateComputePipelines(Context.Device, default, 1, in pipelineInfo, default, out var pipelineLocal).ThrowOnError();
-        Context.Api.DestroyShaderModule(Context.Device, computeModule, default);
+        var fullPathPipelineLocal = CreateComputePipeline(fullPathModule, pipelineLayoutLocal, mainName);
+        var aoPipelineLocal = CreateComputePipeline(aoModule, pipelineLayoutLocal, mainName);
+
+        Context.Api.DestroyShaderModule(Context.Device, aoModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, fullPathModule, default);
 
         instancesBuffer = new GpuBuffer(
             Context,
@@ -146,16 +129,17 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         descriptorPool = descriptorPoolLocal;
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
-        pipeline = pipelineLocal;
-        Log.Information("Compute raytracer pipeline and descriptors created.");
+        fullPathPipeline = fullPathPipelineLocal;
+        aoPipeline = aoPipelineLocal;
+        Log.Information("Compute raytracer pipelines and descriptors created.");
 
         var initCommandBuffer = Context.CreateCommandBuffer();
-        initCommandBuffer.BeginRecording();
+        Context.BeginCommandBuffer(initCommandBuffer);
         UpdateSceneResources(initCommandBuffer, force: true);
-        initCommandBuffer.SubmitAndWait();
+        Context.SubmitAndWait(initCommandBuffer);
     }
 
-    protected override void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force)
+    protected override void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
     {
         if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
             return;
@@ -179,8 +163,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             meshBytes);
 
-        commandBuffer.RetainForExecution(previousInstancesBuffer);
-        commandBuffer.RetainForExecution(previousMeshBuffer);
+        Context.RetainForExecution(commandBuffer, previousInstancesBuffer);
+        Context.RetainForExecution(commandBuffer, previousMeshBuffer);
 
         var instancesInfo = new DescriptorBufferInfo(instancesBuffer.Handle, 0, instancesBuffer.Size);
         var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
@@ -212,7 +196,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants)
     {
-        Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, pipeline);
+        var isAoMode = Scene.RenderMode != RenderMode.FullPathTracing;
+        var selectedPipeline = isAoMode ? aoPipeline : fullPathPipeline;
+        Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, selectedPipeline);
         Context.Api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, pipelineLayout, 0, 1, in descriptorSet, 0, null);
 
         Context.Api.CmdPushConstants(
@@ -236,14 +222,50 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     protected override DescriptorSet GetDescriptorSet() => descriptorSet;
     protected override DescriptorSetLayout GetDescriptorSetLayout() => descriptorSetLayout;
 
+    private ShaderModule CreateShaderModule(ReadOnlySpan<byte> shaderBytes)
+    {
+        fixed (byte* pShader = shaderBytes)
+        {
+            var shaderInfo = new ShaderModuleCreateInfo
+            {
+                SType = StructureType.ShaderModuleCreateInfo,
+                CodeSize = (nuint)shaderBytes.Length,
+                PCode = (uint*)pShader
+            };
+            Context.Api.CreateShaderModule(Context.Device, in shaderInfo, default, out var module).ThrowOnError();
+            return module;
+        }
+    }
+
+    private Pipeline CreateComputePipeline(ShaderModule shaderModule, PipelineLayout layout, ByteString mainName)
+    {
+        var stageInfo = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ComputeBit,
+            Module = shaderModule,
+            PName = mainName
+        };
+        var pipelineInfo = new ComputePipelineCreateInfo
+        {
+            SType = StructureType.ComputePipelineCreateInfo,
+            Stage = stageInfo,
+            Layout = layout
+        };
+        Context.Api.CreateComputePipelines(Context.Device, default, 1, in pipelineInfo, default, out var pipeline).ThrowOnError();
+        return pipeline;
+    }
+
     public override void Dispose()
     {
         DisposeRenderImages();
         meshBuffer.Dispose();
         instancesBuffer.Dispose();
 
-        if (pipeline.Handle != default)
-            Context.Api.DestroyPipeline(Context.Device, pipeline, default);
+        if (aoPipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, aoPipeline, default);
+        if (fullPathPipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, fullPathPipeline, default);
         if (pipelineLayout.Handle != default)
             Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
         if (descriptorSetLayout.Handle != default)

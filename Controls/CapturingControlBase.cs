@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -10,7 +9,7 @@ using Serilog;
 
 namespace UniversalUmap.Rendering.Controls;
 
-internal static class SharedPointerCapture
+internal static class PointerCaptureCoordinator
 {
     private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
     private static readonly Cursor DefaultCursor = new(StandardCursorType.Arrow);
@@ -329,5 +328,277 @@ internal static class SharedPointerCapture
 
         [DllImport("libX11.so.6")]
         private static extern int XFlush(IntPtr x11Display);
+    }
+}
+
+public abstract class CapturingControlBase : ContentControl
+{
+    private const int HoldCaptureDelayMs = 200;
+    private readonly DispatcherTimer holdCaptureTimer;
+    private bool holdPressActive;
+    private bool holdCaptureStartedDuringPress;
+    private long holdPressStartMs;
+    private IPointer? holdPointer;
+    private Point holdPosition;
+    private bool holdLeftPressed;
+    private bool holdRightPressed;
+    private bool holdPressStartedLeft;
+    private bool holdPressStartedRight;
+    private bool holdCapturedLeft;
+    private bool holdCapturedRight;
+
+    protected CapturingControlBase()
+    {
+        holdCaptureTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(HoldCaptureDelayMs) };
+        holdCaptureTimer.Tick += (_, _) => TryBeginHoldCapture();
+    }
+
+    protected virtual bool UseTimedHoldCapture => false;
+    protected bool IsCaptureActive => PointerCaptureCoordinator.IsOwnedBy(this);
+
+    protected bool BeginCapture(IPointer pointer, Point position)
+        => PointerCaptureCoordinator.TryBegin(this, pointer, position);
+
+    protected void EndCapture(IPointer? pointer = null)
+        => PointerCaptureCoordinator.End(this, pointer);
+
+    protected bool TryConsumeCaptureWarpMove()
+        => PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this);
+
+    protected Vector GetCaptureDelta(Point position)
+        => PointerCaptureCoordinator.GetDelta(this, position);
+
+    protected bool TryWrapCapture(Point position)
+        => PointerCaptureCoordinator.TryWrapAround(this, position);
+
+    protected bool CaptureStartedDuringPress => holdCaptureStartedDuringPress;
+    protected bool PressStartedWithOnlyLeft => holdPressStartedLeft && !holdPressStartedRight;
+
+    protected virtual void OnHoldPressStarted(PointerPressedEventArgs e, Point position, bool leftPressed, bool rightPressed) { }
+    protected virtual void OnHoldPointerMoved(PointerEventArgs e, Point position, bool leftPressed, bool rightPressed) { }
+    protected virtual void OnHoldCaptureStarted(Point position, bool leftPressed, bool rightPressed) { }
+    protected virtual void OnHoldCaptureDelta(PointerEventArgs e, Point position, Vector delta) { }
+    protected virtual void OnHoldCaptureButtonPressed(Point position, bool leftButton, bool rightButton) { }
+    protected virtual void OnHoldCaptureButtonReleased(bool leftButton, bool rightButton) { }
+    protected virtual void OnHoldCaptureEnded() { }
+    protected virtual void OnHoldQuickClick(PointerReleasedEventArgs e, Point releasePosition) { }
+
+    protected void ResetTimedHoldCapture()
+    {
+        holdCaptureTimer.Stop();
+        holdPressActive = false;
+        holdCaptureStartedDuringPress = false;
+        holdPointer = null;
+        holdLeftPressed = false;
+        holdRightPressed = false;
+        holdPressStartedLeft = false;
+        holdPressStartedRight = false;
+        holdCapturedLeft = false;
+        holdCapturedRight = false;
+    }
+
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        base.OnPointerPressed(e);
+        if (!UseTimedHoldCapture)
+            return;
+
+        var props = e.GetCurrentPoint(this).Properties;
+        var leftPressed = props.IsLeftButtonPressed;
+        var rightPressed = props.IsRightButtonPressed;
+        if (!leftPressed && !rightPressed)
+            return;
+
+        holdPressActive = true;
+        holdCaptureStartedDuringPress = false;
+        holdPressStartMs = Environment.TickCount64;
+        holdPointer = e.Pointer;
+        holdPosition = e.GetPosition(this);
+        holdLeftPressed = leftPressed;
+        holdRightPressed = rightPressed;
+        holdPressStartedLeft = leftPressed;
+        holdPressStartedRight = rightPressed;
+
+        OnHoldPressStarted(e, holdPosition, leftPressed, rightPressed);
+
+        holdCaptureTimer.Stop();
+        holdCaptureTimer.Start();
+        e.Handled = IsCaptureActive;
+    }
+
+    protected override void OnPointerMoved(PointerEventArgs e)
+    {
+        base.OnPointerMoved(e);
+        if (!UseTimedHoldCapture)
+            return;
+
+        var position = e.GetPosition(this);
+        var props = e.GetCurrentPoint(this).Properties;
+        var leftPressed = props.IsLeftButtonPressed;
+        var rightPressed = props.IsRightButtonPressed;
+
+        if (holdPressActive)
+        {
+            if (!leftPressed && !rightPressed)
+            {
+                holdCaptureTimer.Stop();
+                holdPointer = null;
+                holdLeftPressed = false;
+                holdRightPressed = false;
+            }
+            else
+            {
+                holdPointer ??= e.Pointer;
+                holdPosition = position;
+                holdLeftPressed = leftPressed;
+                holdRightPressed = rightPressed;
+            }
+        }
+
+        if (IsCaptureActive && TryConsumeCaptureWarpMove())
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (!IsCaptureActive)
+        {
+            OnHoldPointerMoved(e, position, leftPressed, rightPressed);
+            return;
+        }
+
+        var delta = GetCaptureDelta(position);
+        OnHoldCaptureDelta(e, position, delta);
+        SyncHeldCaptureButtons(position, leftPressed, rightPressed);
+
+        if (!holdCapturedLeft && !holdCapturedRight)
+        {
+            EndCapture(e.Pointer);
+            OnHoldCaptureEnded();
+        }
+        else
+        {
+            TryWrapCapture(position);
+        }
+
+        e.Handled = true;
+    }
+
+    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    {
+        base.OnPointerReleased(e);
+        if (!UseTimedHoldCapture)
+            return;
+
+        var releasePosition = e.GetPosition(this);
+        var props = e.GetCurrentPoint(this).Properties;
+        var leftPressed = props.IsLeftButtonPressed;
+        var rightPressed = props.IsRightButtonPressed;
+        switch (e.InitialPressMouseButton)
+        {
+            case MouseButton.Left:
+                leftPressed = false;
+                break;
+            case MouseButton.Right:
+                rightPressed = false;
+                break;
+        }
+
+        if (IsCaptureActive)
+        {
+            SyncHeldCaptureButtons(releasePosition, leftPressed, rightPressed);
+            if (!holdCapturedLeft && !holdCapturedRight)
+            {
+                EndCapture(e.Pointer);
+                OnHoldCaptureEnded();
+            }
+        }
+
+        var elapsedMs = Environment.TickCount64 - holdPressStartMs;
+        if (holdPressActive && !holdCaptureStartedDuringPress && elapsedMs < HoldCaptureDelayMs)
+            OnHoldQuickClick(e, releasePosition);
+
+        ResetTimedHoldCapture();
+        e.Handled = IsCaptureActive;
+    }
+
+    protected override void OnLostFocus(RoutedEventArgs e)
+    {
+        base.OnLostFocus(e);
+        if (!UseTimedHoldCapture)
+            return;
+
+        ResetTimedHoldCapture();
+        if (IsCaptureActive)
+        {
+            ReleaseHeldCaptureButtons();
+            EndCapture();
+            OnHoldCaptureEnded();
+        }
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        if (!UseTimedHoldCapture)
+            return;
+
+        ResetTimedHoldCapture();
+        if (IsCaptureActive)
+        {
+            ReleaseHeldCaptureButtons();
+            EndCapture();
+            OnHoldCaptureEnded();
+        }
+    }
+
+    private void TryBeginHoldCapture()
+    {
+        holdCaptureTimer.Stop();
+        if (!holdPressActive || IsCaptureActive || holdPointer is null || (!holdLeftPressed && !holdRightPressed))
+            return;
+
+        if (!BeginCapture(holdPointer, holdPosition))
+            return;
+
+        holdCaptureStartedDuringPress = true;
+        OnHoldCaptureStarted(holdPosition, holdLeftPressed, holdRightPressed);
+        SyncHeldCaptureButtons(holdPosition, holdLeftPressed, holdRightPressed);
+    }
+
+    private void SyncHeldCaptureButtons(Point position, bool leftPressed, bool rightPressed)
+    {
+        if (leftPressed && !holdCapturedLeft)
+        {
+            OnHoldCaptureButtonPressed(position, leftButton: true, rightButton: false);
+            holdCapturedLeft = true;
+        }
+        else if (!leftPressed && holdCapturedLeft)
+        {
+            OnHoldCaptureButtonReleased(leftButton: true, rightButton: false);
+            holdCapturedLeft = false;
+        }
+
+        if (rightPressed && !holdCapturedRight)
+        {
+            OnHoldCaptureButtonPressed(position, leftButton: false, rightButton: true);
+            holdCapturedRight = true;
+        }
+        else if (!rightPressed && holdCapturedRight)
+        {
+            OnHoldCaptureButtonReleased(leftButton: false, rightButton: true);
+            holdCapturedRight = false;
+        }
+    }
+
+    private void ReleaseHeldCaptureButtons()
+    {
+        if (holdCapturedLeft)
+            OnHoldCaptureButtonReleased(leftButton: true, rightButton: false);
+        if (holdCapturedRight)
+            OnHoldCaptureButtonReleased(leftButton: false, rightButton: true);
+
+        holdCapturedLeft = false;
+        holdCapturedRight = false;
     }
 }

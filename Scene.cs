@@ -33,6 +33,7 @@ public sealed class Scene : IDisposable, IScene
     internal EnvironmentDataGpu Environment { get; private set; } = new();
     internal CameraDataGpu Camera { get; private set; } = new();
     internal int CameraIsMoving { get; private set; }
+    internal RenderMode RenderMode { get; private set; } = RenderMode.FullPathTracing;
     internal object SyncRoot => syncRoot;
     internal PerspectiveCamera ActiveCamera => activeCamera;
     internal PerspectiveCamera CameraController => activeCamera;
@@ -170,6 +171,16 @@ public sealed class Scene : IDisposable, IScene
         var environment = Environment;
         environment.LightingExposure = exposureStops;
         Environment = environment;
+        SetDirty(SceneDirtyFlags.Accumulation);
+    }
+
+    public void SetRenderMode(RenderMode renderMode)
+    {
+        if (RenderMode == renderMode)
+            return;
+
+        RenderMode = renderMode;
+        Log.Information("Scene render mode changed to {RenderMode}.", renderMode);
         SetDirty(SceneDirtyFlags.Accumulation);
     }
 

@@ -45,12 +45,12 @@ internal sealed unsafe class Accel : IDisposable
     public void BuildTopLevel(uint primitiveCount, ulong instancesDeviceAddress)
     {
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         BuildTopLevel(commandBuffer, primitiveCount, instancesDeviceAddress);
-        commandBuffer.SubmitAndWait();
+        context.SubmitAndWait(commandBuffer);
     }
 
-    public void BuildTopLevel(CommandBufferPool.PooledCommandBuffer commandBuffer, uint primitiveCount, ulong instancesDeviceAddress)
+    public void BuildTopLevel(Context.CommandBuffer commandBuffer, uint primitiveCount, ulong instancesDeviceAddress)
     {
         var previousHandle = Handle;
         var previousStorage = storageBuffer;
@@ -115,7 +115,7 @@ internal sealed unsafe class Accel : IDisposable
         Type = AccelerationStructureTypeKHR.TopLevelKhr;
 
         if (previousHandle.Handle != default || previousStorage is not null)
-            commandBuffer.RetainForExecution(new DeferredAccelResources(context, ext, previousHandle, previousStorage));
+            context.RetainForExecution(commandBuffer, new DeferredAccelResources(context, ext, previousHandle, previousStorage));
 
         var scratch = new GpuBuffer(
             context,
@@ -139,7 +139,7 @@ internal sealed unsafe class Accel : IDisposable
         var pRangeInfo = &rangeInfo;
 
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
-        commandBuffer.RetainForExecution(scratch);
+        context.RetainForExecution(commandBuffer, scratch);
         InsertBuildToReadBarrier(commandBuffer.InternalHandle);
     }
 
@@ -151,13 +151,13 @@ internal sealed unsafe class Accel : IDisposable
         ulong indexAddress)
     {
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         BuildBottomLevelTriangles(commandBuffer, primitiveCount, vertexAddress, vertexStride, maxVertex, indexAddress);
-        commandBuffer.SubmitAndWait();
+        context.SubmitAndWait(commandBuffer);
     }
 
     public void BuildBottomLevelTriangles(
-        CommandBufferPool.PooledCommandBuffer commandBuffer,
+        Context.CommandBuffer commandBuffer,
         uint primitiveCount,
         ulong vertexAddress,
         ulong vertexStride,
@@ -234,7 +234,7 @@ internal sealed unsafe class Accel : IDisposable
         Type = AccelerationStructureTypeKHR.BottomLevelKhr;
 
         if (previousHandle.Handle != default || previousStorage is not null)
-            commandBuffer.RetainForExecution(new DeferredAccelResources(context, ext, previousHandle, previousStorage));
+            context.RetainForExecution(commandBuffer, new DeferredAccelResources(context, ext, previousHandle, previousStorage));
 
         var scratch = new GpuBuffer(
             context,
@@ -258,7 +258,7 @@ internal sealed unsafe class Accel : IDisposable
         var pRangeInfo = &rangeInfo;
 
         ext.CmdBuildAccelerationStructures(commandBuffer.InternalHandle, 1, in buildInfo, &pRangeInfo);
-        commandBuffer.RetainForExecution(scratch);
+        context.RetainForExecution(commandBuffer, scratch);
         InsertBuildToReadBarrier(commandBuffer.InternalHandle);
     }
 

@@ -10,7 +10,7 @@ using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public abstract class VulkanShaderControl : Control
+public abstract class VulkanShaderControl : CapturingControlBase
 {
     protected static readonly IBrush HitTestBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
 

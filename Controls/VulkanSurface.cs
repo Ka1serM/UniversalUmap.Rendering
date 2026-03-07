@@ -172,17 +172,18 @@ internal sealed class VulkanSurface : IAsyncDisposable
             throw new InvalidOperationException("VulkanSurface resources are unavailable.");
 
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit);
 
         if (initialSubmit)
         {
             initialSubmit = false;
-            commandBuffer.Submit();
+            context.SubmitCommandBuffer(commandBuffer);
             return;
         }
 
-        commandBuffer.Submit(
+        context.SubmitCommandBuffer(
+            commandBuffer,
             [semaphorePair.ImageAvailableSemaphore],
             [PipelineStageFlags.TransferBit]);
     }
@@ -193,9 +194,9 @@ internal sealed class VulkanSurface : IAsyncDisposable
             return;
 
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
-        commandBuffer.Submit(signalSemaphores: [semaphorePair.RenderFinishedSemaphore]);
+        context.SubmitCommandBuffer(commandBuffer, signalSemaphores: [semaphorePair.RenderFinishedSemaphore]);
 
         availableSemaphore ??= interop.ImportSemaphore(semaphorePair.Export(false));
         renderCompletedSemaphore ??= interop.ImportSemaphore(semaphorePair.Export(true));

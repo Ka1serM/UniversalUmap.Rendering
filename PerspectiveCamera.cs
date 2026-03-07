@@ -8,6 +8,7 @@ namespace UniversalUmap.Rendering;
 
 internal sealed class PerspectiveCamera
 {
+    private const float FixedSensorWidthMm = 32f;
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
     private static readonly Vector3 LocalForward = new(0f, 0f, 1f);
     private static readonly Vector3 LocalUp = new(0f, -1f, 0f);
@@ -23,8 +24,6 @@ internal sealed class PerspectiveCamera
     private readonly Input input;
     private double lastInputLogSeconds;
 
-    public float SensorWidthMm { get; set; } = 36f;
-    public float SensorHeightMm { get; set; } = 24f;
     public float FocalLengthMm { get; set; } = 25f;
     public float Aperture { get; set; }
     public float FocusDistance { get; set; } = 4f;
@@ -212,14 +211,14 @@ internal sealed class PerspectiveCamera
         var width = Math.Max(1, renderSize.Width);
         var height = Math.Max(1, renderSize.Height);
         var aspectRatio = (float)width / height;
-
         var direction = Vector3.Normalize(Vector3.Transform(LocalForward, rotation));
         var right = Vector3.Normalize(Vector3.Transform(LocalRight, rotation));
         var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
 
         // Match NoorRay camera basis conversion (sensor in mm converted to meters).
-        var horizontal = right * (SensorWidthMm * 0.001f);
-        var vertical = up * ((SensorWidthMm / aspectRatio) * 0.001f);
+        var sensorHeightMm = FixedSensorWidthMm / aspectRatio;
+        var horizontal = right * (FixedSensorWidthMm * 0.001f);
+        var vertical = up * (sensorHeightMm * 0.001f);
 
         return new CameraDataGpu
         {

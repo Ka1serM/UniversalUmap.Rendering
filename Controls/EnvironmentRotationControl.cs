@@ -68,7 +68,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         UnsubscribeFromSource(subscribedSource);
-        SharedPointerCapture.End(this);
+        EndCapture();
         hasRotationFromSource = false;
         base.OnDetachedFromVisualTree(e);
     }
@@ -155,23 +155,23 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         if (!IsPointInsideDisk(local))
             return;
 
-        if (SharedPointerCapture.TryBegin(this, e.Pointer, local))
+        if (BeginCapture(e.Pointer, local))
             e.Handled = true;
     }
 
     private void OnPointerMovedRouted(object? sender, PointerEventArgs e)
     {
-        if (!SharedPointerCapture.IsOwnedBy(this))
+        if (!IsCaptureActive)
             return;
 
-        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
+        if (TryConsumeCaptureWarpMove())
         {
             e.Handled = true;
             return;
         }
 
         var p = e.GetPosition(this);
-        var delta = SharedPointerCapture.GetDelta(this, p);
+        var delta = GetCaptureDelta(p);
         if (Math.Abs(delta.X) > double.Epsilon)
         {
             rotationDegrees = WrapDegrees(rotationDegrees + (float)(delta.X * 0.35));
@@ -180,28 +180,28 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
                 source.Environment = source.Environment with { Rotation = rotationDegrees };
         }
 
-        SharedPointerCapture.TryWrapAround(this, p);
+        TryWrapCapture(p);
         e.Handled = true;
     }
 
     private void OnPointerReleasedRouted(object? sender, PointerReleasedEventArgs e)
     {
-        if (!SharedPointerCapture.IsOwnedBy(this))
+        if (!IsCaptureActive)
             return;
 
-        SharedPointerCapture.End(this, e.Pointer);
+        EndCapture(e.Pointer);
         e.Handled = true;
     }
 
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        SharedPointerCapture.End(this);
+        EndCapture();
     }
 
     private void OnPointerCaptureLostRouted(object? sender, PointerCaptureLostEventArgs e)
     {
-        SharedPointerCapture.End(this);
+        EndCapture();
     }
 
     private bool IsPointInsideDisk(Point p)

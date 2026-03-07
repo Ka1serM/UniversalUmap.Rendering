@@ -12,6 +12,9 @@ public sealed class Context : IDisposable
 {
     private static readonly object SharedSync = new();
     private static Context? shared;
+    private readonly List<CommandBuffer> usedCommandBuffers = [];
+    private readonly object sync = new();
+    private CommandPool commandPool;
 
     public Vk Api { get; private set; }
     public Instance Instance { get; private set; }
@@ -19,18 +22,91 @@ public sealed class Context : IDisposable
     public Device Device { get; private set; }
     public Queue Queue { get; private set; }
     public uint QueueFamilyIndex { get; private set; }
-    public CommandBufferPool Pool { get; private set; }
     public bool RayTracingSupported { get; private set; }
     public string DeviceName { get; private set; } = string.Empty;
 
-    public CommandBufferPool.PooledCommandBuffer CreateCommandBuffer()
+    public CommandBuffer CreateCommandBuffer()
     {
-        return Pool.CreateCommandBuffer();
+        ReclaimCompletedCommandBuffers();
+        return new CommandBuffer(this);
+    }
+
+    public void BeginCommandBuffer(CommandBuffer commandBuffer)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        commandBuffer.BeginRecording();
+    }
+
+    public void EndCommandBuffer(CommandBuffer commandBuffer)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        commandBuffer.EndRecording();
+    }
+
+    public void RetainForExecution(CommandBuffer commandBuffer, IDisposable resource)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        ArgumentNullException.ThrowIfNull(resource);
+        commandBuffer.Retain(resource);
+    }
+
+    public unsafe void SubmitCommandBuffer(
+        CommandBuffer commandBuffer,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> waitSemaphores = default,
+        ReadOnlySpan<PipelineStageFlags> waitDstStageMask = default,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores = default)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        commandBuffer.EndRecording();
+
+        if (!waitSemaphores.IsEmpty && !waitDstStageMask.IsEmpty && waitSemaphores.Length != waitDstStageMask.Length)
+            throw new ArgumentException("waitDstStageMask length must match waitSemaphores length.");
+
+        if (!waitSemaphores.IsEmpty && waitDstStageMask.IsEmpty)
+        {
+            Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
+            for (var i = 0; i < defaultWaitStages.Length; i++)
+                defaultWaitStages[i] = PipelineStageFlags.AllCommandsBit;
+
+            fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+            fixed (PipelineStageFlags* pWaitStages = defaultWaitStages)
+            {
+                SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+            }
+        }
+        else
+        {
+            fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+            fixed (PipelineStageFlags* pWaitStages = waitDstStageMask)
+            {
+                SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+            }
+        }
+
+        MoveToUsed(commandBuffer);
+    }
+
+    public void SubmitAndWait(
+        CommandBuffer commandBuffer,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> waitSemaphores = default,
+        ReadOnlySpan<PipelineStageFlags> waitDstStageMask = default,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores = default)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        SubmitCommandBuffer(commandBuffer, waitSemaphores, waitDstStageMask, signalSemaphores);
+        WaitForCompletion(commandBuffer);
+        ReclaimCompletedCommandBuffers();
+    }
+
+    public void WaitForCompletion(CommandBuffer commandBuffer)
+    {
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        commandBuffer.WaitForCompletion();
     }
 
     public void WaitForSubmittedCommandBuffers()
     {
-        Pool.WaitForSubmittedCommandBuffers();
+        FreeUsedCommandBuffers(waitForCompletion: true);
     }
     public static async Task<Context?> AcquireAsync(Compositor compositor)
     {
@@ -135,7 +211,7 @@ public sealed class Context : IDisposable
 
         api.CreateInstance(in instanceInfo, default, out var vkInstance).ThrowOnError();
         Device createdDevice = default;
-        CommandBufferPool? createdPool = null;
+        CommandPool createdCommandPool = default;
         var success = false;
 
         try
@@ -408,7 +484,14 @@ public sealed class Context : IDisposable
 
                     api.CreateDevice(candidate.PhysicalDevice, in deviceInfo, default, out createdDevice).ThrowOnError();
                     api.GetDeviceQueue(createdDevice, candidate.QueueFamilyIndex, 0, out var queue);
-                    createdPool = new CommandBufferPool(api, createdDevice, queue, candidate.QueueFamilyIndex);
+
+                    var commandPoolCreateInfo = new CommandPoolCreateInfo
+                    {
+                        SType = StructureType.CommandPoolCreateInfo,
+                        Flags = CommandPoolCreateFlags.ResetCommandBufferBit,
+                        QueueFamilyIndex = candidate.QueueFamilyIndex
+                    };
+                    api.CreateCommandPool(createdDevice, in commandPoolCreateInfo, default, out createdCommandPool).ThrowOnError();
                     success = true;
 
                     Api = api;
@@ -417,7 +500,7 @@ public sealed class Context : IDisposable
                     Device = createdDevice;
                     Queue = queue;
                     QueueFamilyIndex = candidate.QueueFamilyIndex;
-                    Pool = createdPool;
+                    commandPool = createdCommandPool;
                     RayTracingSupported = candidate.RayTracingEnabled;
                     DeviceName = candidate.Name;
                     Log.Information(
@@ -429,8 +512,11 @@ public sealed class Context : IDisposable
                 catch (Exception ex)
                 {
                     lastCreateFailure = ex;
-                    createdPool?.Dispose();
-                    createdPool = null;
+                    if (createdCommandPool.Handle != default)
+                    {
+                        api.DestroyCommandPool(createdDevice, createdCommandPool, default);
+                        createdCommandPool = default;
+                    }
                     if (createdDevice.Handle != default)
                     {
                         api.DestroyDevice(createdDevice, default);
@@ -445,7 +531,8 @@ public sealed class Context : IDisposable
         {
             if (!success)
             {
-                createdPool?.Dispose();
+                if (createdCommandPool.Handle != default)
+                    api.DestroyCommandPool(createdDevice, createdCommandPool, default);
                 if (createdDevice.Handle != default)
                     api.DestroyDevice(createdDevice, default);
                 api.DestroyInstance(vkInstance, default);
@@ -578,7 +665,9 @@ public sealed class Context : IDisposable
     public unsafe void Dispose()
     {
         TextureAsset.DisposeSharedStagingRing();
-        Pool.Dispose();
+        WaitForSubmittedCommandBuffers();
+        lock (sync)
+            Api.DestroyCommandPool(Device, commandPool, default);
         Api.DestroyDevice(Device, default);
         Api.DestroyInstance(Instance, default);
 
@@ -586,6 +675,184 @@ public sealed class Context : IDisposable
         {
             if (ReferenceEquals(shared, this))
                 shared = null;
+        }
+    }
+
+    private void ReclaimCompletedCommandBuffers()
+        => FreeUsedCommandBuffers(waitForCompletion: false);
+
+    private void FreeUsedCommandBuffers(bool waitForCompletion)
+    {
+        lock (sync)
+        {
+            for (var i = usedCommandBuffers.Count - 1; i >= 0; i--)
+            {
+                var commandBuffer = usedCommandBuffers[i];
+                try
+                {
+                    if (!waitForCompletion && !commandBuffer.IsExecutionComplete())
+                        continue;
+
+                    commandBuffer.Dispose(waitForCompletion);
+                    usedCommandBuffers.RemoveAt(i);
+                }
+                catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
+                {
+                    Log.Warning("Skipping command buffer disposal due to device loss.");
+                    usedCommandBuffers.RemoveAt(i);
+                }
+            }
+        }
+    }
+
+    private unsafe Silk.NET.Vulkan.CommandBuffer AllocateCommandBuffer()
+    {
+        var allocateInfo = new CommandBufferAllocateInfo
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = commandPool,
+            CommandBufferCount = 1,
+            Level = CommandBufferLevel.Primary
+        };
+
+        lock (sync)
+        {
+            Api.AllocateCommandBuffers(Device, in allocateInfo, out Silk.NET.Vulkan.CommandBuffer commandBuffer);
+            return commandBuffer;
+        }
+    }
+
+    private void MoveToUsed(CommandBuffer commandBuffer)
+    {
+        lock (sync)
+            usedCommandBuffers.Add(commandBuffer);
+    }
+
+    private unsafe void SubmitCommandBufferInternal(
+        CommandBuffer commandBuffer,
+        Silk.NET.Vulkan.Semaphore* pWaitSemaphores,
+        PipelineStageFlags* pWaitStages,
+        Silk.NET.Vulkan.Semaphore* pSignalSemaphores,
+        int waitSemaphoreCount,
+        int signalSemaphoreCount)
+    {
+        var cmd = commandBuffer.InternalHandle;
+        var hasWaitSemaphores = waitSemaphoreCount > 0;
+        var submitInfo = new SubmitInfo
+        {
+            SType = StructureType.SubmitInfo,
+            WaitSemaphoreCount = hasWaitSemaphores ? (uint)waitSemaphoreCount : 0u,
+            PWaitSemaphores = pWaitSemaphores,
+            PWaitDstStageMask = hasWaitSemaphores ? pWaitStages : null,
+            CommandBufferCount = 1,
+            PCommandBuffers = &cmd,
+            SignalSemaphoreCount = signalSemaphoreCount > 0 ? (uint)signalSemaphoreCount : 0u,
+            PSignalSemaphores = pSignalSemaphores
+        };
+
+        var fenceValue = commandBuffer.Fence;
+        lock (sync)
+        {
+            Api.ResetFences(Device, 1, in fenceValue).ThrowOnError();
+            Api.QueueSubmit(Queue, 1, in submitInfo, fenceValue).ThrowOnError();
+        }
+    }
+
+    public sealed class CommandBuffer : IDisposable
+    {
+        private List<IDisposable>? retainedResources;
+        private bool started;
+        private bool ended;
+
+        internal unsafe CommandBuffer(Context owner)
+        {
+            Context = owner;
+            InternalHandle = owner.AllocateCommandBuffer();
+
+            var fenceInfo = new FenceCreateInfo
+            {
+                SType = StructureType.FenceCreateInfo,
+                Flags = FenceCreateFlags.SignaledBit
+            };
+
+            owner.Api.CreateFence(owner.Device, in fenceInfo, default, out var fence).ThrowOnError();
+            Fence = fence;
+        }
+
+        internal Context Context { get; }
+        public Silk.NET.Vulkan.CommandBuffer InternalHandle { get; }
+        internal Fence Fence { get; }
+
+        public IntPtr Handle => InternalHandle.Handle;
+
+        internal void BeginRecording()
+        {
+            if (started)
+                return;
+
+            started = true;
+            var beginInfo = new CommandBufferBeginInfo
+            {
+                SType = StructureType.CommandBufferBeginInfo,
+                Flags = CommandBufferUsageFlags.OneTimeSubmitBit
+            };
+            Context.Api.BeginCommandBuffer(InternalHandle, in beginInfo).ThrowOnError();
+        }
+
+        internal void EndRecording()
+        {
+            if (!started || ended)
+                return;
+
+            ended = true;
+            Context.Api.EndCommandBuffer(InternalHandle).ThrowOnError();
+        }
+
+        internal void Retain(IDisposable resource)
+        {
+            retainedResources ??= new List<IDisposable>(2);
+            retainedResources.Add(resource);
+        }
+
+        internal bool IsExecutionComplete()
+        {
+            var result = Context.Api.GetFenceStatus(Context.Device, Fence);
+            return result == Result.Success;
+        }
+
+        internal unsafe void WaitForCompletion()
+        {
+            var fence = Fence;
+            Context.Api.WaitForFences(Context.Device, 1, in fence, true, ulong.MaxValue).ThrowOnError();
+        }
+
+        internal unsafe void Dispose(bool waitForCompletion)
+        {
+            try
+            {
+                if (waitForCompletion)
+                {
+                    var fence = Fence;
+                    Context.Api.WaitForFences(Context.Device, 1, in fence, true, ulong.MaxValue).ThrowOnError();
+                }
+                else if (!IsExecutionComplete())
+                    return;
+            }
+            finally
+            {
+                retainedResources?.ForEach(resource => resource.Dispose());
+                retainedResources?.Clear();
+                Context.Api.DestroyFence(Context.Device, Fence, default);
+
+                var commandBuffer = InternalHandle;
+                lock (Context.sync)
+                    Context.Api.FreeCommandBuffers(Context.Device, Context.commandPool, 1, in commandBuffer);
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(waitForCompletion: true);
         }
     }
 }

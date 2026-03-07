@@ -32,19 +32,31 @@
     </ItemGroup>
   
   <ItemGroup>
+    <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.glsl" />
+    <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.h" />
+    <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.comp" />
+
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGeneration.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGenerationAo.glsl"
                   Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHit.glsl"
                   Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHitAo.glsl"
+                  Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/Miss.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/MissAo.glsl"
                   Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl"
                   Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracer.comp"
+                  Arguments="-DUSE_COMPUTE=1" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracerAo.comp"
                   Arguments="-DUSE_COMPUTE=1" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.comp" />
@@ -59,7 +71,7 @@
 
   <Target Name="CompileShaders"
           BeforeTargets="Build"
-          Inputs="@(ShaderSource)"
+          Inputs="@(ShaderSource);@(ShaderInclude)"
           Outputs="@(ShaderSource->'%(RootDir)%(Directory)%(Filename).spv')">
 
     <Message Text="Compiling shaders via glslc..." Importance="High" />

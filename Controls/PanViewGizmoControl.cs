@@ -10,7 +10,7 @@ using FluentIcons.Common;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class PanViewGizmoControl : ContentControl
+public sealed class PanViewGizmoControl : CapturingControlBase
 {
     private const float HoverScaleBoost = 0.06f;
     private static readonly Color FillColor = Color.FromArgb(166, 58, 58, 58);
@@ -59,7 +59,7 @@ public sealed class PanViewGizmoControl : ContentControl
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        SharedPointerCapture.End(this);
+        EndCapture();
         base.OnDetachedFromVisualTree(e);
     }
 
@@ -73,7 +73,7 @@ public sealed class PanViewGizmoControl : ContentControl
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (SharedPointerCapture.IsOwnedBy(this))
+        if (IsCaptureActive)
             return;
         isHovering = false;
         ApplyVisualState();
@@ -86,7 +86,7 @@ public sealed class PanViewGizmoControl : ContentControl
         if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
-        SharedPointerCapture.TryBegin(this, e.Pointer, e.GetPosition(this));
+        BeginCapture(e.Pointer, e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
     }
@@ -94,10 +94,10 @@ public sealed class PanViewGizmoControl : ContentControl
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (!SharedPointerCapture.IsOwnedBy(this))
+        if (!IsCaptureActive)
             return;
 
-        if (SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
+        if (TryConsumeCaptureWarpMove())
         {
             e.Handled = true;
             return;
@@ -108,21 +108,21 @@ public sealed class PanViewGizmoControl : ContentControl
             return;
 
         var position = e.GetPosition(this);
-        var delta = SharedPointerCapture.GetDelta(this, position);
+        var delta = GetCaptureDelta(position);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
             viewer.Scene.Mutate(scene => scene.CameraController.PanInViewPlane((float)delta.X, (float)delta.Y));
 
-        SharedPointerCapture.TryWrapAround(this, position);
+        TryWrapCapture(position);
         e.Handled = true;
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
-        if (!SharedPointerCapture.IsOwnedBy(this))
+        if (!IsCaptureActive)
             return;
 
-        SharedPointerCapture.End(this, e.Pointer);
+        EndCapture(e.Pointer);
         isHovering = Bounds.Contains(e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
@@ -131,7 +131,7 @@ public sealed class PanViewGizmoControl : ContentControl
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        SharedPointerCapture.End(this);
+        EndCapture();
         isHovering = false;
         ApplyVisualState();
     }
@@ -139,14 +139,14 @@ public sealed class PanViewGizmoControl : ContentControl
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        SharedPointerCapture.End(this);
+        EndCapture();
         isHovering = false;
         ApplyVisualState();
     }
 
     private void ApplyVisualState()
     {
-        if (SharedPointerCapture.IsOwnedBy(this))
+        if (IsCaptureActive)
         {
             chrome.Background = PressBrush;
             hoverScale.ScaleX = 1d + HoverScaleBoost;

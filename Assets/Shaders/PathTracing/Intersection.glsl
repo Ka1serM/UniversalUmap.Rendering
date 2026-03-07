@@ -139,25 +139,22 @@ HitInfo traceScene(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
         if (inst.meshId == 0xFFFFFFFF)
             continue;
 
-        // Transform ray into local space
+        // Transform ray into local space.
+        // Keep direction unnormalized so parametric t remains consistent with world ray:
+        // local(inv(O + t*D)) = localO + t*localD
         vec3 localOrigin = (inst.inverseTransform * vec4(rayOrigin, 1.0)).xyz;
-        vec3 localDir = normalize((inst.inverseTransform * vec4(rayDirection, 0.0)).xyz);
+        vec3 localDir = (inst.inverseTransform * vec4(rayDirection, 0.0)).xyz;
 
-        // Compute scaling factor along ray direction properly
-        vec3 worldDir = rayDirection;
-        vec3 transformedDir = (inst.transform * vec4(localDir, 0.0)).xyz;
-        float tScale = dot(transformedDir, worldDir) / dot(worldDir, worldDir);
-
-        // Initialize localHit with the current best t scaled into local space
+        // With unnormalized localDir, local t is directly comparable to world-space t.
         HitInfo localHit;
-        localHit.t = bestHit.t * tScale;
+        localHit.t = bestHit.t;
         localHit.primitiveIndex = INVALID_INSTANCE;
 
         MeshAddresses mesh = meshes[inst.meshId];
-        traverseBVH(localOrigin, localDir, mesh, localHit, tMin * tScale);
+        traverseBVH(localOrigin, localDir, mesh, localHit, tMin);
 
         if (localHit.primitiveIndex != INVALID_INSTANCE) {
-            // Convert hit point back to world space
+            // Convert hit point back to world space and recompute worldT robustly.
             vec3 localPos = localOrigin + localDir * localHit.t;
             vec3 worldPos = (inst.transform * vec4(localPos, 1.0)).xyz;
             float worldT = length(worldPos - rayOrigin);
@@ -173,9 +170,35 @@ HitInfo traceScene(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
     return bestHit;
 }
 
-bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMax) {
-    HitInfo shadowHit = traceScene(rayOrigin, rayDirection, 0.001, tMax);
+bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
+    HitInfo shadowHit = traceScene(rayOrigin, rayDirection, tMin, tMax);
     return shadowHit.instanceIndex != INVALID_INSTANCE;
+}
+
+vec3 computeShadowTerminatorPointLocal(
+    vec3 localPos,
+    vec3 bary,
+    vec3 v0Pos, vec3 v1Pos, vec3 v2Pos,
+    vec3 v0Normal, vec3 v1Normal, vec3 v2Normal)
+{
+    // Hanika et al. "hacking the shadow terminator" point shift.
+    vec3 n0 = normalize(v0Normal);
+    vec3 n1 = normalize(v1Normal);
+    vec3 n2 = normalize(v2Normal);
+
+    vec3 tmp0 = localPos - v0Pos;
+    vec3 tmp1 = localPos - v1Pos;
+    vec3 tmp2 = localPos - v2Pos;
+
+    float d0 = min(0.0, dot(tmp0, n0));
+    float d1 = min(0.0, dot(tmp1, n1));
+    float d2 = min(0.0, dot(tmp2, n2));
+
+    tmp0 -= d0 * n0;
+    tmp1 -= d1 * n1;
+    tmp2 -= d2 * n2;
+
+    return localPos + bary.x * tmp0 + bary.y * tmp1 + bary.z * tmp2;
 }
 
 void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, inout Payload payload) {
@@ -194,19 +217,64 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
         const Vertex v2 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 2]];
 
         vec3 localPos = interpolateBarycentric(hit.barycentrics, v0.position, v1.position, v2.position);
+        vec3 localShadowPos = computeShadowTerminatorPointLocal(
+            localPos,
+            hit.barycentrics,
+            v0.position, v1.position, v2.position,
+            v0.normal, v1.normal, v2.normal);
         vec3 geometricNormalLocal = normalize(cross(v1.position - v0.position, v2.position - v0.position));
         vec3 shadingNormalLocal = normalize(interpolateBarycentric(hit.barycentrics, v0.normal, v1.normal, v2.normal));
         vec3 localTan = normalize(interpolateBarycentric(hit.barycentrics, v0.tangent, v1.tangent, v2.tangent));
         vec2 uv = interpolateBarycentric(hit.barycentrics, v0.uv, v1.uv, v2.uv);
         
         vec3 worldPos = (inst.transform * vec4(localPos, 1.0)).xyz;
+        vec3 worldShadowPos = (inst.transform * vec4(localShadowPos, 1.0)).xyz;
         mat3 normalMatrix = transpose(inverse(mat3(inst.transform)));
 
         vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
         vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);
         vec3 worldTan = normalize(normalMatrix * localTan);
 
-        shadeClosestHit(worldPos, shadingNormalWorld, geometricNormalWorld, worldTan, uv, rayDirection, material, payload);
+        shadeClosestHit(worldPos, worldShadowPos, shadingNormalWorld, geometricNormalWorld, worldTan, uv, rayDirection, material, payload);
+        payload.objectIndex = hit.instanceIndex;
+    }
+}
+
+void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, inout AoPayload payload) {
+    HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
+
+    if (hit.instanceIndex == INVALID_INSTANCE)
+        shadeMiss(rayDirection, pushConstants.environment, payload);
+    else {
+        const ComputeInstance inst = instances[hit.instanceIndex];
+        const MeshAddresses mesh = meshes[inst.meshId];
+        const Face face = FaceBuffer(mesh.faceAddress).data[hit.primitiveIndex];
+        const Material material = MaterialBuffer(mesh.materialAddress).data[face.materialIndex];
+
+        const Vertex v0 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 0]];
+        const Vertex v1 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 1]];
+        const Vertex v2 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 2]];
+
+        vec3 localPos = interpolateBarycentric(hit.barycentrics, v0.position, v1.position, v2.position);
+        vec3 localShadowPos = computeShadowTerminatorPointLocal(
+            localPos,
+            hit.barycentrics,
+            v0.position, v1.position, v2.position,
+            v0.normal, v1.normal, v2.normal);
+        vec3 geometricNormalLocal = normalize(cross(v1.position - v0.position, v2.position - v0.position));
+        vec3 shadingNormalLocal = normalize(interpolateBarycentric(hit.barycentrics, v0.normal, v1.normal, v2.normal));
+        vec3 localTan = normalize(interpolateBarycentric(hit.barycentrics, v0.tangent, v1.tangent, v2.tangent));
+        vec2 uv = interpolateBarycentric(hit.barycentrics, v0.uv, v1.uv, v2.uv);
+
+        vec3 worldPos = (inst.transform * vec4(localPos, 1.0)).xyz;
+        vec3 worldShadowPos = (inst.transform * vec4(localShadowPos, 1.0)).xyz;
+        mat3 normalMatrix = transpose(inverse(mat3(inst.transform)));
+
+        vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
+        vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);
+        vec3 worldTan = normalize(normalMatrix * localTan);
+
+        shadeClosestHit(worldPos, worldShadowPos, shadingNormalWorld, geometricNormalWorld, worldTan, uv, rayDirection, material, payload);
         payload.objectIndex = hit.instanceIndex;
     }
 }

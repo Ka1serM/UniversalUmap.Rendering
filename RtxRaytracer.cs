@@ -19,21 +19,14 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
-    private readonly Pipeline pipeline;
+    private readonly RayTracingPipelineState fullPathPipelineState;
+    private readonly RayTracingPipelineState aoPipelineState;
 
     private readonly TlasResourceSlot[] tlasSlots;
     private int activeTlasSlotIndex;
     private int queuedTlasSlotIndex = -1;
     private long lastTlasBuildTicks;
     private GpuBuffer meshBuffer = default!;
-
-    private GpuBuffer raygenSbt = default!;
-    private GpuBuffer missSbt = default!;
-    private GpuBuffer hitSbt = default!;
-    private StridedDeviceAddressRegionKHR raygenRegion;
-    private StridedDeviceAddressRegionKHR missRegion;
-    private StridedDeviceAddressRegionKHR hitRegion;
-    private StridedDeviceAddressRegionKHR callableRegion;
 
     private sealed class TlasResourceSlot : IDisposable
     {
@@ -58,6 +51,25 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         }
     }
 
+    private sealed class RayTracingPipelineState : IDisposable
+    {
+        public Pipeline Pipeline;
+        public GpuBuffer RaygenSbt = default!;
+        public GpuBuffer MissSbt = default!;
+        public GpuBuffer HitSbt = default!;
+        public StridedDeviceAddressRegionKHR RaygenRegion;
+        public StridedDeviceAddressRegionKHR MissRegion;
+        public StridedDeviceAddressRegionKHR HitRegion;
+        public StridedDeviceAddressRegionKHR CallableRegion;
+
+        public void Dispose()
+        {
+            HitSbt.Dispose();
+            MissSbt.Dispose();
+            RaygenSbt.Dispose();
+        }
+    }
+
     public RtxRaytracer(Context context, Scene scene)
         : base(context, scene)
     {
@@ -78,85 +90,22 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             new byte[16]);
 
-        var raygenBytes = EmbeddedAssets.ReadByFileName("RayGeneration.spv");
+        var fullPathRaygenBytes = EmbeddedAssets.ReadByFileName("RayGeneration.spv");
+        var aoRaygenBytes = EmbeddedAssets.ReadByFileName("RayGenerationAo.spv");
         var missBytes = EmbeddedAssets.ReadByFileName("Miss.spv");
+        var aoMissBytes = EmbeddedAssets.ReadByFileName("MissAo.spv");
         var shadowMissBytes = EmbeddedAssets.ReadByFileName("ShadowMiss.spv");
         var hitBytes = EmbeddedAssets.ReadByFileName("ClosestHit.spv");
+        var aoHitBytes = EmbeddedAssets.ReadByFileName("ClosestHitAo.spv");
         using var mainName = new ByteString("main");
 
-        var raygenModule = CreateShaderModule(raygenBytes);
+        var fullPathRaygenModule = CreateShaderModule(fullPathRaygenBytes);
+        var aoRaygenModule = CreateShaderModule(aoRaygenBytes);
         var missModule = CreateShaderModule(missBytes);
+        var aoMissModule = CreateShaderModule(aoMissBytes);
         var shadowMissModule = CreateShaderModule(shadowMissBytes);
         var hitModule = CreateShaderModule(hitBytes);
-
-        var stages = stackalloc PipelineShaderStageCreateInfo[4];
-        stages[0] = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.RaygenBitKhr,
-            Module = raygenModule,
-            PName = mainName
-        };
-        stages[1] = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.MissBitKhr,
-            Module = missModule,
-            PName = mainName
-        };
-        stages[2] = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.MissBitKhr,
-            Module = shadowMissModule,
-            PName = mainName
-        };
-        stages[3] = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.ClosestHitBitKhr,
-            Module = hitModule,
-            PName = mainName
-        };
-
-        var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[4];
-        const uint shaderUnused = 0xFFFFFFFF;
-        groups[0] = new RayTracingShaderGroupCreateInfoKHR
-        {
-            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
-            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 0,
-            ClosestHitShader = shaderUnused,
-            AnyHitShader = shaderUnused,
-            IntersectionShader = shaderUnused
-        };
-        groups[1] = new RayTracingShaderGroupCreateInfoKHR
-        {
-            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
-            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 1,
-            ClosestHitShader = shaderUnused,
-            AnyHitShader = shaderUnused,
-            IntersectionShader = shaderUnused
-        };
-        groups[2] = new RayTracingShaderGroupCreateInfoKHR
-        {
-            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
-            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 2,
-            ClosestHitShader = shaderUnused,
-            AnyHitShader = shaderUnused,
-            IntersectionShader = shaderUnused
-        };
-        groups[3] = new RayTracingShaderGroupCreateInfoKHR
-        {
-            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
-            Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
-            GeneralShader = shaderUnused,
-            ClosestHitShader = 3,
-            AnyHitShader = shaderUnused,
-            IntersectionShader = shaderUnused
-        };
+        var aoHitModule = CreateShaderModule(aoHitBytes);
 
         var layoutBindings = stackalloc DescriptorSetLayoutBinding[8];
         layoutBindings[0] = new DescriptorSetLayoutBinding(
@@ -246,41 +195,36 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         };
         Context.Api.CreatePipelineLayout(Context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
 
-        var rtPipelineInfo = new RayTracingPipelineCreateInfoKHR
-        {
-            SType = StructureType.RayTracingPipelineCreateInfoKhr,
-            StageCount = 4,
-            PStages = stages,
-            GroupCount = 4,
-            PGroups = groups,
-            // Primary ray from raygen + one shadow ray from closest-hit.
-            MaxPipelineRayRecursionDepth = 2,
-            Layout = pipelineLayoutLocal
-        };
-        rtExt.CreateRayTracingPipelines(Context.Device, default, default, 1, in rtPipelineInfo, default, out var pipelineLocal).ThrowOnError();
+        var fullPathPipeline = CreateRayTracingPipeline(fullPathRaygenModule, missModule, shadowMissModule, hitModule, pipelineLayoutLocal, mainName);
+        var aoPipeline = CreateRayTracingPipeline(aoRaygenModule, aoMissModule, shadowMissModule, aoHitModule, pipelineLayoutLocal, mainName);
 
+        Context.Api.DestroyShaderModule(Context.Device, aoHitModule, default);
         Context.Api.DestroyShaderModule(Context.Device, hitModule, default);
         Context.Api.DestroyShaderModule(Context.Device, shadowMissModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, aoMissModule, default);
         Context.Api.DestroyShaderModule(Context.Device, missModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, raygenModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, aoRaygenModule, default);
+        Context.Api.DestroyShaderModule(Context.Device, fullPathRaygenModule, default);
 
         descriptorSetLayout = descriptorSetLayoutLocal;
         descriptorPool = descriptorPoolLocal;
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
-        pipeline = pipelineLocal;
-        Log.Information("RTX raytracer pipeline and descriptors created.");
-
-        BuildShaderBindingTable();
+        fullPathPipelineState = BuildShaderBindingTable(fullPathPipeline);
+        aoPipelineState = BuildShaderBindingTable(aoPipeline);
+        Log.Information("RTX raytracer pipelines and descriptors created.");
         var initCommandBuffer = Context.CreateCommandBuffer();
-        initCommandBuffer.BeginRecording();
+        Context.BeginCommandBuffer(initCommandBuffer);
         UpdateSceneResources(initCommandBuffer, force: true);
-        initCommandBuffer.SubmitAndWait();
+        Context.SubmitAndWait(initCommandBuffer);
     }
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants)
     {
-        Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.RayTracingKhr, pipeline);
+        var isAoMode = Scene.RenderMode != RenderMode.FullPathTracing;
+        var pipelineState = isAoMode ? aoPipelineState : fullPathPipelineState;
+
+        Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.RayTracingKhr, pipelineState.Pipeline);
         Context.Api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.RayTracingKhr, pipelineLayout, 0, 1, in descriptorSet, 0, null);
 
         Context.Api.CmdPushConstants(
@@ -295,10 +239,10 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var height = (uint)Math.Max(1, image.Size.Height);
         rtExt.CmdTraceRays(
             commandBuffer,
-            in raygenRegion,
-            in missRegion,
-            in hitRegion,
-            in callableRegion,
+            in pipelineState.RaygenRegion,
+            in pipelineState.MissRegion,
+            in pipelineState.HitRegion,
+            in pipelineState.CallableRegion,
             width,
             height,
             1);
@@ -306,7 +250,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             Log.Debug("RTX trace frame={Frame}: rays={Width}x{Height}.", pushConstants.Push.Frame, width, height);
     }
 
-    protected override void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force)
+    protected override void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
     {
         var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
         var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
@@ -326,7 +270,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
                 BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
                 MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
                 meshBytes);
-            commandBuffer.RetainForExecution(previousMeshBuffer);
+            Context.RetainForExecution(commandBuffer, previousMeshBuffer);
 
             var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
             var meshWrite = new WriteDescriptorSet
@@ -393,7 +337,99 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         }
     }
 
-    private void BuildShaderBindingTable()
+    private Pipeline CreateRayTracingPipeline(
+        ShaderModule raygenModule,
+        ShaderModule missModule,
+        ShaderModule shadowMissModule,
+        ShaderModule hitModule,
+        PipelineLayout layout,
+        ByteString mainName)
+    {
+        var stages = stackalloc PipelineShaderStageCreateInfo[4];
+        stages[0] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.RaygenBitKhr,
+            Module = raygenModule,
+            PName = mainName
+        };
+        stages[1] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.MissBitKhr,
+            Module = missModule,
+            PName = mainName
+        };
+        stages[2] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.MissBitKhr,
+            Module = shadowMissModule,
+            PName = mainName
+        };
+        stages[3] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ClosestHitBitKhr,
+            Module = hitModule,
+            PName = mainName
+        };
+
+        var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[4];
+        const uint shaderUnused = 0xFFFFFFFF;
+        groups[0] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 0,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[1] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 1,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[2] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+            GeneralShader = 2,
+            ClosestHitShader = shaderUnused,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+        groups[3] = new RayTracingShaderGroupCreateInfoKHR
+        {
+            SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
+            Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
+            GeneralShader = shaderUnused,
+            ClosestHitShader = 3,
+            AnyHitShader = shaderUnused,
+            IntersectionShader = shaderUnused
+        };
+
+        var rtPipelineInfo = new RayTracingPipelineCreateInfoKHR
+        {
+            SType = StructureType.RayTracingPipelineCreateInfoKhr,
+            StageCount = 4,
+            PStages = stages,
+            GroupCount = 4,
+            PGroups = groups,
+            // Primary ray from raygen + one shadow ray from closest-hit.
+            MaxPipelineRayRecursionDepth = 2,
+            Layout = layout
+        };
+        rtExt.CreateRayTracingPipelines(Context.Device, default, default, 1, in rtPipelineInfo, default, out var pipeline).ThrowOnError();
+        return pipeline;
+    }
+
+    private RayTracingPipelineState BuildShaderBindingTable(Pipeline pipeline)
     {
         var rtProps = new PhysicalDeviceRayTracingPipelinePropertiesKHR
         {
@@ -422,33 +458,39 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var missSize = handleSizeAligned * 2;
         var hitSize = handleSizeAligned;
 
-        raygenSbt = new GpuBuffer(
+        var state = new RayTracingPipelineState
+        {
+            Pipeline = pipeline
+        };
+
+        state.RaygenSbt = new GpuBuffer(
             Context,
             raygenSize,
             BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             handleStorage.AsSpan(0, (int)raygenSize));
-        missSbt = new GpuBuffer(
+        state.MissSbt = new GpuBuffer(
             Context,
             missSize,
             BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             handleStorage.AsSpan((int)raygenSize, (int)missSize));
-        hitSbt = new GpuBuffer(
+        state.HitSbt = new GpuBuffer(
             Context,
             hitSize,
             BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             handleStorage.AsSpan((int)(raygenSize + missSize), (int)hitSize));
 
-        raygenRegion = new StridedDeviceAddressRegionKHR(raygenSbt.DeviceAddress, handleSizeAligned, raygenSize);
-        missRegion = new StridedDeviceAddressRegionKHR(missSbt.DeviceAddress, handleSizeAligned, missSize);
-        hitRegion = new StridedDeviceAddressRegionKHR(hitSbt.DeviceAddress, handleSizeAligned, hitSize);
-        callableRegion = default;
+        state.RaygenRegion = new StridedDeviceAddressRegionKHR(state.RaygenSbt.DeviceAddress, handleSizeAligned, raygenSize);
+        state.MissRegion = new StridedDeviceAddressRegionKHR(state.MissSbt.DeviceAddress, handleSizeAligned, missSize);
+        state.HitRegion = new StridedDeviceAddressRegionKHR(state.HitSbt.DeviceAddress, handleSizeAligned, hitSize);
+        state.CallableRegion = default;
         Log.Information("RTX SBT built (handleSizeAligned={HandleSizeAligned}, groups={GroupCount}).", handleSizeAligned, groupCount);
+        return state;
     }
 
-    private void UpdateTlas(CommandBufferPool.PooledCommandBuffer commandBuffer, TlasResourceSlot slot, int slotIndex)
+    private void UpdateTlas(Context.CommandBuffer commandBuffer, TlasResourceSlot slot, int slotIndex)
     {
         var instanceBytes = Scene.BuildRtxInstanceData();
         var previousInstancesBuffer = slot.InstancesBuffer;
@@ -458,7 +500,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             instanceBytes);
-        commandBuffer.RetainForExecution(previousInstancesBuffer);
+        Context.RetainForExecution(commandBuffer, previousInstancesBuffer);
 
         var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
         // NoorRay-style: TLAS upload/build via one-time immediate submit path.
@@ -494,15 +536,16 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     public override void Dispose()
     {
         DisposeRenderImages();
-        hitSbt.Dispose();
-        missSbt.Dispose();
-        raygenSbt.Dispose();
+        aoPipelineState.Dispose();
+        fullPathPipelineState.Dispose();
         meshBuffer.Dispose();
         foreach (var slot in tlasSlots)
             slot.Dispose();
 
-        if (pipeline.Handle != default)
-            Context.Api.DestroyPipeline(Context.Device, pipeline, default);
+        if (aoPipelineState.Pipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, aoPipelineState.Pipeline, default);
+        if (fullPathPipelineState.Pipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, fullPathPipelineState.Pipeline, default);
         if (pipelineLayout.Handle != default)
             Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
         if (descriptorSetLayout.Handle != default)

@@ -209,7 +209,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         where TPushConstants : unmanaged
     {
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         BeginRenderPass(commandBuffer, target);
 
         if (hasVertexInput && vertexBuffer is not null)
@@ -232,7 +232,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 
         context.Api.CmdDraw(commandBuffer.InternalHandle, vertexCount, 1, firstVertex, 0);
         EndRenderPass(commandBuffer, target);
-        commandBuffer.Submit();
+        context.SubmitCommandBuffer(commandBuffer);
     }
 
     public void DrawIndexed<TPushConstants>(
@@ -245,7 +245,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         where TPushConstants : unmanaged
     {
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         BeginRenderPass(commandBuffer, target);
 
         var vb = vertexBuffer.Handle;
@@ -266,10 +266,10 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 
         context.Api.CmdDrawIndexed(commandBuffer.InternalHandle, indexCount, 1, 0, 0, 0);
         EndRenderPass(commandBuffer, target);
-        commandBuffer.Submit();
+        context.SubmitCommandBuffer(commandBuffer);
     }
 
-    private void BeginRenderPass(CommandBufferPool.PooledCommandBuffer commandBuffer, ImageResource target)
+    private void BeginRenderPass(Context.CommandBuffer commandBuffer, ImageResource target)
     {
         target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
 
@@ -304,7 +304,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
             context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, pipelineLayout, 0, 1, in externalDescriptorSet, 0, null);
     }
 
-    private void EndRenderPass(CommandBufferPool.PooledCommandBuffer commandBuffer, ImageResource target)
+    private void EndRenderPass(Context.CommandBuffer commandBuffer, ImageResource target)
     {
         context.Api.CmdEndRendering(commandBuffer.InternalHandle);
         target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.MemoryReadBit);

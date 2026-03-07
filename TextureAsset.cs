@@ -67,7 +67,7 @@ public sealed unsafe class TextureAsset : IDisposable
         Sampler = sampler;
 
         var commandBuffer = context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        context.BeginCommandBuffer(commandBuffer);
         Image.TransitionLayout(
             commandBuffer.InternalHandle,
             ImageLayout.TransferDstOptimal,
@@ -94,8 +94,8 @@ public sealed unsafe class TextureAsset : IDisposable
             commandBuffer.InternalHandle,
             ImageLayout.ShaderReadOnlyOptimal,
             AccessFlags.ShaderReadBit);
-        commandBuffer.RetainForExecution(staging);
-        commandBuffer.SubmitAndWait();
+        context.RetainForExecution(commandBuffer, staging);
+        context.SubmitAndWait(commandBuffer);
         Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
     }
 

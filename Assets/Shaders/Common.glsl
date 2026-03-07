@@ -6,6 +6,9 @@ const float PI = 3.14159265358979323846;
 const float EPSILON = 0.0001;
 const float AABB_EPSILON  = 1e-5;
 const float INF = 1.0e30;
+const float FIREFLY_ABSOLUTE_LUMINANCE = 32.0;
+const float FIREFLY_RELATIVE_LUMINANCE = 12.0;
+const float FIREFLY_MIN_REFERENCE = 0.25;
 
 // Bounce Types
 const uint RAY_TERMINATED    = 1u << 0; // bit 0
@@ -17,6 +20,40 @@ const uint ENV_TRANSPARENT   = 1u << 5; // bit 5 (invisible environment backgrou
 
 float luminance(vec3 c) { 
     return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+
+vec3 compressLuminancePreserveHue(vec3 color, float maxLuminance) {
+    float currentLuminance = luminance(color);
+    if (currentLuminance <= maxLuminance)
+        return color;
+
+    float excess = currentLuminance - maxLuminance;
+    float compressedLuminance = maxLuminance + excess / (1.0 + excess / max(maxLuminance, EPSILON));
+    return color * (compressedLuminance / max(currentLuminance, EPSILON));
+}
+
+vec3 suppressFireflies(
+    vec3 sampleRadiance,
+    vec3 referenceRadiance,
+    int bounceCount,
+    int diffuseCount,
+    int specularCount,
+    int transmissionCount)
+{
+    float sampleLuminance = luminance(sampleRadiance);
+    if (sampleLuminance <= 0.0)
+        return max(sampleRadiance, vec3(0.0));
+
+    float referenceLuminance = max(luminance(max(referenceRadiance, vec3(0.0))), FIREFLY_MIN_REFERENCE);
+    float allowedLuminance = max(FIREFLY_ABSOLUTE_LUMINANCE, referenceLuminance * FIREFLY_RELATIVE_LUMINANCE);
+
+    float glossyRisk = float(specularCount + transmissionCount);
+    float deepRisk = max(float(bounceCount) - 1.0, 0.0);
+    float diffuseRelief = 1.0 / (1.0 + 0.2 * float(diffuseCount));
+    float riskScale = (1.0 + glossyRisk + 0.35 * deepRisk) * diffuseRelief;
+    allowedLuminance /= max(riskScale, 1.0);
+
+    return compressLuminancePreserveHue(max(sampleRadiance, vec3(0.0)), allowedLuminance);
 }
 
 float powerHeuristic(float pdfA, float pdfB) {

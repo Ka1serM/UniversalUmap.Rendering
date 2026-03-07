@@ -60,7 +60,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
     public PixelSize RenderImageSize => renderImageSize;
 
-    public void Record(ImageResource image, CommandBufferPool.PooledCommandBuffer commandBuffer)
+    public void Record(ImageResource image, Context.CommandBuffer commandBuffer)
     {
         EnsureRenderImages(image.Size);
         UpdateSceneResources(commandBuffer, force: false);
@@ -73,13 +73,14 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         if (!hasLoggedFirstRender || FrameIndex < 3)
         {
             Log.Debug(
-                "{RaytracerType} frame={Frame} size={Width}x{Height} envTex={EnvironmentTextureIndex} sceneVersion={SceneVersion}",
+                "{RaytracerType} frame={Frame} size={Width}x{Height} envTex={EnvironmentTextureIndex} sceneVersion={SceneVersion} renderMode={RenderMode}",
                 GetType().Name,
                 FrameIndex,
                 image.Size.Width,
                 image.Size.Height,
                 Scene.Environment.TextureIndex,
-                Scene.Version);
+                Scene.Version,
+                Scene.RenderMode);
             hasLoggedFirstRender = true;
         }
 
@@ -96,7 +97,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     }
 
     protected abstract void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants);
-    protected abstract void UpdateSceneResources(CommandBufferPool.PooledCommandBuffer commandBuffer, bool force);
+    protected abstract void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
     protected abstract DescriptorSetLayout GetDescriptorSetLayout();
 
@@ -287,7 +288,8 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         var push = new PushDataGpu
         {
             Frame = (int)frame,
-            IsMoving = Scene.CameraIsMoving
+            IsMoving = Scene.CameraIsMoving,
+            RenderMode = (int)Scene.RenderMode
         };
 
         return new PushConstantsDataGpu
@@ -358,7 +360,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer stagingBuffer, int pixelX, int pixelY)
     {
         var commandBuffer = Context.CreateCommandBuffer();
-        commandBuffer.BeginRecording();
+        Context.BeginCommandBuffer(commandBuffer);
 
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
 
@@ -378,7 +380,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             in copyRegion);
 
         image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        commandBuffer.SubmitAndWait();
+        Context.SubmitAndWait(commandBuffer);
     }
 
     protected static string[] GetSupportedHandleTypes()

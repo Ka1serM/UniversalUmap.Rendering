@@ -14,7 +14,7 @@ using Silk.NET.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class VulkanViewerControl : Control, IDisposable
+public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 {
     public readonly record struct EnvironmentSettings(
         float Rotation,
@@ -24,6 +24,12 @@ public sealed class VulkanViewerControl : Control, IDisposable
         int TextureIndex,
         Vector3 DirectionalDirection,
         float DirectionalIntensity);
+
+    public record struct CameraSettings(
+        float FocalLengthMm,
+        float Aperture,
+        float FocusDistance,
+        float BokehBias);
 
     private static readonly IBrush HitTestBrush = Brushes.Transparent;
 
@@ -48,22 +54,22 @@ public sealed class VulkanViewerControl : Control, IDisposable
     private OverlayCompositor? overlayCompositor;
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
-    private const double ClickMoveThreshold = 4d;
-    private bool pointerPressActive;
-    private bool pointerPressLeftOnly;
-    private bool pointerPressMoved;
-    private Point pointerPressPosition;
 
     private EnvironmentSettings environment;
     private bool hasEnvironmentState;
+    private CameraSettings camera;
+    private bool hasCameraState;
+    private RenderMode renderMode = RenderMode.FullPathTracing;
 
     internal event Action? FrameRendered;
     internal event Action? DebugOverlayToggleRequested;
     internal event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
+    internal event Action<CameraSettings>? CameraSettingsChanged;
 
     internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
     internal Vector3 CameraPositionDebug => scene?.CameraController.Position ?? Vector3.Zero;
     internal Vector3 ArcballPivotDebug => scene?.CameraController.ArcballPivot ?? Vector3.Zero;
+    protected override bool UseTimedHoldCapture => true;
 
     public Scene? Scene => scene;
     public Context? VulkanContext => context;
@@ -77,6 +83,40 @@ public sealed class VulkanViewerControl : Control, IDisposable
             hasEnvironmentState = true;
             ApplyEnvironmentToScene(environment);
             RaiseEnvironmentSettingsChanged();
+        }
+    }
+
+    public RenderMode RenderMode
+    {
+        get => scene?.RenderMode ?? renderMode;
+        set
+        {
+            renderMode = value;
+            Log.Information("Viewer render mode set to {RenderMode}.", value);
+            if (scene is not null)
+                scene.Mutate(s => s.SetRenderMode(value));
+            QueueNextFrame();
+        }
+    }
+
+    public CameraSettings Camera
+    {
+        get
+        {
+            if (scene is null)
+                return camera;
+
+            camera = scene.Mutate(ReadCameraFromScene);
+            hasCameraState = true;
+            return camera;
+        }
+        set
+        {
+            camera = value;
+            hasCameraState = true;
+            ApplyCameraToScene(camera);
+            RaiseCameraSettingsChanged();
+            QueueNextFrame();
         }
     }
 
@@ -120,133 +160,50 @@ public sealed class VulkanViewerControl : Control, IDisposable
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        if (SharedPointerCapture.IsOwnedBy(this))
-            SharedPointerCapture.End(this);
         input?.OnFocusLost();
     }
 
-    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    protected override void OnHoldPressStarted(PointerPressedEventArgs e, Point position, bool leftPressed, bool rightPressed)
     {
-        base.OnPointerPressed(e);
-
-        var props = e.GetCurrentPoint(this).Properties;
-        var leftPressed = props.IsLeftButtonPressed;
-        var rightPressed = props.IsRightButtonPressed;
-        if (!leftPressed && !rightPressed)
-            return;
-
-        var position = e.GetPosition(this);
-        pointerPressActive = true;
-        pointerPressLeftOnly = leftPressed && !rightPressed;
-        pointerPressMoved = false;
-        pointerPressPosition = position;
         input?.SetModifierState(e.KeyModifiers);
         input?.OnPointerMoved(position);
         Focus(NavigationMethod.Pointer);
-
-        if (SharedPointerCapture.TryBegin(this, e.Pointer, position))
-            input?.OnPointerPressed(position, leftPressed, rightPressed);
-
-        e.Handled = true;
     }
 
-    protected override void OnPointerMoved(PointerEventArgs e)
+    protected override void OnHoldPointerMoved(PointerEventArgs e, Point position, bool leftPressed, bool rightPressed)
     {
-        base.OnPointerMoved(e);
-
-        var position = e.GetPosition(this);
-        if (pointerPressActive && !pointerPressMoved)
-        {
-            var dx = position.X - pointerPressPosition.X;
-            var dy = position.Y - pointerPressPosition.Y;
-            pointerPressMoved = (dx * dx) + (dy * dy) > (ClickMoveThreshold * ClickMoveThreshold);
-        }
-        if (SharedPointerCapture.IsOwnedBy(this) && SharedPointerCapture.TryConsumeWarpSuppressedMove(this))
-        {
-            e.Handled = true;
-            return;
-        }
-
-        if (!SharedPointerCapture.IsOwnedBy(this))
-        {
-            input?.SetModifierState(e.KeyModifiers);
-            input?.OnPointerMoved(position);
-            return;
-        }
-
-        var props = e.GetCurrentPoint(this).Properties;
-        var leftPressed = props.IsLeftButtonPressed;
-        var rightPressed = props.IsRightButtonPressed;
-
-        var delta = SharedPointerCapture.GetDelta(this, position);
         input?.SetModifierState(e.KeyModifiers);
-        if (delta.X != 0d || delta.Y != 0d)
-            input?.OnPointerDelta(new Vector2((float)delta.X, (float)delta.Y));
-
-        if (leftPressed || rightPressed)
-            SharedPointerCapture.TryWrapAround(this, position);
-        else
-            SharedPointerCapture.End(this, e.Pointer);
-
-        e.Handled = true;
+        input?.OnPointerMoved(position);
     }
 
-    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    protected override void OnHoldCaptureDelta(PointerEventArgs e, Point position, Avalonia.Vector delta)
     {
-        base.OnPointerReleased(e);
+        input?.SetModifierState(e.KeyModifiers);
+        if (delta.X == 0d && delta.Y == 0d)
+            return;
 
-        var releasePosition = e.GetPosition(this);
-        var updateKind = e.GetCurrentPoint(this).Properties.PointerUpdateKind;
-        var isLeftRelease = e.InitialPressMouseButton == MouseButton.Left || updateKind == PointerUpdateKind.LeftButtonReleased;
-        var props = e.GetCurrentPoint(this).Properties;
-        var leftPressed = props.IsLeftButtonPressed;
-        var rightPressed = props.IsRightButtonPressed;
-        switch (e.InitialPressMouseButton)
-        {
-            case MouseButton.Left:
-                leftPressed = false;
-                break;
-            case MouseButton.Right:
-                rightPressed = false;
-                break;
-        }
+        input?.OnPointerDelta(new System.Numerics.Vector2((float)delta.X, (float)delta.Y));
+    }
 
-        if (SharedPointerCapture.IsOwnedBy(this))
-        {
-            switch (e.InitialPressMouseButton)
-            {
-                case MouseButton.Left:
-                    input?.OnPointerReleased(leftButton: true, rightButton: false);
-                    break;
-                case MouseButton.Right:
-                    input?.OnPointerReleased(leftButton: false, rightButton: true);
-                    break;
-            }
+    protected override void OnHoldCaptureButtonPressed(Point position, bool leftButton, bool rightButton)
+    {
+        input?.OnPointerPressed(position, leftButton, rightButton);
+    }
 
-            if (!leftPressed && !rightPressed)
-                SharedPointerCapture.End(this, e.Pointer);
-        }
+    protected override void OnHoldCaptureButtonReleased(bool leftButton, bool rightButton)
+    {
+        input?.OnPointerReleased(leftButton, rightButton);
+    }
 
-        if (pointerPressActive &&
-            pointerPressLeftOnly &&
-            !pointerPressMoved &&
-            isLeftRelease &&
-            Bounds.Contains(releasePosition))
-        {
-            input?.SetModifierState(e.KeyModifiers);
+    protected override void OnHoldQuickClick(PointerReleasedEventArgs e, Point releasePosition)
+    {
+        input?.SetModifierState(e.KeyModifiers);
+
+        if (PressStartedWithOnlyLeft &&
+            e.InitialPressMouseButton == MouseButton.Left &&
+            Bounds.Contains(releasePosition) &&
+            !CaptureStartedDuringPress)
             HandleSelectionClick(releasePosition);
-        }
-
-        pointerPressActive = false;
-        e.Handled = true;
-    }
-
-    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
-    {
-        base.OnPointerCaptureLost(e);
-        pointerPressActive = false;
-        if (SharedPointerCapture.IsOwnedBy(this))
-            SharedPointerCapture.End(this);
     }
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
@@ -335,7 +292,8 @@ public sealed class VulkanViewerControl : Control, IDisposable
         lifecycleVersion++;
         LayoutUpdated -= OnLayoutUpdated;
 
-        SharedPointerCapture.End(this);
+        ResetTimedHoldCapture();
+        EndCapture();
         input?.OnFocusLost();
         updateQueued = false;
     }
@@ -383,6 +341,10 @@ public sealed class VulkanViewerControl : Control, IDisposable
                 ApplyEnvironmentToScene(environment);
             else
                 SyncEnvironmentFromScene();
+            if (hasCameraState)
+                ApplyCameraToScene(camera);
+            else
+                SyncCameraFromScene();
             QueueNextFrame();
         }
         catch (Exception ex)
@@ -402,6 +364,7 @@ public sealed class VulkanViewerControl : Control, IDisposable
 
         input = new Input();
         scene = new Scene(context, input);
+        scene.SetRenderMode(renderMode);
         scene.TryLoadDefaultEnvironment();
         raytracer = GpuRaytracer.Create(context, scene);
         picker = new GpuScenePicker(scene, raytracer);
@@ -413,7 +376,8 @@ public sealed class VulkanViewerControl : Control, IDisposable
         var version = lifecycleVersion;
         initialized = false;
         updateQueued = false;
-        SharedPointerCapture.End(this);
+        ResetTimedHoldCapture();
+        EndCapture();
         input?.OnFocusLost();
 
         FreeSurfaceResources();
@@ -543,7 +507,7 @@ public sealed class VulkanViewerControl : Control, IDisposable
             scene.UpdateCamera(target.Size, deltaSeconds);
 
             var commandBuffer = context.CreateCommandBuffer();
-            commandBuffer.BeginRecording();
+            context.BeginCommandBuffer(commandBuffer);
             raytracer.Record(target, commandBuffer);
 
             var selectedInstanceId = scene.SelectedInstanceIndex >= 0
@@ -556,7 +520,7 @@ public sealed class VulkanViewerControl : Control, IDisposable
                 raytracer.OutputPosition,
                 selectedInstanceId,
                 target);
-            commandBuffer.Submit();
+            context.SubmitCommandBuffer(commandBuffer);
         }
     }
 
@@ -621,6 +585,45 @@ public sealed class VulkanViewerControl : Control, IDisposable
     }
 
     private void RaiseEnvironmentSettingsChanged() => EnvironmentSettingsChanged?.Invoke(environment);
+
+    private void ApplyCameraToScene(CameraSettings settings)
+    {
+        if (scene is null)
+            return;
+
+        scene.Mutate(current =>
+        {
+            var controller = current.CameraController;
+            controller.FocalLengthMm = Math.Max(0.001f, settings.FocalLengthMm);
+            controller.Aperture = Math.Max(0f, settings.Aperture);
+            controller.FocusDistance = Math.Max(0.001f, settings.FocusDistance);
+            controller.BokehBias = Math.Max(0.001f, settings.BokehBias);
+            current.SetDirty(SceneDirtyFlags.Accumulation);
+            return true;
+        });
+    }
+
+    private void SyncCameraFromScene()
+    {
+        if (scene is null)
+            return;
+
+        camera = scene.Mutate(ReadCameraFromScene);
+        hasCameraState = true;
+        RaiseCameraSettingsChanged();
+    }
+
+    private void RaiseCameraSettingsChanged() => CameraSettingsChanged?.Invoke(camera);
+
+    private static CameraSettings ReadCameraFromScene(Scene current)
+    {
+        var controller = current.CameraController;
+        return new CameraSettings(
+            controller.FocalLengthMm,
+            controller.Aperture,
+            controller.FocusDistance,
+            controller.BokehBias);
+    }
 
     private void OnLayoutUpdated(object? sender, EventArgs e)
     {

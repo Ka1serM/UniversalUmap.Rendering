@@ -24,35 +24,39 @@ void main()
 
     float z = sqrt(max(0.0, 1.0 - rr));
     vec3 n = normalize(vec3(uv, z));
+    vec3 v = vec3(0.0, 0.0, 1.0);
+    vec3 rdir = reflect(-v, n);
+    vec3 invRdir = -rdir;
 
     float rot = radians(pc.params0.x);
     float s = sin(rot);
     float c = cos(rot);
-    vec3 d = n;
-    d.x = n.x * c - n.z * s;
-    d.z = n.x * s + n.z * c;
+    vec3 d = invRdir;
+    d.x = invRdir.x * c - invRdir.z * s;
+    d.z = invRdir.x * s + invRdir.z * c;
+    d.y = -d.y;
 
     float u = atan(d.z, d.x) / (2.0 * 3.14159265359) + 0.5;
-    float v = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
+    float envV = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
 
     int textureIndex = int(pc.params0.y + 0.5);
-    vec3 env;
+    vec3 env = vec3(0.34, 0.47, 0.72);
     if (textureIndex >= 0)
     {
-        vec3 hdr = texture(textureSamplers[nonuniformEXT(textureIndex)], vec2(u, v)).rgb;
+        vec3 hdr = texture(textureSamplers[nonuniformEXT(textureIndex)], vec2(u, envV)).rgb;
         env = hdr / (hdr + vec3(1.0));
         env = pow(env, vec3(1.0 / 2.2));
     }
-    else
-    {
-        vec3 sky = vec3(0.28, 0.42, 0.66);
-        vec3 horizon = vec3(0.62, 0.63, 0.64);
-        vec3 ground = vec3(0.11, 0.12, 0.13);
-        env = mix(sky, horizon, smoothstep(0.20, 0.52, v));
-        env = mix(env, ground, smoothstep(0.52, 0.92, v));
-    }
 
-    float rim = 0.32 * pow(1.0 - max(n.z, 0.0), 1.55);
-    vec3 color = clamp(env + rim * vec3(0.7, 0.78, 0.92), 0.0, 1.0);
+    float ndotv = max(dot(n, v), 0.0);
+    float fresnel = pow(1.0 - ndotv, 3.0);
+    float inverseFresnel = 1.0 - fresnel;
+
+    // Keep env-map detail, but use inverse Fresnel for center-bright / edge-dark shaping.
+    vec3 centerLift = vec3(1.5, 1.5, 1.5);
+    vec3 edgeAtten = vec3(1.0, 1.0, 1.0);
+    vec3 shade = mix(edgeAtten, centerLift, inverseFresnel);
+    vec3 color = env * shade;
+    color = clamp(color, 0.0, 1.0);
     outColor = vec4(color, alpha);
 }

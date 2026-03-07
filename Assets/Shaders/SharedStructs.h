@@ -31,7 +31,7 @@ struct  BVHNode {
 
 struct PushData {
     int samples, diffuseBounces, specularBounces, transmissionBounces;
-    float exposure; int frame, isMoving, visualizeBVH;
+    float exposure; int frame, isMoving, renderMode;
 };
 
 struct EnvironmentData {
@@ -110,6 +110,13 @@ struct Payload {
     uint pad1;
     uint pad2;
     uint pad3;
+};
+
+struct AoPayload {
+    vec3 emission; uint flags;
+    vec3 position; uint rngState;
+    vec3 albedo; uint objectIndex;
+    vec3 normal; uint pad0;
 };
 
 

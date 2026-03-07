@@ -117,7 +117,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
     }
 
     public void Record(
-        CommandBufferPool.PooledCommandBuffer commandBuffer,
+        Context.CommandBuffer commandBuffer,
         ImageResource colorInputImage,
         ImageResource cryptoInputImage,
         ImageResource positionInputImage,

@@ -9,8 +9,7 @@
 #include "../SharedStructs.h"
 #include "../Bindings.glsl"
 
-// Payload and Attributes
-layout(location = 0) rayPayloadInEXT Payload payload;
+layout(location = 0) rayPayloadInEXT AoPayload payload;
 layout(location = 1) rayPayloadEXT uint shadowPayload;
 hitAttributeEXT vec3 attribs;
 
@@ -23,7 +22,6 @@ bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
    const uint shadowFlags = gl_RayFlagsTerminateOnFirstHitEXT
        | gl_RayFlagsOpaqueEXT
        | gl_RayFlagsSkipClosestHitShaderEXT;
-   // Miss index 1 points to RTX/ShadowMiss.glsl
    traceRayEXT(topLevelAS, shadowFlags, 0xFF, 0, 0, 1, rayOrigin, tMin, rayDirection, tMax, 1);
    return shadowPayload != 0u;
 }
@@ -82,15 +80,15 @@ void main() {
    vec3 shadingNormalLocal = normalize(interpolateBarycentric(bary, v0.normal, v1.normal, v2.normal));
    vec3 localTangent = normalize(interpolateBarycentric(bary, v0.tangent, v1.tangent, v2.tangent));
    vec2 interpolatedUV = interpolateBarycentric(bary, v0.uv, v1.uv, v2.uv);
-   
+
    vec3 worldPosition = (gl_ObjectToWorldEXT * vec4(localPosition, 1.0)).xyz;
    vec3 worldShadowPosition = (gl_ObjectToWorldEXT * vec4(localShadowPosition, 1.0)).xyz;
    mat3 normalMatrix = transpose(inverse(mat3(gl_ObjectToWorldEXT)));
 
    vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
-   vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);     // The smooth, interpolated normal
+   vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);
    vec3 tangentWorld = normalize(normalMatrix * localTangent);
-   
+
    shadeClosestHit(worldPosition, worldShadowPosition, shadingNormalWorld, geometricNormalWorld, tangentWorld, interpolatedUV, gl_WorldRayDirectionEXT, material, payload);
    payload.objectIndex = uint(gl_InstanceID);
 }

@@ -4,8 +4,43 @@
 #include "../Common.glsl"
 #include "ShadeMiss.glsl"
 
-bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMax);
+// Forward declarations used by AO helper includes.
+vec3 sampleDiffuse(vec3 N, inout uint rngState);
+float computeShadowBias(vec3 worldPosition, float nDotLGeom);
+bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax);
+
+#include "ShadeAmbientOcclusion.glsl"
+#include "ShadeAmbientOcclusionAlbedo.glsl"
+
 float fresnelDielectric(float cosThetaI, float etaI, float etaT);
+
+vec3 sampleMaterialAlbedo(in Material material, in vec2 interpolatedUV) {
+    vec3 albedo = material.albedo;
+    if (material.albedoIndex != -1)
+        albedo *= texture(textureSamplers[material.albedoIndex], interpolatedUV).rgb;
+    return albedo;
+}
+
+void shadeAmbientOcclusionSurface(
+    in vec3 worldPosition,
+    in vec3 geometricFacingNormal,
+    in Material material,
+    in vec2 interpolatedUV,
+    inout uint rngState,
+    out vec3 albedo,
+    out vec3 encodedNormal,
+    out vec3 emission)
+{
+    albedo = (pushConstants.push.renderMode == 2)
+        ? sampleMaterialAlbedo(material, interpolatedUV)
+        : vec3(1.0);
+    encodedNormal = geometricFacingNormal * 0.5 + 0.5;
+
+    float ao = estimateAmbientOcclusion(worldPosition, geometricFacingNormal, rngState);
+    emission = (pushConstants.push.renderMode == 2)
+        ? shadeAmbientOcclusionWithAlbedo(albedo, ao)
+        : shadeAmbientOcclusionOnly(ao);
+}
 
 // Fast normalization with epsilon guard (no expensive NaN/Inf checks).
 vec3 fastNormalize(vec3 v) {
@@ -55,6 +90,62 @@ vec3 applyNormalMap(vec3 baseNormal, vec3 interpolatedTangent, vec3 packedNormal
         mappedNormal = -mappedNormal;
 
     return mappedNormal;
+}
+
+vec3 stabilizeShadingNormal(vec3 shadingNormal, vec3 geometricNormal) {
+    vec3 Ns = fastNormalize(shadingNormal);
+    vec3 Ng = fastNormalize(geometricNormal);
+
+    // Keep shading normal in the same hemisphere as geometric normal.
+    if (dot(Ns, Ng) < 0.0)
+        Ns = -Ns;
+
+    // Reduce extreme normal deviation at grazing/corner cases (shadow terminator mitigation).
+    float alignment = clamp(dot(Ns, Ng), 0.0, 1.0);
+    float keepShading = smoothstep(0.2, 0.8, alignment);
+    return fastNormalize(mix(Ng, Ns, keepShading));
+}
+
+vec3 adaptShadingNormalLocal(vec3 viewDir, vec3 shadingNormal, vec3 geometricNormal) {
+    // Keller et al. local shading normal adaption to keep reflection in geometric hemisphere.
+    vec3 Ns = fastNormalize(shadingNormal);
+    vec3 Ng = fastNormalize(geometricNormal);
+    if (dot(Ns, Ng) < 0.0)
+        Ns = -Ns;
+
+    vec3 wi = -viewDir; // incident direction toward the surface
+    vec3 r = reflect(wi, Ns);
+    if (dot(r, Ng) < 0.0) {
+        vec3 t = r - Ng * dot(Ng, r);
+        float tLenSq = dot(t, t);
+        if (tLenSq > EPSILON)
+            Ns = fastNormalize(-wi + fastNormalize(t));
+        else
+            Ns = Ng;
+    }
+
+    if (dot(Ns, Ng) < 0.0)
+        Ns = -Ns;
+    return Ns;
+}
+
+float computeShadowBias(vec3 worldPosition, float nDotLGeom) {
+    // Scale bias with scene extent and increase it at grazing angles.
+    float sceneScale = max(max(abs(worldPosition.x), abs(worldPosition.y)), abs(worldPosition.z));
+    float baseBias = max(1e-4, sceneScale * 1e-6);
+    float grazingScale = 1.0 / max(nDotLGeom, 0.2);
+    return baseBias * grazingScale;
+}
+
+float computeRayOriginBias(vec3 worldPosition) {
+    float sceneScale = max(max(abs(worldPosition.x), abs(worldPosition.y)), abs(worldPosition.z));
+    return max(1e-4, sceneScale * 1e-6);
+}
+
+vec3 offsetRayOrigin(vec3 worldPosition, vec3 geometricNormal, vec3 outDirection) {
+    float bias = computeRayOriginBias(worldPosition);
+    float side = (dot(outDirection, geometricNormal) >= 0.0) ? 1.0 : -1.0;
+    return worldPosition + geometricNormal * (side * bias);
 }
 
 vec3 sampleDiffuse(vec3 N, inout uint rngState) {
@@ -158,30 +249,30 @@ vec3 evaluateDiffuseBRDF(vec3 albedo, float metallic) {
     return (1 - metallic) * (albedo / PI);
 }
 
-float pdfDiffuse(vec3 N, vec3 L) {
-    return max(dot(N, L), 0.0) / PI;
+vec3 fresnelSchlick(vec3 F0, float cosTheta) {
+    float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float m2 = m * m;
+    float m5 = m2 * m2 * m;
+    return F0 + (vec3(1.0) - F0) * m5;
 }
 
-vec3 sampleGGXVNDF_local(vec3 Vlocal, float roughness, vec2 u) {
-    float a = roughness * roughness;
-    vec3 Vstretched = fastNormalize(vec3(a * Vlocal.x, a * Vlocal.y, Vlocal.z));
-    float phi = 2.0 * PI * u.x;
-    float z = (1.0 - u.y) * (1.0 + Vstretched.z) - Vstretched.z;
-    float sinTheta = sqrt(clamp(1.0 - z * z, 0.0, 1.0));
-    vec3 c = vec3(sinTheta * cos(phi), sinTheta * sin(phi), z);
-    vec3 Hstretched = c + Vstretched;
-    return fastNormalize(vec3(a * Hstretched.x, a * Hstretched.y, Hstretched.z));
+float pdfDiffuse(vec3 N, vec3 L) {
+    return max(dot(N, L), 0.0) / PI;
 }
 
 vec3 sampleHalfVector(vec3 V, vec3 N, float roughness, inout uint rngState) {
     float u1 = rand(rngState);
     float u2 = rand(rngState);
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float phi = 2.0 * PI * u1;
+    float cosTheta = sqrt((1.0 - u2) / max(1.0 + (alpha2 - 1.0) * u2, EPSILON));
+    float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+
+    vec3 Hlocal = vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
     vec3 T, B;
     buildCoordinateSystem(N, T, B);
-    mat3 TBN = mat3(T, B, N);
-    vec3 Vlocal = transpose(TBN) * V;
-    vec3 Hlocal = sampleGGXVNDF_local(Vlocal, roughness, vec2(u1, u2));
-    return fastNormalize(TBN * Hlocal);
+    return fastNormalize(T * Hlocal.x + B * Hlocal.y + N * Hlocal.z);
 }
 
 float distributionGGX(vec3 N, vec3 H, float roughness)
@@ -222,23 +313,88 @@ vec3 evaluateSpecularBRDF(vec3 normal, vec3 viewDir, vec3 sampledDir, vec3 F, fl
 }
 
 float pdfSpecular(vec3 V, vec3 N, vec3 H, float roughness) {
-    float NdotV = max(dot(N, V), EPSILON);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), EPSILON);
     float D = distributionGGX(N, H, roughness);
-    float G1_V = geometrySchlickGGX(NdotV, roughness);
-    return (G1_V * D) / max(4.0 * NdotV, EPSILON);
+    return (D * NdotH) / max(4.0 * VdotH, EPSILON);
 }
 
 float dielectricF0FromSpecular(float specular) {
     return clamp(0.04 * specular, 0.0, 0.16);
 }
 
-float computeSpecularProbability(float ndotVAbs, float metallic, float specular) {
-    float baseSpecular = fresnelDielectric(ndotVAbs, 1.0, 1.5);
-    float p = mix(baseSpecular, 1.0, metallic) * clamp(specular, 0.0, 1.0);
-    return clamp(p, 0.0, 1.0);
+float computeSpecularSamplingWeight(vec3 albedo, vec3 F0, float metallic) {
+    float weightDiffuse = mix(luminance(albedo), 0.0, metallic);
+    float weightSpecular = luminance(F0);
+    return clamp(weightSpecular / max(weightDiffuse + weightSpecular, EPSILON), 0.0, 1.0);
 }
 
-vec3 evaluateOpaqueBSDFAndPdf(
+bool buildMicrofacetNormalMap(
+    vec3 geometricNormal,
+    vec3 perturbedNormal,
+    out vec3 wp,
+    out vec3 wt,
+    out float c,
+    out float s)
+{
+    vec3 Ng = fastNormalize(geometricNormal);
+    wp = fastNormalize(perturbedNormal);
+    if (dot(wp, Ng) < 0.0)
+        wp = -wp;
+
+    c = clamp(dot(wp, Ng), 0.0, 1.0);
+    s = sqrt(max(1.0 - c * c, 0.0));
+    if (c <= 1e-4 || s <= 1e-4) {
+        vec3 T, B;
+        buildCoordinateSystem(Ng, T, B);
+        wt = T;
+        return false;
+    }
+
+    vec3 wpPerp = wp - Ng * c;
+    wt = fastNormalize(-wpPerp);
+    return true;
+}
+
+void microfacetProjectedAreas(
+    vec3 w,
+    vec3 wp,
+    vec3 wt,
+    float c,
+    float s,
+    out float ap,
+    out float at,
+    out float aSum)
+{
+    float invC = 1.0 / max(c, EPSILON);
+    ap = max(dot(w, wp), 0.0) * invC;
+    at = max(dot(w, wt), 0.0) * s * invC;
+    aSum = ap + at;
+}
+
+float microfacetLambdaP(vec3 w, vec3 wp, vec3 wt, float c, float s) {
+    float ap, at, aSum;
+    microfacetProjectedAreas(w, wp, wt, c, s, ap, at, aSum);
+    if (aSum <= EPSILON)
+        return 0.0;
+    return ap / aSum;
+}
+
+float microfacetG1(vec3 w, vec3 wm, vec3 geometricNormal, vec3 wp, vec3 wt, float c, float s) {
+    float wdwm = dot(w, wm);
+    if (wdwm <= 0.0)
+        return 0.0;
+
+    float ap, at, aSum;
+    microfacetProjectedAreas(w, wp, wt, c, s, ap, at, aSum);
+    if (aSum <= EPSILON)
+        return 0.0;
+
+    float wdng = max(dot(w, geometricNormal), 0.0);
+    return min(1.0, wdng / aSum);
+}
+
+vec3 evaluateBaseOpaqueBSDFAndPdf(
     vec3 viewDir,
     vec3 normal,
     vec3 lightDir,
@@ -246,7 +402,7 @@ vec3 evaluateOpaqueBSDFAndPdf(
     float specular,
     float metallic,
     float roughness,
-    float probSpecular,
+    float swSpecular,
     out float bsdfPdf
 ) {
     float NdotV = max(dot(normal, viewDir), 0.0);
@@ -258,21 +414,252 @@ vec3 evaluateOpaqueBSDFAndPdf(
 
     vec3 halfVector = fastNormalize(viewDir + lightDir);
     float dielectricF0 = dielectricF0FromSpecular(specular);
-    vec3 F_dielectric = vec3(dielectricF0);
-    vec3 F = mix(F_dielectric, albedo, metallic);
+    vec3 F0_dielectric = vec3(dielectricF0);
+    vec3 F0 = mix(F0_dielectric, albedo, metallic);
+    vec3 F = fresnelSchlick(F0, max(dot(viewDir, halfVector), 0.0));
 
-    vec3 diffuseBRDF = evaluateDiffuseBRDF(albedo, metallic);
+    vec3 diffuseBRDF = (vec3(1.0) - F) * evaluateDiffuseBRDF(albedo, metallic);
     vec3 specularBRDF = evaluateSpecularBRDF(normal, viewDir, lightDir, F, roughness, halfVector);
 
     float specPdf = pdfSpecular(viewDir, normal, halfVector, roughness);
     float diffPdf = pdfDiffuse(normal, lightDir);
-    bsdfPdf = max(probSpecular * specPdf + (1.0 - probSpecular) * diffPdf, EPSILON);
+    bsdfPdf = max(swSpecular * specPdf + (1.0 - swSpecular) * diffPdf, EPSILON);
 
     return diffuseBRDF + specularBRDF;
 }
 
+vec3 evaluateOpaqueBSDFAndPdf(
+    vec3 viewDir,
+    vec3 perturbedNormal,
+    vec3 geometricNormal,
+    vec3 lightDir,
+    vec3 albedo,
+    float specular,
+    float metallic,
+    float roughness,
+    float swSpecular,
+    out float bsdfPdf
+) {
+    float NdotLGeom = max(dot(geometricNormal, lightDir), 0.0);
+    if (NdotLGeom <= 0.0) {
+        bsdfPdf = 0.0;
+        return vec3(0.0);
+    }
+
+    vec3 wp, wt;
+    float c, s;
+    bool validMicro = buildMicrofacetNormalMap(geometricNormal, perturbedNormal, wp, wt, c, s);
+    if (!validMicro) {
+        return evaluateBaseOpaqueBSDFAndPdf(
+            viewDir,
+            wp,
+            lightDir,
+            albedo,
+            specular,
+            metallic,
+            roughness,
+            swSpecular,
+            bsdfPdf);
+    }
+
+    float lambdaP = microfacetLambdaP(viewDir, wp, wt, c, s);
+    float lambdaT = 1.0 - lambdaP;
+
+    float g1Lwp = microfacetG1(lightDir, wp, geometricNormal, wp, wt, c, s);
+    float cosWpL = max(dot(wp, lightDir), 0.0);
+
+    float pdf1 = 0.0;
+    vec3 fp1 = evaluateBaseOpaqueBSDFAndPdf(
+        viewDir,
+        wp,
+        lightDir,
+        albedo,
+        specular,
+        metallic,
+        roughness,
+        swSpecular,
+        pdf1);
+
+    vec3 fcos = lambdaP * fp1 * cosWpL * g1Lwp;
+    float pdfAccum = lambdaP * pdf1 * g1Lwp;
+
+    vec3 lightDirReflectedAtWt = reflect(lightDir, wt);
+    float g1Lrwp = microfacetG1(lightDirReflectedAtWt, wp, geometricNormal, wp, wt, c, s);
+    float g1Lwt = microfacetG1(lightDir, wt, geometricNormal, wp, wt, c, s);
+    float cosWpLr = max(dot(wp, lightDirReflectedAtWt), 0.0);
+    if (cosWpLr > 0.0 && g1Lwt > 0.0) {
+        float pdf2 = 0.0;
+        vec3 fp2 = evaluateBaseOpaqueBSDFAndPdf(
+            viewDir,
+            wp,
+            lightDirReflectedAtWt,
+            albedo,
+            specular,
+            metallic,
+            roughness,
+            swSpecular,
+            pdf2);
+
+        float w2 = lambdaP * (1.0 - g1Lrwp) * g1Lwt;
+        fcos += w2 * fp2 * cosWpLr;
+        pdfAccum += w2 * pdf2;
+    }
+
+    vec3 viewDirReflectedAtWt = reflect(viewDir, wt);
+    if (lambdaT > 0.0 && cosWpL > 0.0 && g1Lwp > 0.0) {
+        float pdf3 = 0.0;
+        vec3 fp3 = evaluateBaseOpaqueBSDFAndPdf(
+            viewDirReflectedAtWt,
+            wp,
+            lightDir,
+            albedo,
+            specular,
+            metallic,
+            roughness,
+            swSpecular,
+            pdf3);
+
+        float w3 = lambdaT * g1Lwp;
+        fcos += w3 * fp3 * cosWpL;
+        pdfAccum += w3 * pdf3;
+    }
+
+    bsdfPdf = max(pdfAccum, EPSILON);
+    return fcos / max(NdotLGeom, EPSILON);
+}
+
+void sampleBaseOpaqueBSDF(
+    vec3 viewDir,
+    vec3 normal,
+    vec3 geometricNormal,
+    vec3 albedo,
+    float metallic,
+    float specular,
+    float roughness,
+    inout uint rngState,
+    out vec3 sampledDir,
+    out vec3 attenuation,
+    out float combinedPdf,
+    out bool sampledSpecular)
+{
+    float dielectricF0 = dielectricF0FromSpecular(specular);
+    vec3 F0 = mix(vec3(dielectricF0), albedo, metallic);
+    float swSpecular = computeSpecularSamplingWeight(albedo, F0, metallic);
+
+    vec3 halfVector;
+    sampledSpecular = rand(rngState) < swSpecular;
+    if (sampledSpecular) {
+        halfVector = sampleHalfVector(viewDir, normal, roughness, rngState);
+        sampledDir = reflect(-viewDir, halfVector);
+        for (int i = 0; i < 2 && dot(geometricNormal, sampledDir) <= 0.0; ++i) {
+            halfVector = sampleHalfVector(viewDir, normal, roughness, rngState);
+            sampledDir = reflect(-viewDir, halfVector);
+        }
+    } else {
+        sampledDir = sampleDiffuse(normal, rngState);
+        halfVector = fastNormalize(viewDir + sampledDir);
+    }
+
+    if (dot(geometricNormal, sampledDir) <= 0.0) {
+        sampledDir = sampleDiffuse(geometricNormal, rngState);
+        halfVector = fastNormalize(viewDir + sampledDir);
+        sampledSpecular = false;
+    }
+
+    float VdotH = max(dot(viewDir, halfVector), 0.0);
+    vec3 F = fresnelSchlick(F0, VdotH);
+    vec3 diffuseBRDF  = (vec3(1.0) - F) * evaluateDiffuseBRDF(albedo, metallic);
+    vec3 specularBRDF = evaluateSpecularBRDF(normal, viewDir, sampledDir, F, roughness, halfVector);
+    vec3 combinedBRDF = diffuseBRDF + specularBRDF;
+
+    float specPdf = sampledSpecular ? pdfSpecular(viewDir, normal, halfVector, roughness) : 0.0;
+    float diffPdf = pdfDiffuse(normal, sampledDir);
+    combinedPdf = max(swSpecular * specPdf + (1.0 - swSpecular) * diffPdf, EPSILON);
+    attenuation = combinedBRDF * max(dot(normal, sampledDir), 0.0) / combinedPdf;
+}
+
+void sampleMicrofacetNormalMappedBSDF(
+    vec3 viewDir,
+    vec3 perturbedNormal,
+    vec3 geometricNormal,
+    vec3 albedo,
+    float metallic,
+    float specular,
+    float roughness,
+    inout uint rngState,
+    out vec3 sampledDir,
+    out vec3 attenuation,
+    out float bsdfPdf,
+    out bool sampledSpecular)
+{
+    vec3 wp, wt;
+    float c, s;
+    bool validMicro = buildMicrofacetNormalMap(geometricNormal, perturbedNormal, wp, wt, c, s);
+    if (!validMicro) {
+        sampleBaseOpaqueBSDF(viewDir, wp, wp, albedo, metallic, specular, roughness, rngState, sampledDir, attenuation, bsdfPdf, sampledSpecular);
+        return;
+    }
+
+    float lambdaP = microfacetLambdaP(viewDir, wp, wt, c, s);
+    bool onPerturbedFacet = rand(rngState) < lambdaP;
+
+    vec3 omegaR = -viewDir;
+    attenuation = vec3(1.0);
+    bsdfPdf = 1.0;
+    sampledSpecular = false;
+
+    const int MaxMicrofacetWalk = 8;
+    for (int i = 0; i < MaxMicrofacetWalk; ++i) {
+        if (onPerturbedFacet) {
+            vec3 wi = -omegaR;
+            vec3 wo;
+            vec3 baseAttenuation;
+            float basePdf;
+            bool baseSpecular;
+            sampleBaseOpaqueBSDF(wi, wp, wp, albedo, metallic, specular, roughness, rngState, wo, baseAttenuation, basePdf, baseSpecular);
+
+            attenuation *= baseAttenuation;
+            omegaR = wo;
+            sampledSpecular = sampledSpecular || baseSpecular;
+            bsdfPdf = basePdf;
+
+            float exitProbability = microfacetG1(omegaR, wp, geometricNormal, wp, wt, c, s);
+            if (rand(rngState) < exitProbability || i == MaxMicrofacetWalk - 1) {
+                sampledDir = omegaR;
+                if (dot(geometricNormal, sampledDir) <= 0.0) {
+                    sampledDir = sampleDiffuse(geometricNormal, rngState);
+                    sampledSpecular = false;
+                }
+                return;
+            }
+
+            onPerturbedFacet = false;
+        } else {
+            omegaR = reflect(-omegaR, wt);
+            sampledSpecular = true;
+
+            float exitProbability = microfacetG1(omegaR, wt, geometricNormal, wp, wt, c, s);
+            if (rand(rngState) < exitProbability || i == MaxMicrofacetWalk - 1) {
+                sampledDir = omegaR;
+                if (dot(geometricNormal, sampledDir) <= 0.0)
+                    sampledDir = sampleDiffuse(geometricNormal, rngState);
+                bsdfPdf = max(bsdfPdf, EPSILON);
+                return;
+            }
+
+            onPerturbedFacet = true;
+        }
+    }
+
+    sampledDir = sampleDiffuse(geometricNormal, rngState);
+    attenuation = vec3(0.0);
+    bsdfPdf = EPSILON;
+    sampledSpecular = false;
+}
+
 vec3 estimateDirectLighting(
     vec3 worldPosition,
+    vec3 shadowPosition,
     vec3 shadingNormal,
     vec3 geometricNormal,
     vec3 viewDir,
@@ -280,7 +667,7 @@ vec3 estimateDirectLighting(
     float specular,
     float metallic,
     float roughness,
-    float probSpecular,
+    float swSpecular,
     in EnvironmentData environmentData,
     inout uint rngState
 ) {
@@ -291,18 +678,20 @@ vec3 estimateDirectLighting(
         vec3 sunDir = getDirectionalLightDirection(environmentData);
         float NdotLGeomSun = max(dot(geometricNormal, sunDir), 0.0);
         if (NdotLGeomSun > 0.0) {
-            vec3 shadowOriginSun = worldPosition + geometricNormal * 0.001;
-            if (!traceShadowRay(shadowOriginSun, sunDir, 1000.0)) {
+            float shadowBiasSun = computeShadowBias(worldPosition, NdotLGeomSun);
+            vec3 shadowOriginSun = shadowPosition + geometricNormal * shadowBiasSun;
+            if (!traceShadowRay(shadowOriginSun, sunDir, shadowBiasSun, 1000.0)) {
                 float bsdfPdfSun = 0.0;
                 vec3 bsdfSun = evaluateOpaqueBSDFAndPdf(
                     viewDir,
                     shadingNormal,
+                    geometricNormal,
                     sunDir,
                     albedo,
                     specular,
                     metallic,
                     roughness,
-                    probSpecular,
+                    swSpecular,
                     bsdfPdfSun);
                 directContribution += bsdfSun * vec3(environmentData.directionalIntensity) * NdotLGeomSun;
             }
@@ -322,12 +711,13 @@ vec3 estimateDirectLighting(
     if (NdotLGeom <= 0.0 || lightPdf <= 0.0)
         return directContribution;
 
-    vec3 shadowOrigin = worldPosition + geometricNormal * 0.001;
-    if (traceShadowRay(shadowOrigin, lightDir, 1000.0))
+    float shadowBias = computeShadowBias(worldPosition, NdotLGeom);
+    vec3 shadowOrigin = shadowPosition + geometricNormal * shadowBias;
+    if (traceShadowRay(shadowOrigin, lightDir, shadowBias, 1000.0))
         return directContribution;
 
     float bsdfPdf = 0.0;
-    vec3 bsdf = evaluateOpaqueBSDFAndPdf(viewDir, shadingNormal, lightDir, albedo, specular, metallic, roughness, probSpecular, bsdfPdf);
+    vec3 bsdf = evaluateOpaqueBSDFAndPdf(viewDir, shadingNormal, geometricNormal, lightDir, albedo, specular, metallic, roughness, swSpecular, bsdfPdf);
     if (bsdfPdf <= 0.0)
         return directContribution;
 
@@ -414,59 +804,34 @@ void handleOpaqueBSDF(
     float roughness,
     inout Payload payload)
 {
-    float NdotV = dot(shadingNormal, viewDir);
-
-    vec3 normal = shadingNormal;
-    if (NdotV < 0.0)
-        normal = -normal;
-    
-    float dielectricF0 = dielectricF0FromSpecular(specular);
-    float probSpecular = computeSpecularProbability(abs(NdotV), metallic, specular);
-
     vec3 sampledDir;
-    vec3 halfVector;
-    if (rand(payload.rngState) < probSpecular) {
-        payload.flags |= BOUNCE_SPECULAR;
-        halfVector = sampleHalfVector(viewDir, normal, roughness, payload.rngState);
-        sampledDir = reflect(-viewDir, halfVector);
-    } else {
-        payload.flags |= BOUNCE_DIFFUSE;
-        sampledDir = sampleDiffuse(normal, payload.rngState);
-        halfVector = fastNormalize(viewDir + sampledDir); // Fake half-vector only for MIS/Fresnel weighting
-    }
+    vec3 attenuation;
+    float bsdfPdf;
+    bool sampledSpecular;
+    sampleMicrofacetNormalMappedBSDF(
+        viewDir,
+        shadingNormal,
+        geometricNormal,
+        albedo,
+        metallic,
+        specular,
+        roughness,
+        payload.rngState,
+        sampledDir,
+        attenuation,
+        bsdfPdf,
+        sampledSpecular);
+
     payload.nextDirection = sampledDir;
-
-    // Prevent back-side light leaks on single-sided geometry with strong normal maps.
-    if (dot(geometricNormal, sampledDir) <= 0.0) {
-        payload.attenuation = vec3(0.0);
-        payload.lastBsdfPdf = 0.0;
-        payload.lastNeeLightPdf = 0.0;
-        payload.flags |= RAY_TERMINATED;
-        return;
-    }
-        
-    // Mix with metallic
-    vec3 F_dielectric = vec3(dielectricF0);
-    vec3 F = mix(F_dielectric, albedo, metallic);
-
-    // BRDF evaluation
-    vec3 diffuseBRDF  = evaluateDiffuseBRDF(albedo, metallic);
-    vec3 specularBRDF = evaluateSpecularBRDF(normal, viewDir, sampledDir, F, roughness, halfVector);
-    vec3 combinedBRDF = diffuseBRDF + specularBRDF;
-
-    // PDFs
-    float specPdf = pdfSpecular(viewDir, normal, halfVector, roughness);
-    float diffPdf = pdfDiffuse(normal, sampledDir);
-    
-    float combinedPdf = max(probSpecular * specPdf + (1.0 - probSpecular) * diffPdf, EPSILON);
-    
-    payload.attenuation = combinedBRDF * max(dot(normal, sampledDir), 0.0) / max(combinedPdf, EPSILON);
-    payload.lastBsdfPdf = combinedPdf;
-    payload.lastNeeLightPdf = (max(dot(normal, sampledDir), 0.0) > 0.0) ? (0.5 / PI) : 0.0;
+    payload.attenuation = attenuation;
+    payload.lastBsdfPdf = max(bsdfPdf, EPSILON);
+    payload.lastNeeLightPdf = (max(dot(geometricNormal, sampledDir), 0.0) > 0.0) ? (0.5 / PI) : 0.0;
+    payload.flags |= sampledSpecular ? BOUNCE_SPECULAR : BOUNCE_DIFFUSE;
 }
 
 void shadeClosestHit(
     in vec3 worldPosition,
+    in vec3 shadowPosition,
     in vec3 shadingNormal,
     in vec3 geometricNormal,
     in vec3 interpolatedTangent,
@@ -479,6 +844,45 @@ void shadeClosestHit(
     payload.lastBsdfPdf = 0.0;
     payload.lastNeeLightPdf = 0.0;
 
+    vec3 viewDir = fastNormalize(-worldRayDirection);
+    vec3 geometricFacingNormal = (dot(geometricNormal, viewDir) < 0.0) ? -geometricNormal : geometricNormal;
+
+    // Render modes:
+    // 0: Full path tracing
+    // 1: AO only (no texture sampling)
+    // 2: AO + albedo texture only
+    if (pushConstants.push.renderMode == 1) {
+        shadeAmbientOcclusionSurface(
+            worldPosition,
+            geometricFacingNormal,
+            material,
+            interpolatedUV,
+            payload.rngState,
+            payload.albedo,
+            payload.normal,
+            payload.emission);
+        payload.attenuation = vec3(1.0);
+        payload.nextDirection = worldRayDirection;
+        payload.flags |= RAY_TERMINATED;
+        return;
+    }
+
+    if (pushConstants.push.renderMode == 2) {
+        shadeAmbientOcclusionSurface(
+            worldPosition,
+            geometricFacingNormal,
+            material,
+            interpolatedUV,
+            payload.rngState,
+            payload.albedo,
+            payload.normal,
+            payload.emission);
+        payload.attenuation = vec3(1.0);
+        payload.nextDirection = worldRayDirection;
+        payload.flags |= RAY_TERMINATED;
+        return;
+    }
+
     float opacity = material.opacity;
     if (material.opacityIndex != -1)
         opacity *= texture(textureSamplers[material.opacityIndex], interpolatedUV).a;
@@ -486,14 +890,13 @@ void shadeClosestHit(
     if (rand(payload.rngState) > opacity) {
         payload.flags |= RAY_TRANSPARENT;
         payload.nextDirection = worldRayDirection;
+        payload.position = worldPosition + worldRayDirection * computeRayOriginBias(worldPosition);
         payload.attenuation = vec3(1.0);
         payload.emission = vec3(0.0);
         return;
     }
 
-    vec3 albedo = material.albedo;
-    if (material.albedoIndex != -1)
-        albedo *= texture(textureSamplers[material.albedoIndex], interpolatedUV).rgb;
+    vec3 albedo = sampleMaterialAlbedo(material, interpolatedUV);
 
     vec3 shadingNormalTextured = shadingNormal;
     if (material.normalIndex != -1) {
@@ -523,25 +926,24 @@ void shadeClosestHit(
     if (material.transmissionIndex != -1)
         transmission *= texture(textureSamplers[material.transmissionIndex], interpolatedUV).r;
 
+    vec3 shadingFacingNormal = (dot(shadingNormalTextured, viewDir) < 0.0) ? -shadingNormalTextured : shadingNormalTextured;
+    shadingFacingNormal = stabilizeShadingNormal(shadingFacingNormal, geometricFacingNormal);
+    shadingFacingNormal = adaptShadingNormalLocal(viewDir, shadingFacingNormal, geometricFacingNormal);
+    vec3 facingNormal = shadingFacingNormal;
+    float dielectricF0 = dielectricF0FromSpecular(specular);
+    vec3 F0 = mix(vec3(dielectricF0), albedo, metallic);
+    float swSpecular = computeSpecularSamplingWeight(albedo, F0, metallic);
 
     payload.albedo = albedo;
-    payload.normal = shadingNormalTextured * 0.5 + 0.5;
+    payload.normal = facingNormal * 0.5 + 0.5;
     payload.emission = emission;
 
-    vec3 viewDir = fastNormalize(-worldRayDirection);
-    vec3 geometricFacingNormal = (dot(geometricNormal, viewDir) < 0.0) ? -geometricNormal : geometricNormal;
-    if (dot(shadingNormalTextured, geometricFacingNormal) < 0.0)
-        shadingNormalTextured = -shadingNormalTextured;
-
-    float NdotV = dot(shadingNormalTextured, viewDir);
-    vec3 facingNormal = (NdotV < 0.0) ? -shadingNormalTextured : shadingNormalTextured;
-    float probSpecular = computeSpecularProbability(abs(NdotV), metallic, specular);
-
     if (rand(payload.rngState) < transmission)
-        handleDielectricBSDF(viewDir, shadingNormalTextured, roughness, material.ior, material.transmissionColor, payload);
+        handleDielectricBSDF(viewDir, facingNormal, roughness, material.ior, material.transmissionColor, payload);
     else {
         payload.emission += estimateDirectLighting(
             worldPosition,
+            shadowPosition,
             facingNormal,
             geometricFacingNormal,
             viewDir,
@@ -549,12 +951,42 @@ void shadeClosestHit(
             specular,
             metallic,
             roughness,
-            probSpecular,
+            swSpecular,
             pushConstants.environment,
             payload.rngState
         );
-        handleOpaqueBSDF(viewDir, shadingNormalTextured, geometricFacingNormal, albedo, metallic, specular, roughness, payload);
+        handleOpaqueBSDF(viewDir, facingNormal, geometricFacingNormal, albedo, metallic, specular, roughness, payload);
     }
+
+    payload.nextDirection = fastNormalize(payload.nextDirection);
+    payload.position = offsetRayOrigin(worldPosition, geometricFacingNormal, payload.nextDirection);
+}
+
+void shadeClosestHit(
+    in vec3 worldPosition,
+    in vec3 shadowPosition,
+    in vec3 shadingNormal,
+    in vec3 geometricNormal,
+    in vec3 interpolatedTangent,
+    in vec2 interpolatedUV,
+    in vec3 worldRayDirection,
+    in Material material,
+    inout AoPayload payload)
+{
+    vec3 viewDir = fastNormalize(-worldRayDirection);
+    vec3 geometricFacingNormal = (dot(geometricNormal, viewDir) < 0.0) ? -geometricNormal : geometricNormal;
+
+    payload.position = worldPosition;
+    shadeAmbientOcclusionSurface(
+        worldPosition,
+        geometricFacingNormal,
+        material,
+        interpolatedUV,
+        payload.rngState,
+        payload.albedo,
+        payload.normal,
+        payload.emission);
+    payload.flags |= RAY_TERMINATED;
 }
 
 #endif
