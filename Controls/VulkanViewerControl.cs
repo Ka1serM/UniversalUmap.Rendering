@@ -16,21 +16,6 @@ namespace UniversalUmap.Rendering.Controls;
 
 public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 {
-    public readonly record struct EnvironmentSettings(
-        float Rotation,
-        float VisibleExposure,
-        float LightingExposure,
-        bool Visible,
-        int TextureIndex,
-        Vector3 DirectionalDirection,
-        float DirectionalIntensity);
-
-    public record struct CameraSettings(
-        float FocalLengthMm,
-        float Aperture,
-        float FocusDistance,
-        float BokehBias);
-
     private static readonly IBrush HitTestBrush = Brushes.Transparent;
 
     private CompositionSurfaceVisual? visual;
@@ -47,7 +32,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private Size lastLayoutSize;
     private double lastLayoutScaling = -1d;
 
-    private Input? input;
+    private readonly Input input;
     private Scene? scene;
     private GpuRaytracer? raytracer;
     private GpuScenePicker? picker;
@@ -55,16 +40,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
 
-    private EnvironmentSettings environment;
-    private bool hasEnvironmentState;
-    private CameraSettings camera;
-    private bool hasCameraState;
     private RenderMode renderMode = RenderMode.FullPathTracing;
 
     internal event Action? FrameRendered;
     internal event Action? DebugOverlayToggleRequested;
-    internal event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
-    internal event Action<CameraSettings>? CameraSettingsChanged;
+    internal event Action<EnvironmentDataGpu>? EnvironmentSettingsChanged;
+    internal event Action<Camera>? CameraSettingsChanged;
 
     internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
     internal Vector3 CameraPositionDebug => scene?.GetCameraViewSnapshot().Position ?? Vector3.Zero;
@@ -72,19 +53,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     protected override bool UseTimedHoldCapture => true;
 
     public Scene? Scene => scene;
+    public Camera? Camera => scene?.Camera;
     public Context? VulkanContext => context;
-
-    public EnvironmentSettings Environment
-    {
-        get => environment;
-        set
-        {
-            environment = value;
-            hasEnvironmentState = true;
-            ApplyEnvironmentToScene(environment);
-            RaiseEnvironmentSettingsChanged();
-        }
-    }
 
     public RenderMode RenderMode
     {
@@ -99,29 +69,10 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         }
     }
 
-    public CameraSettings Camera
-    {
-        get
-        {
-            if (scene is null)
-                return camera;
-
-            camera = ReadCameraFromScene(scene);
-            hasCameraState = true;
-            return camera;
-        }
-        set
-        {
-            camera = value;
-            hasCameraState = true;
-            ApplyCameraToScene(camera);
-            RaiseCameraSettingsChanged();
-            QueueNextFrame();
-        }
-    }
 
     public VulkanViewerControl()
     {
+        input = new Input();
         update = UpdateFrame;
         Focusable = true;
         IsTabStop = true;
@@ -154,50 +105,50 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     protected override void OnPointerEntered(PointerEventArgs e)
     {
         base.OnPointerEntered(e);
-        input?.SetModifierState(e.KeyModifiers);
+        input.SetModifierState(e.KeyModifiers);
     }
 
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        input?.OnFocusLost();
+        input.OnFocusLost();
     }
 
     protected override void OnHoldPressStarted(PointerPressedEventArgs e, Point position, bool leftPressed, bool rightPressed)
     {
-        input?.SetModifierState(e.KeyModifiers);
-        input?.OnPointerMoved(position);
+        input.SetModifierState(e.KeyModifiers);
+        input.OnPointerMoved(position);
         Focus(NavigationMethod.Pointer);
     }
 
     protected override void OnHoldPointerMoved(PointerEventArgs e, Point position, bool leftPressed, bool rightPressed)
     {
-        input?.SetModifierState(e.KeyModifiers);
-        input?.OnPointerMoved(position);
+        input.SetModifierState(e.KeyModifiers);
+        input.OnPointerMoved(position);
     }
 
     protected override void OnHoldCaptureDelta(PointerEventArgs e, Point position, Avalonia.Vector delta)
     {
-        input?.SetModifierState(e.KeyModifiers);
+        input.SetModifierState(e.KeyModifiers);
         if (delta.X == 0d && delta.Y == 0d)
             return;
 
-        input?.OnPointerDelta(new System.Numerics.Vector2((float)delta.X, (float)delta.Y));
+        input.OnPointerDelta(new System.Numerics.Vector2((float)delta.X, (float)delta.Y));
     }
 
     protected override void OnHoldCaptureButtonPressed(Point position, bool leftButton, bool rightButton)
     {
-        input?.OnPointerPressed(position, leftButton, rightButton);
+        input.OnPointerPressed(position, leftButton, rightButton);
     }
 
     protected override void OnHoldCaptureButtonReleased(bool leftButton, bool rightButton)
     {
-        input?.OnPointerReleased(leftButton, rightButton);
+        input.OnPointerReleased(leftButton, rightButton);
     }
 
     protected override void OnHoldQuickClick(PointerReleasedEventArgs e, Point releasePosition)
     {
-        input?.SetModifierState(e.KeyModifiers);
+        input.SetModifierState(e.KeyModifiers);
 
         if (PressStartedWithOnlyLeft &&
             e.InitialPressMouseButton == MouseButton.Left &&
@@ -209,8 +160,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
-        input?.SetModifierState(e.KeyModifiers);
-        input?.OnPointerWheel((float)e.Delta.Y);
+        input.SetModifierState(e.KeyModifiers);
+        input.OnPointerWheel((float)e.Delta.Y);
         e.Handled = true;
     }
 
@@ -224,14 +175,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             return;
         }
 
-        input?.OnKeyDown(e.Key);
+        input.OnKeyDown(e.Key);
         e.Handled = true;
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-        input?.OnKeyUp(e.Key);
+        input.OnKeyUp(e.Key);
         e.Handled = true;
     }
 
@@ -244,8 +195,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             return false;
         }
 
-        lock (scene.SyncRoot)
-            return raytracer.TryGetBindlessTextureDescriptors(out layout, out set);
+        var result = scene.Synchronize(() =>
+        {
+            var success = raytracer.TryGetBindlessTextureDescriptors(out var resolvedLayout, out var resolvedSet);
+            return (success, resolvedLayout, resolvedSet);
+        });
+        layout = result.resolvedLayout;
+        set = result.resolvedSet;
+        return result.success;
     }
 
     internal bool TryPickInstance(
@@ -294,7 +251,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
         ResetTimedHoldCapture();
         EndCapture();
-        input?.OnFocusLost();
+        input.OnFocusLost();
         updateQueued = false;
     }
 
@@ -337,14 +294,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             surface = new VulkanSurface(context, interop, drawingSurface);
             BuildRenderResourcesIfNeeded();
             initialized = true;
-            if (hasEnvironmentState)
-                ApplyEnvironmentToScene(environment);
-            else
-                SyncEnvironmentFromScene();
-            if (hasCameraState)
-                ApplyCameraToScene(camera);
-            else
-                SyncCameraFromScene();
+            RaiseEnvironmentSettingsChanged();
+            RaiseCameraSettingsChanged();
             QueueNextFrame();
         }
         catch (Exception ex)
@@ -362,8 +313,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
         GpuStructLayoutValidator.ValidateOrThrow();
 
-        input = new Input();
         scene = new Scene(context, input);
+        scene.Camera.Changed += OnSceneCameraChanged;
         scene.SetRenderMode(renderMode);
         scene.TryLoadDefaultEnvironment();
         raytracer = GpuRaytracer.Create(context, scene);
@@ -378,7 +329,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         updateQueued = false;
         ResetTimedHoldCapture();
         EndCapture();
-        input?.OnFocusLost();
+        input.OnFocusLost();
 
         FreeSurfaceResources();
         ClearCompositionVisual();
@@ -392,19 +343,19 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     {
         if (scene is not null)
         {
-            lock (scene.SyncRoot)
+            scene.Synchronize(() =>
             {
+                scene.Camera.Changed -= OnSceneCameraChanged;
                 overlayCompositor?.Dispose();
                 raytracer?.Dispose();
                 scene.Dispose();
-            }
+            });
         }
 
         overlayCompositor = null;
         raytracer = null;
         picker = null;
         scene = null;
-        input = null;
     }
 
     private void FreeSurfaceResources()
@@ -502,7 +453,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         lastRenderTicks = nowTicks;
         var deltaSeconds = Math.Clamp(rawDeltaSeconds, 1f / 240f, 0.25f);
 
-        lock (scene.SyncRoot)
+        scene.Synchronize(() =>
         {
             scene.UpdateCamera(target.Size, deltaSeconds);
 
@@ -521,7 +472,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 selectedInstanceId,
                 target);
             context.SubmitCommandBuffer(commandBuffer);
-        }
+        });
     }
 
     private void QueueNextFrame()
@@ -546,74 +497,19 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         _ = TryPickInstance(localPosition, Bounds.Size, out _, out _, out _, out _);
     }
 
-    private void ApplyEnvironmentToScene(EnvironmentSettings settings)
+    private void RaiseEnvironmentSettingsChanged()
     {
-        if (scene is null)
-            return;
-
-        scene.ApplyEnvironmentSettings(new Scene.EnvironmentSnapshot(
-            settings.Rotation,
-            settings.VisibleExposure,
-            settings.LightingExposure,
-            settings.Visible,
-            settings.TextureIndex,
-            settings.DirectionalDirection,
-            settings.DirectionalIntensity));
+        if (scene is not null)
+            EnvironmentSettingsChanged?.Invoke(scene.Environment);
     }
 
-    private void SyncEnvironmentFromScene()
+    private void RaiseCameraSettingsChanged()
     {
-        if (scene is null)
-            return;
-
-        var env = scene.GetEnvironmentSnapshot();
-        environment = new EnvironmentSettings(
-            env.Rotation,
-            env.VisibleExposure,
-            env.LightingExposure,
-            env.Visible,
-            env.TextureIndex,
-            env.DirectionalDirection,
-            env.DirectionalIntensity);
-        hasEnvironmentState = true;
-        RaiseEnvironmentSettingsChanged();
+        if (scene is not null)
+            CameraSettingsChanged?.Invoke(scene.Camera);
     }
 
-    private void RaiseEnvironmentSettingsChanged() => EnvironmentSettingsChanged?.Invoke(environment);
-
-    private void ApplyCameraToScene(CameraSettings settings)
-    {
-        if (scene is null)
-            return;
-
-        scene.ApplyCameraLensSettings(new Scene.CameraLensSnapshot(
-            settings.FocalLengthMm,
-            settings.Aperture,
-            settings.FocusDistance,
-            settings.BokehBias));
-    }
-
-    private void SyncCameraFromScene()
-    {
-        if (scene is null)
-            return;
-
-        camera = ReadCameraFromScene(scene);
-        hasCameraState = true;
-        RaiseCameraSettingsChanged();
-    }
-
-    private void RaiseCameraSettingsChanged() => CameraSettingsChanged?.Invoke(camera);
-
-    private static CameraSettings ReadCameraFromScene(Scene current)
-    {
-        var controller = current.GetCameraLensSnapshot();
-        return new CameraSettings(
-            controller.FocalLengthMm,
-            controller.Aperture,
-            controller.FocusDistance,
-            controller.BokehBias);
-    }
+    private void OnSceneCameraChanged() => RaiseCameraSettingsChanged();
 
     private void OnLayoutUpdated(object? sender, EventArgs e)
     {

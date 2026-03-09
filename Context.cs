@@ -194,7 +194,7 @@ public sealed class Context : IDisposable
         }
 
         if (api.TryGetInstanceExtension(default(Instance), out ExtDebugUtils _) &&
-            (validationEnabled || Environment.GetEnvironmentVariable("UVUMAP_ENABLE_DEBUG_UTILS") == "1"))
+            (validationEnabled || System.Environment.GetEnvironmentVariable("UVUMAP_ENABLE_DEBUG_UTILS") == "1"))
             instanceExtensions.Add("VK_EXT_debug_utils");
 
         using var pInstanceExtensions = new ByteStringList(instanceExtensions);
@@ -626,13 +626,13 @@ public sealed class Context : IDisposable
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             return;
-        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VK_LAYER_PATH")))
+        if (!string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("VK_LAYER_PATH")))
             return;
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
         var candidates = new[]
         {
-            Environment.GetEnvironmentVariable("VULKAN_SDK"),
+            System.Environment.GetEnvironmentVariable("VULKAN_SDK"),
             "/home/marcel/Programs/Vulkan/1.4.335.0",
             "/var/home/marcel/Programs/Vulkan/1.4.335.0",
             Path.Combine(home, "Programs/Vulkan/1.4.335.0"),
@@ -655,7 +655,7 @@ public sealed class Context : IDisposable
                 if (!Directory.Exists(explicitLayers))
                     continue;
 
-                Environment.SetEnvironmentVariable("VK_LAYER_PATH", explicitLayers);
+                System.Environment.SetEnvironmentVariable("VK_LAYER_PATH", explicitLayers);
                 Log.Information("Configured VK_LAYER_PATH for validation layers: {LayerPath}", explicitLayers);
                 return;
             }

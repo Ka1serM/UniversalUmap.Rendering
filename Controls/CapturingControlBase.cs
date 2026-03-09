@@ -206,7 +206,7 @@ internal static class PointerCaptureCoordinator
                 if (!OperatingSystem.IsLinux())
                     return false;
 
-                var display = Environment.GetEnvironmentVariable("DISPLAY");
+                var display = System.Environment.GetEnvironmentVariable("DISPLAY");
                 return !string.IsNullOrEmpty(display);
             }
         }
@@ -287,9 +287,9 @@ internal static class PointerCaptureCoordinator
                     loggedOpenDisplayFailure = true;
                     Log.Warning(
                         "XOpenDisplay failed; X11 pointer warp unavailable. DISPLAY={Display} WAYLAND_DISPLAY={WaylandDisplay} XDG_SESSION_TYPE={SessionType}",
-                        Environment.GetEnvironmentVariable("DISPLAY") ?? "<null>",
-                        Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") ?? "<null>",
-                        Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? "<null>");
+                        System.Environment.GetEnvironmentVariable("DISPLAY") ?? "<null>",
+                        System.Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") ?? "<null>",
+                        System.Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? "<null>");
                 }
                 return false;
             }
@@ -411,7 +411,7 @@ public abstract class CapturingControlBase : ContentControl
 
         holdPressActive = true;
         holdCaptureStartedDuringPress = false;
-        holdPressStartMs = Environment.TickCount64;
+        holdPressStartMs = System.Environment.TickCount64;
         holdPointer = e.Pointer;
         holdPosition = e.GetPosition(this);
         holdLeftPressed = leftPressed;
@@ -514,7 +514,7 @@ public abstract class CapturingControlBase : ContentControl
             }
         }
 
-        var elapsedMs = Environment.TickCount64 - holdPressStartMs;
+        var elapsedMs = System.Environment.TickCount64 - holdPressStartMs;
         if (holdPressActive && !holdCaptureStartedDuringPress && elapsedMs < HoldCaptureDelayMs)
             OnHoldQuickClick(e, releasePosition);
 

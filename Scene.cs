@@ -10,30 +10,9 @@ namespace UniversalUmap.Rendering;
 
 public sealed class Scene : IDisposable, IScene
 {
-    public readonly record struct EnvironmentSnapshot(
-        float Rotation,
-        float VisibleExposure,
-        float LightingExposure,
-        bool Visible,
-        int TextureIndex,
-        Vector3 DirectionalDirection,
-        float DirectionalIntensity);
-
-    public readonly record struct CameraLensSnapshot(
-        float FocalLengthMm,
-        float Aperture,
-        float FocusDistance,
-        float BokehBias);
-
-    public readonly record struct CameraViewSnapshot(
-        Vector3 Position,
-        Quaternion Rotation,
-        Vector3 ArcballPivot);
-
     private readonly Context context;
-    private readonly PerspectiveCamera activeCamera;
     private readonly List<SceneHierarchyNode> hierarchyRoots = [];
-    private readonly object syncRoot = new();
+    private readonly object sync = new();
     private readonly List<TextureAsset> textures = [];
     private readonly List<MeshAsset> meshAssets = [];
     private readonly List<MeshInstance> meshInstances = [];
@@ -51,149 +30,155 @@ public sealed class Scene : IDisposable, IScene
     public IReadOnlyList<MeshAsset> MeshAssets => meshAssets;
     public IReadOnlyList<MeshInstance> MeshInstances => meshInstances;
     public IReadOnlyList<SceneHierarchyNode> HierarchyRoots => hierarchyRoots;
-    internal EnvironmentDataGpu Environment { get; private set; } = new();
-    internal CameraDataGpu Camera { get; private set; } = new();
-    internal int CameraIsMoving { get; private set; }
+    private EnvironmentDataGpu environment = new();
+    public Camera Camera { get; }
+    public ref EnvironmentDataGpu Environment => ref environment;
+
     internal RenderMode RenderMode { get; private set; } = RenderMode.FullPathTracing;
-    internal object SyncRoot => syncRoot;
     public Context Context => context;
-    internal PerspectiveCamera ActiveCamera => activeCamera;
-    internal PerspectiveCamera CameraController => activeCamera;
     internal event Action? CameraChanged;
 
     internal Scene(Context context, Input input)
     {
         this.context = context;
-        activeCamera = new PerspectiveCamera(input);
+        Camera = new Camera(input ?? throw new ArgumentNullException(nameof(input)));
+        Camera.Changed += OnCameraUpdated;
     }
 
-    private T Locked<T>(Func<T> action)
+    internal T Synchronize<T>(Func<T> action)
     {
-        lock (syncRoot)
+        lock (sync)
             return action();
     }
 
-    private void Locked(Action action)
+    internal void Synchronize(Action action)
     {
-        lock (syncRoot)
+        lock (sync)
             action();
+    }
+
+    private static string RequireNamedAsset<TAsset>(TAsset asset, Func<TAsset, string> getName, string assetType)
+    {
+        var name = getName(asset);
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException($"{assetType} name is empty", nameof(asset));
+        return name;
+    }
+
+    private TAsset AddNamedAsset<TAsset>(
+        TAsset asset,
+        List<TAsset> items,
+        Dictionary<string, TAsset> itemsByName,
+        Func<TAsset, string> getName,
+        Action<TAsset, int> initializeIndex,
+        SceneDirtyFlags dirtyFlagsToSet,
+        string assetType)
+    {
+        return Synchronize(() =>
+        {
+            var name = RequireNamedAsset(asset, getName, assetType);
+            if (itemsByName.ContainsKey(name))
+                throw new InvalidOperationException($"{assetType} already exists: {name}");
+
+            initializeIndex(asset, items.Count);
+            items.Add(asset);
+            itemsByName[name] = asset;
+            SetDirty(dirtyFlagsToSet);
+            return asset;
+        });
+    }
+
+    private TAsset? GetOrAddNamedAsset<TAsset>(
+        string name,
+        Func<TAsset?> factory,
+        Dictionary<string, TAsset> itemsByName,
+        Func<TAsset, TAsset> add,
+        out bool added)
+        where TAsset : class, IDisposable
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Asset name is empty", nameof(name));
+        if (factory is null)
+            throw new ArgumentNullException(nameof(factory));
+
+        var result = Synchronize(() =>
+        {
+            if (itemsByName.TryGetValue(name, out var existing))
+                return (existing, false);
+
+            var created = factory();
+            if (created is null)
+                return ((TAsset?)null, false);
+
+            if (itemsByName.TryGetValue(name, out existing))
+            {
+                created.Dispose();
+                return (existing, false);
+            }
+
+            return (add(created), true);
+        });
+
+        added = result.Item2;
+        return result.Item1;
+    }
+
+    private TAsset? FindNamedAsset<TAsset>(string name, Dictionary<string, TAsset> itemsByName)
+        where TAsset : class
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        return Synchronize(() => itemsByName.GetValueOrDefault(name));
     }
 
     public void UpdateCamera(PixelSize renderSize, float deltaTimeSeconds)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
-            var changed = activeCamera.Update(renderSize, deltaTimeSeconds, out var cameraData);
-            SetCameraData(cameraData, changed);
+            Camera.Update(renderSize, deltaTimeSeconds);
         });
     }
 
     public TextureAsset Add(TextureAsset texture)
     {
-        return Locked(() =>
-        {
-            if (texturesByName.ContainsKey(texture.Name))
-                throw new InvalidOperationException($"Texture already exists: {texture.Name}");
-
-            texture.Index = textures.Count;
-            textures.Add(texture);
-            texturesByName[texture.Name] = texture;
-            Log.Information("Added texture '{TextureName}' at bindless index {TextureIndex}.", texture.Name, texture.Index);
-            SetDirty(SceneDirtyFlags.Textures | SceneDirtyFlags.Accumulation);
-            return texture;
-        });
+        var added = AddNamedAsset(
+            texture,
+            textures,
+            texturesByName,
+            static item => item.Name,
+            static (item, index) => item.Index = index,
+            SceneDirtyFlags.Textures | SceneDirtyFlags.Accumulation,
+            "Texture");
+        Log.Information("Added texture '{TextureName}' at bindless index {TextureIndex}.", added.Name, added.Index);
+        return added;
     }
 
     public TextureAsset? GetOrAddTexture(string name, Func<TextureAsset?> factory, out bool added)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Texture name is empty", nameof(name));
-        if (factory is null)
-            throw new ArgumentNullException(nameof(factory));
-
-        lock (SyncRoot)
-        {
-            var existing = texturesByName.GetValueOrDefault(name);
-            if (existing is not null)
-            {
-                added = false;
-                return existing;
-            }
-
-            var created = factory();
-            if (created is null)
-            {
-                added = false;
-                return null;
-            }
-
-            existing = texturesByName.GetValueOrDefault(name);
-            if (existing is not null)
-            {
-                created.Dispose();
-                added = false;
-                return existing;
-            }
-
-            added = true;
-            return Add(created);
-        }
+        return GetOrAddNamedAsset(name, factory, texturesByName, Add, out added);
     }
 
     public MeshAsset Add(MeshAsset mesh)
     {
-        return Locked(() =>
-        {
-            if (meshAssetsByName.ContainsKey(mesh.Name))
-                throw new InvalidOperationException($"Mesh already exists: {mesh.Name}");
-
-            mesh.MeshIndex = (uint)meshAssets.Count;
-            meshAssets.Add(mesh);
-            meshAssetsByName[mesh.Name] = mesh;
-            SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
-            return mesh;
-        });
+        return AddNamedAsset(
+            mesh,
+            meshAssets,
+            meshAssetsByName,
+            static item => item.Name,
+            static (item, index) => item.MeshIndex = (uint)index,
+            SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation,
+            "Mesh");
     }
 
     public MeshAsset? GetOrAddMeshAsset(string name, Func<MeshAsset?> factory, out bool added)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Mesh name is empty", nameof(name));
-        if (factory is null)
-            throw new ArgumentNullException(nameof(factory));
-
-        lock (SyncRoot)
-        {
-            var existing = meshAssetsByName.GetValueOrDefault(name);
-            if (existing is not null)
-            {
-                added = false;
-                return existing;
-            }
-
-            var created = factory();
-            if (created is null)
-            {
-                added = false;
-                return null;
-            }
-
-            existing = meshAssetsByName.GetValueOrDefault(name);
-            if (existing is not null)
-            {
-                created.Dispose();
-                added = false;
-                return existing;
-            }
-
-            added = true;
-            return Add(created);
-        }
+        return GetOrAddNamedAsset(name, factory, meshAssetsByName, Add, out added);
     }
 
     public MeshInstance Add(MeshInstance instance)
     {
-        return Locked(() =>
+        return Synchronize(() =>
         {
             if (string.IsNullOrWhiteSpace(instance.Name))
                 throw new ArgumentException("Instance name is empty", nameof(instance));
@@ -210,16 +195,12 @@ public sealed class Scene : IDisposable, IScene
 
     public MeshAsset? FindMeshAsset(string name)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            return null;
-        return Locked(() => meshAssetsByName.GetValueOrDefault(name));
+        return FindNamedAsset(name, meshAssetsByName);
     }
 
     public TextureAsset? FindTexture(string name)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            return null;
-        return Locked(() => texturesByName.GetValueOrDefault(name));
+        return FindNamedAsset(name, texturesByName);
     }
 
     public MeshInstance CreateMeshInstance(MeshAsset mesh, string name, Matrix4x4 transform)
@@ -227,25 +208,24 @@ public sealed class Scene : IDisposable, IScene
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Instance name is empty", nameof(name));
 
-        return Locked(() => Add(MeshInstance.Create(this, name, mesh, transform)));
+        return Synchronize(() => Add(MeshInstance.Create(this, name, mesh, transform)));
     }
 
     public bool TryCreateMeshInstance(MeshAsset mesh, string name, FTransform unrealTransform, out MeshInstance? instance)
     {
-        lock (SyncRoot)
+        instance = Synchronize(() =>
         {
-            instance = null;
             if (!MeshInstance.TryCreateFromUnrealTransform(this, name, mesh, unrealTransform, out var created) || created is null)
-                return false;
+                return null;
 
-            instance = Add(created);
-            return true;
-        }
+            return Add(created);
+        });
+        return instance is not null;
     }
 
     public void SelectInstance(int instanceIndex)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             if (instanceIndex < 0 || instanceIndex >= meshInstances.Count)
             {
@@ -259,51 +239,45 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearSelection()
     {
-        Locked(() => SelectedInstanceIndex = -1);
+        Synchronize(() => SelectedInstanceIndex = -1);
     }
 
     public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             if (texture.Index < 0)
                 Add(texture);
             if (cdfTexture is not null && cdfTexture.Index < 0)
                 Add(cdfTexture);
 
-            var environment = Environment;
             environment.TextureIndex = texture.Index;
             environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
-            Environment = environment;
-            SetDirty(SceneDirtyFlags.Accumulation);
+            NotifyEnvironmentChanged();
         });
     }
 
     public void SetEnvironmentVisibleExposure(float exposureStops)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
-            var environment = Environment;
             environment.VisibleExposure = exposureStops;
-            Environment = environment;
-            SetDirty(SceneDirtyFlags.Accumulation);
+            NotifyEnvironmentChanged();
         });
     }
 
     public void SetEnvironmentLightingExposure(float exposureStops)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
-            var environment = Environment;
             environment.LightingExposure = exposureStops;
-            Environment = environment;
-            SetDirty(SceneDirtyFlags.Accumulation);
+            NotifyEnvironmentChanged();
         });
     }
 
     public void SetRenderMode(RenderMode renderMode)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             if (RenderMode == renderMode)
                 return;
@@ -316,11 +290,12 @@ public sealed class Scene : IDisposable, IScene
 
     internal void SetEnvironmentData(in EnvironmentDataGpu environment)
     {
-        lock (SyncRoot)
+        var environmentData = environment;
+        Synchronize(() =>
         {
-            Environment = environment;
-            SetDirty(SceneDirtyFlags.Accumulation);
-        }
+            this.environment = environmentData;
+            NotifyEnvironmentChanged();
+        });
     }
 
     public void TryLoadDefaultEnvironment()
@@ -342,11 +317,11 @@ public sealed class Scene : IDisposable, IScene
         }
     }
 
-    public bool IsDirty(SceneDirtyFlags flags) => Locked(() => (dirtyFlags & flags) != 0);
+    public bool IsDirty(SceneDirtyFlags flags) => Synchronize(() => (dirtyFlags & flags) != 0);
 
     public void ClearHierarchy()
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             hierarchyRoots.Clear();
             Version++;
@@ -358,7 +333,7 @@ public sealed class Scene : IDisposable, IScene
         if (root is null)
             throw new ArgumentNullException(nameof(root));
 
-        Locked(() =>
+        Synchronize(() =>
         {
             hierarchyRoots.Add(root);
             Version++;
@@ -372,7 +347,7 @@ public sealed class Scene : IDisposable, IScene
         if (child is null)
             throw new ArgumentNullException(nameof(child));
 
-        Locked(() =>
+        Synchronize(() =>
         {
             parent.Children.Add(child);
             Version++;
@@ -381,7 +356,7 @@ public sealed class Scene : IDisposable, IScene
 
     public void SetHierarchyRoots(IReadOnlyList<SceneHierarchyNode> roots)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             hierarchyRoots.Clear();
             hierarchyRoots.AddRange(roots);
@@ -391,7 +366,7 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearGeometry(bool keepDefaultTestCube = false)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
             SelectedInstanceIndex = -1;
 
@@ -417,98 +392,40 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearDirty(SceneDirtyFlags flags)
     {
-        Locked(() => dirtyFlags &= ~flags);
+        Synchronize(() => dirtyFlags &= ~flags);
     }
 
     public IReadOnlyList<SceneHierarchyNode> GetHierarchyRootsSnapshot()
     {
-        return Locked(() => hierarchyRoots.ToArray());
-    }
-
-    public EnvironmentSnapshot GetEnvironmentSnapshot()
-    {
-        return Locked(() => new EnvironmentSnapshot(
-            Environment.Rotation,
-            Environment.VisibleExposure,
-            Environment.LightingExposure,
-            Environment.Visible != 0,
-            Environment.TextureIndex,
-            Environment.DirectionalDirection,
-            Environment.DirectionalIntensity));
-    }
-
-    public void ApplyEnvironmentSettings(EnvironmentSnapshot settings)
-    {
-        Locked(() =>
-        {
-            var environment = Environment;
-            environment.Rotation = settings.Rotation;
-            environment.VisibleExposure = settings.VisibleExposure;
-            environment.LightingExposure = settings.LightingExposure;
-            environment.Visible = settings.Visible ? 1 : 0;
-            environment.TextureIndex = settings.TextureIndex;
-            environment.DirectionalDirection = settings.DirectionalDirection;
-            environment.DirectionalIntensity = settings.DirectionalIntensity;
-            Environment = environment;
-            SetDirty(SceneDirtyFlags.Accumulation);
-        });
-    }
-
-    public CameraLensSnapshot GetCameraLensSnapshot()
-    {
-        return Locked(() => new CameraLensSnapshot(
-            activeCamera.FocalLengthMm,
-            activeCamera.Aperture,
-            activeCamera.FocusDistance,
-            activeCamera.BokehBias));
-    }
-
-    public void ApplyCameraLensSettings(CameraLensSnapshot settings)
-    {
-        Locked(() =>
-        {
-            activeCamera.FocalLengthMm = Math.Max(0.001f, settings.FocalLengthMm);
-            activeCamera.Aperture = Math.Max(0f, settings.Aperture);
-            activeCamera.FocusDistance = Math.Max(0.001f, settings.FocusDistance);
-            activeCamera.BokehBias = Math.Max(0.001f, settings.BokehBias);
-            SetDirty(SceneDirtyFlags.Accumulation);
-        });
-    }
-
-    public CameraViewSnapshot GetCameraViewSnapshot()
-    {
-        return Locked(() => new CameraViewSnapshot(
-            activeCamera.Position,
-            activeCamera.Rotation,
-            activeCamera.ArcballPivot));
+        return Synchronize(() => hierarchyRoots.ToArray());
     }
 
     public void SetArcballPivot(Vector3 pivot)
     {
-        Locked(() => activeCamera.SetArcballPivot(pivot));
+        Synchronize(() => Camera.SetArcballPivot(pivot));
     }
 
     public void OrbitAroundPivot(float yawDelta, float pitchDelta)
     {
-        Locked(() => activeCamera.OrbitAroundPivot(yawDelta, pitchDelta));
+        Synchronize(() => Camera.OrbitAroundPivot(yawDelta, pitchDelta));
     }
 
     public void PanCameraInViewPlane(float deltaX, float deltaY)
     {
-        Locked(() => activeCamera.PanInViewPlane(deltaX, deltaY));
+        Synchronize(() => Camera.PanInViewPlane(deltaX, deltaY));
     }
 
     public void DollyCamera(float amount)
     {
-        Locked(() => activeCamera.Dolly(amount));
+        Synchronize(() => Camera.Dolly(amount));
     }
 
     public void SetCameraView(Vector3 position, Quaternion rotation)
     {
-        Locked(() =>
+        Synchronize(() =>
         {
-            activeCamera.SetPosition(position);
-            activeCamera.SetRotation(rotation);
+            Camera.SetPosition(position);
+            Camera.SetRotation(rotation);
         });
     }
 
@@ -516,17 +433,6 @@ public sealed class Scene : IDisposable, IScene
     {
         dirtyFlags |= flags;
         Version++;
-    }
-
-    internal void SetCameraData(in CameraDataGpu camera, bool isMoving)
-    {
-        CameraIsMoving = isMoving ? 1 : 0;
-        if (PerspectiveCamera.IsCameraDataEquivalent(Camera, camera))
-            return;
-
-        Camera = camera;
-        SetDirty(SceneDirtyFlags.Accumulation);
-        CameraChanged?.Invoke();
     }
 
     void IScene.SetAccumulationDirty()
@@ -593,6 +499,7 @@ public sealed class Scene : IDisposable, IScene
     {
         // Ensure submitted GPU work is complete before releasing scene resources.
         context.WaitForSubmittedCommandBuffers();
+        Camera.Changed -= OnCameraUpdated;
         foreach (var texture in textures)
             texture.Dispose();
         foreach (var mesh in meshAssets)
@@ -605,5 +512,29 @@ public sealed class Scene : IDisposable, IScene
         texturesByName.Clear();
         hierarchyRoots.Clear();
         dirtyFlags = SceneDirtyFlags.None;
+    }
+
+    public CameraViewSnapshot GetCameraViewSnapshot()
+    {
+        return Synchronize(() => new CameraViewSnapshot(
+            Camera.Position,
+            Camera.Rotation,
+            Camera.ArcballPivot));
+    }
+
+    public readonly record struct CameraViewSnapshot(
+        Vector3 Position,
+        Quaternion Rotation,
+        Vector3 ArcballPivot);
+
+    public void NotifyEnvironmentChanged()
+    {
+        SetDirty(SceneDirtyFlags.Accumulation);
+    }
+
+    private void OnCameraUpdated()
+    {
+        SetDirty(SceneDirtyFlags.Accumulation);
+        CameraChanged?.Invoke();
     }
 }

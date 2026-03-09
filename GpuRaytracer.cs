@@ -288,14 +288,14 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         var push = new PushDataGpu
         {
             Frame = (int)frame,
-            IsMoving = Scene.CameraIsMoving,
+            IsMoving = Scene.Camera.IsMoving,
             RenderMode = (int)Scene.RenderMode
         };
 
         return new PushConstantsDataGpu
         {
             Push = push,
-            Camera = Scene.Camera,
+            Camera = Scene.Camera.Data,
             Environment = Scene.Environment
         };
     }

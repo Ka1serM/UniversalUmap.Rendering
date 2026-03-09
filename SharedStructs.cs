@@ -155,7 +155,7 @@ internal struct PushDataGpu
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 48)]
-internal struct EnvironmentDataGpu
+public struct EnvironmentDataGpu
 {
     public int TextureIndex;
     public int CdfTextureIndex;

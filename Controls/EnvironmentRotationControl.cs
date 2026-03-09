@@ -116,14 +116,14 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         if (sourceScene is null)
             return;
 
-        lock (sourceScene.SyncRoot)
+        sourceScene.Synchronize(() =>
         {
             var push = new PushConstants
             {
                 Params0 = new Vector4(rotationDegrees, environmentTextureIndex, 0f, 0f)
             };
             shaderProgram.Draw(target, 3, null, 0, in push);
-        }
+        });
     }
 
     private void RefreshFromSource()
@@ -132,10 +132,13 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         if (source is null)
             return;
 
-        var settings = source.Environment;
+        var sourceScene = source.Scene;
+        if (sourceScene is null)
+            return;
+
         suppressUiEvents = true;
-        rotationDegrees = settings.Rotation;
-        environmentTextureIndex = settings.TextureIndex;
+        rotationDegrees = sourceScene.Environment.Rotation;
+        environmentTextureIndex = sourceScene.Environment.TextureIndex;
         hasRotationFromSource = true;
         suppressUiEvents = false;
         InvalidateGpuFrame();
@@ -177,7 +180,17 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             rotationDegrees = WrapDegrees(rotationDegrees + (float)(delta.X * 0.35));
             InvalidateGpuFrame();
             if (!suppressUiEvents && Source is { } source)
-                source.Environment = source.Environment with { Rotation = rotationDegrees };
+            {
+                var scene = source.Scene;
+                if (scene is not null)
+                {
+                    scene.Synchronize(() =>
+                    {
+                        scene.Environment.Rotation = rotationDegrees;
+                        scene.NotifyEnvironmentChanged();
+                    });
+                }
+            }
         }
 
         TryWrapCapture(p);
@@ -274,7 +287,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(VulkanViewerControl.EnvironmentSettings settings)
+    private void OnEnvironmentSettingsChanged(EnvironmentDataGpu settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {

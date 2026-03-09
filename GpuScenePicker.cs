@@ -41,20 +41,24 @@ internal sealed class GpuScenePicker
         if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
             return false;
 
-        lock (scene.SyncRoot)
+        var queryPixelX = pixelX;
+        var queryPixelY = pixelY;
+        var result = scene.Synchronize(() =>
         {
-            if (!raytracer.QueryPixelUInt(raytracer.OutputCrypto, pixelX, pixelY, out var pickedId) ||
+            if (!raytracer.QueryPixelUInt(raytracer.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
                 pickedId == SharedShaderDefines.InvalidInstance ||
                 pickedId >= scene.MeshInstances.Count)
             {
                 scene.ClearSelection();
-                return false;
+                return ((MeshInstance?)null, SharedShaderDefines.InvalidInstance, false);
             }
 
             scene.SelectInstance((int)pickedId);
-            instanceId = pickedId;
-            instance = scene.MeshInstances[(int)pickedId];
-            return true;
-        }
+            return (scene.MeshInstances[(int)pickedId], pickedId, true);
+        });
+
+        instance = result.Item1;
+        instanceId = result.Item2;
+        return result.Item3;
     }
 }

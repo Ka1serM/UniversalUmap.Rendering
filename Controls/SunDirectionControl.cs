@@ -121,14 +121,14 @@ public sealed class SunDirectionControl : VulkanShaderControl
         if (sourceScene is null)
             return;
 
-        lock (sourceScene.SyncRoot)
+        sourceScene.Synchronize(() =>
         {
             var push = new PushConstants
             {
                 LightDir = new Vector4(direction, 0f)
             };
             shaderProgram.Draw(target, 3, null, 0, in push);
-        }
+        });
     }
 
     private void RefreshFromSource()
@@ -137,8 +137,11 @@ public sealed class SunDirectionControl : VulkanShaderControl
         if (source is null)
             return;
 
-        var settings = source.Environment;
-        var normalizedDirection = NormalizeOrDefault(settings.DirectionalDirection);
+        var sourceScene = source.Scene;
+        if (sourceScene is null)
+            return;
+
+        var normalizedDirection = NormalizeOrDefault(sourceScene.Environment.DirectionalDirection);
         suppressUiEvents = true;
         direction = normalizedDirection;
         directionRotation = BuildRotationFromDirection(direction);
@@ -206,7 +209,15 @@ public sealed class SunDirectionControl : VulkanShaderControl
                 suppressUiEvents = true;
                 try
                 {
-                    source.Environment = source.Environment with { DirectionalDirection = direction };
+                    var scene = source.Scene;
+                    if (scene is not null)
+                    {
+                        scene.Synchronize(() =>
+                        {
+                            scene.Environment.DirectionalDirection = direction;
+                            scene.NotifyEnvironmentChanged();
+                        });
+                    }
                 }
                 finally
                 {
@@ -307,7 +318,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(VulkanViewerControl.EnvironmentSettings settings)
+    private void OnEnvironmentSettingsChanged(EnvironmentDataGpu settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
