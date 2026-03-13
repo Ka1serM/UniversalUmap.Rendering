@@ -212,11 +212,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
                     var scene = source.Scene;
                     if (scene is not null)
                     {
-                        scene.Synchronize(() =>
-                        {
-                            scene.Environment.DirectionalDirection = direction;
-                            scene.NotifyEnvironmentChanged();
-                        });
+                        scene.Synchronize(() => scene.Environment.DirectionalDirection = direction);
                     }
                 }
                 finally
@@ -318,7 +314,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(EnvironmentDataGpu settings)
+    private void OnEnvironmentSettingsChanged(EnvironmentSettings settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {

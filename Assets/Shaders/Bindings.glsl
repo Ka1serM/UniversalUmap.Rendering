@@ -18,8 +18,14 @@ layout (set = 0, binding = 5, rgba16f) uniform image2D outputPosition;
 // Binding 2: Mesh Data Pointers (vertex, index, material addresses, etc.)
 layout(set = 0, binding = 6) buffer MeshAddressesBuffer { MeshAddresses meshes[]; };
 
-// Binding 3: Global Texture Sampler Array
-layout(set = 0, binding = 7) uniform sampler2D textureSamplers[];
+layout(set = 0, binding = 7, scalar) readonly buffer SceneSettingsBuffer {
+    RenderSettingsData renderSettings;
+    CameraData camera;
+    EnvironmentData environment;
+} sceneSettings;
+
+// Binding 3: Global Texture Sampler Array. Keep this last.
+layout(set = 0, binding = 8) uniform sampler2D textureSamplers[];
 
 // Buffer Reference Type Definitions 
 layout(buffer_reference, scalar) buffer VertexBuffer { Vertex data[]; };

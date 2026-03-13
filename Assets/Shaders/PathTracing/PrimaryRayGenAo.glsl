@@ -13,7 +13,7 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
     AoPayload payload;
     #endif
     const ivec2 pickPixelCoord = ivec2(pixelCoord.x, (screenSize.y - 1) - pixelCoord.y);
-    uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.push.frame * 16777619));
+    uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.frame * 16777619));
     uint rngState = seed.x;
 
     vec3 accumulated = vec3(0.0);
@@ -21,12 +21,12 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
     vec3 stableAlbedo = vec3(0.0);
     vec3 stableNormal = vec3(0.0);
 
-    int spp = max(pushConstants.push.samples, 1);
+    int spp = max(sceneSettings.renderSettings.samples, 1);
     for (int sampleIndex = 0; sampleIndex < spp; ++sampleIndex) {
         if (sampleIndex == 0) {
-            SamplerState stableSamplerState = initSamplerState(pixelCoord, pushConstants.push.frame + sampleIndex);
+            SamplerState stableSamplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
             vec3 stableRayOrigin, stableRayDirection;
-            generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, stableSamplerState, true, false, stableRayOrigin, stableRayDirection);
+            generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, stableSamplerState, true, false, stableRayOrigin, stableRayDirection);
 
             initializeAoPayload(payload, rngState);
 
@@ -47,11 +47,11 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
             stableNormal = payload.normal;
         }
 
-        SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.push.frame + sampleIndex);
+        SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
         bool deterministicSample = (sampleIndex == 0);
 
         vec3 rayOrigin, rayDirection;
-        generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, samplerState, deterministicSample, true, rayOrigin, rayDirection);
+        generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, deterministicSample, true, rayOrigin, rayDirection);
 
         initializeAoPayload(payload, rngState);
 
@@ -68,13 +68,13 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
 
     vec3 newColor = accumulated / float(spp);
     float newAlpha = float(hitAnything);
-    float frameF = float(pushConstants.push.frame);
+    float frameF = float(pushConstants.frame);
 
     vec4 prevColorData = imageLoad(outputColor, pixelCoord);
     vec3 prevColorPremult = prevColorData.rgb * prevColorData.a;
     float prevAlpha = prevColorData.a;
 
-    vec3 newColorWithExposure = newColor * exp2(pushConstants.push.exposure);
+    vec3 newColorWithExposure = newColor * exp2(sceneSettings.renderSettings.exposure);
     vec3 newColorPremult = newColorWithExposure * newAlpha;
 
     vec3 finalColorPremult = (prevColorPremult * frameF + newColorPremult) / (frameF + 1.0);

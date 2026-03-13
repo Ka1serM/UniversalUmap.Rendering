@@ -20,6 +20,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     private ImageResource? normalImage;
     private ImageResource? cryptoImage;
     private ImageResource? positionImage;
+    private GpuBuffer? sceneSettingsBuffer;
     private PixelSize renderImageSize;
 
     private ulong lastBoundColorImageViewHandle;
@@ -65,6 +66,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         EnsureRenderImages(image.Size);
         UpdateSceneResources(commandBuffer, force: false);
         UpdateOutputImageBindings();
+        UpdateSceneSettingsBuffer(commandBuffer, force: false);
         UpdateTextureBindings();
 
         if (Scene.IsDirty(SceneDirtyFlags.Accumulation))
@@ -96,17 +98,10 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         Scene.ClearDirty(SceneDirtyFlags.Accumulation);
     }
 
-    protected abstract void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushConstantsDataGpu pushConstants);
+    protected abstract void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants);
     protected abstract void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
     protected abstract DescriptorSetLayout GetDescriptorSetLayout();
-
-    public bool TryGetBindlessTextureDescriptors(out DescriptorSetLayout layout, out DescriptorSet set)
-    {
-        layout = GetDescriptorSetLayout();
-        set = GetDescriptorSet();
-        return layout.Handle != default && set.Handle != default;
-    }
 
     protected void UpdateOutputImageBindings()
     {
@@ -176,6 +171,51 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         Log.Information("Updated output image bindings (color/albedo/normal/crypto/position).");
     }
 
+    private bool UpdateSceneSettingsBinding()
+    {
+        if (sceneSettingsBuffer is not null)
+            return false;
+
+        sceneSettingsBuffer = new GpuBuffer(
+            Context,
+            (ulong)Marshal.SizeOf<SceneSettingsDataGpu>(),
+            BufferUsageFlags.StorageBufferBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
+        var settingsInfo = new DescriptorBufferInfo(sceneSettingsBuffer.Handle, 0, sceneSettingsBuffer.Size);
+        var write = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = GetDescriptorSet(),
+            DstBinding = 7,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageBuffer,
+            PBufferInfo = &settingsInfo
+        };
+        Context.Api.UpdateDescriptorSets(Context.Device, 1, in write, 0, null);
+        return true;
+    }
+
+    private void UpdateSceneSettingsBuffer(Context.CommandBuffer commandBuffer, bool force)
+    {
+        var created = UpdateSceneSettingsBinding();
+        if (sceneSettingsBuffer is null)
+            throw new InvalidOperationException("Scene settings buffer is not initialized.");
+
+        if (!force && !created && !Scene.IsDirty(SceneDirtyFlags.Settings))
+            return;
+
+        var settings = new SceneSettingsDataGpu
+        {
+            RenderSettings = Scene.RenderSettings.ToStruct(),
+            Camera = Scene.Camera.ToStruct(),
+            Environment = Scene.Environment.ToStruct()
+        };
+
+        sceneSettingsBuffer.Upload(StructPacking.ToBytes(new[] { settings }));
+        Scene.ClearDirty(SceneDirtyFlags.Settings);
+    }
+
     private void UpdateTextureBindings()
     {
         if (!Scene.IsDirty(SceneDirtyFlags.Textures))
@@ -202,7 +242,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = GetDescriptorSet(),
-                DstBinding = 7,
+                DstBinding = 8,
                 DescriptorCount = (uint)descriptors.Length,
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 PImageInfo = pDescriptors
@@ -283,20 +323,12 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         return true;
     }
 
-    protected PushConstantsDataGpu CreatePushConstants(uint frame)
+    protected PushDataGpu CreatePushConstants(uint frame)
     {
-        var push = new PushDataGpu
+        return new PushDataGpu
         {
             Frame = (int)frame,
-            IsMoving = Scene.Camera.IsMoving,
-            RenderMode = (int)Scene.RenderMode
-        };
-
-        return new PushConstantsDataGpu
-        {
-            Push = push,
-            Camera = Scene.Camera.Data,
-            Environment = Scene.Environment
+            IsMoving = Scene.Camera.IsMoving
         };
     }
 
@@ -389,6 +421,13 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             return [KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle];
 
         return [KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaquePosixFileDescriptor];
+    }
+
+    protected void DisposeCommonResources()
+    {
+        DisposeRenderImages();
+        sceneSettingsBuffer?.Dispose();
+        sceneSettingsBuffer = null;
     }
 
     public abstract void Dispose();

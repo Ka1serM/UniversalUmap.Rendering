@@ -13,11 +13,11 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
         Payload payload;
     #endif
 
-    uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.push.frame * 16777619));
+    uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.frame * 16777619));
     uint rngState = seed.x;
     vec4 prevColorData = imageLoad(outputColor, pixelCoord);
-    float exposureScale = exp2(pushConstants.push.exposure);
-    vec3 temporalReference = pushConstants.push.frame > 0
+    float exposureScale = exp2(sceneSettings.renderSettings.exposure);
+    vec3 temporalReference = pushConstants.frame > 0
         ? prevColorData.rgb / max(exposureScale, EPSILON)
         : vec3(0.0);
 
@@ -27,11 +27,11 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     vec3 stableNormal = vec3(0.0);
     bool stableHit = false;
 
-    for (int sampleIndex = 0; sampleIndex < pushConstants.push.samples; ++sampleIndex) {
+    for (int sampleIndex = 0; sampleIndex < sceneSettings.renderSettings.samples; ++sampleIndex) {
         if (sampleIndex == 0) {
-            SamplerState stableSamplerState = initSamplerState(pixelCoord, pushConstants.push.frame + sampleIndex);
+            SamplerState stableSamplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
             vec3 stableRayOrigin, stableRayDirection;
-            generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, stableSamplerState, true, false, stableRayOrigin, stableRayDirection);
+            generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, stableSamplerState, true, false, stableRayOrigin, stableRayDirection);
 
             initializePayload(payload, rngState, 0u);
 
@@ -53,18 +53,18 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
             stableNormal = stableHit ? payload.normal : vec3(0.0);
         }
 
-        SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.push.frame + sampleIndex);
+        SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
         bool deterministicSample = (sampleIndex == 0);
 
         vec3 rayOrigin, rayDirection;
-        generatePrimaryRay(pixelCoord, screenSize, pushConstants.camera, samplerState, deterministicSample, true, rayOrigin, rayDirection);
+        generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, deterministicSample, true, rayOrigin, rayDirection);
 
         vec3 throughput = vec3(1.0);
         vec3 sampleRadiance = vec3(0.0);
         int diffuseCount = 0;
         int specularCount = 0;
         int transmissionCount = 0;
-        int maxBounces = max(pushConstants.push.diffuseBounces, max(pushConstants.push.specularBounces, pushConstants.push.transmissionBounces));
+        int maxBounces = max(sceneSettings.renderSettings.diffuseBounces, max(sceneSettings.renderSettings.specularBounces, sceneSettings.renderSettings.transmissionBounces));
 
         for (int bounce = 0; bounce < maxBounces; ++bounce) {
             initializePayload(payload, rngState, uint(bounce));
@@ -85,7 +85,7 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
             if ((payload.flags & BOUNCE_TRANSMIT) != 0u)
                 transmissionCount++;
 
-            if (diffuseCount > pushConstants.push.diffuseBounces || specularCount > pushConstants.push.specularBounces || transmissionCount > pushConstants.push.transmissionBounces)
+            if (diffuseCount > sceneSettings.renderSettings.diffuseBounces || specularCount > sceneSettings.renderSettings.specularBounces || transmissionCount > sceneSettings.renderSettings.transmissionBounces)
                 payload.flags |= RAY_TERMINATED;
 
             if (bounce == 0) {
@@ -130,9 +130,9 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     }
 
     // Average per-pixel over samples
-    vec3 newColor = accumulatedColor / float(pushConstants.push.samples);
+    vec3 newColor = accumulatedColor / float(sceneSettings.renderSettings.samples);
     float newAlpha = float(hitAnything);
-    float frameF = float(pushConstants.push.frame);
+    float frameF = float(pushConstants.frame);
 
     vec3 prevColorPremult = prevColorData.rgb * prevColorData.a;
     float prevAlpha = prevColorData.a;

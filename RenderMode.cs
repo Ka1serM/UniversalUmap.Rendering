@@ -2,7 +2,7 @@ namespace UniversalUmap.Rendering;
 
 public enum RenderMode
 {
-    FullPathTracing = 0,
-    AmbientOcclusionOnly = 1,
-    AmbientOcclusionWithAlbedo = 2
+    PathTracing = 0,
+    AmbientOcclusion = 1,
+    AmbientOcclusionWithTextures = 2
 }

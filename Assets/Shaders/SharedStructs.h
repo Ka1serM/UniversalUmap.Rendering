@@ -80,13 +80,18 @@ struct BVHNode
 
 struct PushData
 {
+    int frame;
+    int isMoving;
+};
+
+struct RenderSettingsData
+{
     int samples;
     int diffuseBounces;
     int specularBounces;
     int transmissionBounces;
     float exposure;
-    int frame;
-    int isMoving;
+    int transparentBackground;
     int renderMode;
 };
 
@@ -114,13 +119,6 @@ struct CameraData
     float focalLength;
     vec3 vertical;
     float bokehBias;
-};
-
-struct PushConstantsData
-{
-    PushData push;
-    CameraData camera;
-    EnvironmentData environment;
 };
 
 // Shader-only declarations.
@@ -160,4 +158,3 @@ struct HitInfo {
     uint primitiveIndex;
     vec3 barycentrics;
 };
-

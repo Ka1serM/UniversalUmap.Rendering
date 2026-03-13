@@ -15,11 +15,11 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 
 // Push Constants
 layout (push_constant, scalar) uniform PushConstants {
-    PushConstantsData pushConstants;
+    PushData pushConstants;
 };
 
 
 void main()
 {
-    shadeMiss(gl_WorldRayDirectionEXT, pushConstants.environment, payload);
+    shadeMiss(gl_WorldRayDirectionEXT, sceneSettings.environment, sceneSettings.renderSettings, payload);
 }

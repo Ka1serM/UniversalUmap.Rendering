@@ -9,7 +9,7 @@
 #include "../SharedStructs.h"
 
 layout (push_constant, scalar) uniform PushConstants {
-    PushConstantsData pushConstants;
+    PushData pushConstants;
 };
 
 #include "../Bindings.glsl"

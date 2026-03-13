@@ -40,12 +40,11 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
 
-    private RenderMode renderMode = RenderMode.FullPathTracing;
+    private RenderMode renderMode = RenderMode.PathTracing;
 
     internal event Action? FrameRendered;
     internal event Action? DebugOverlayToggleRequested;
-    internal event Action<EnvironmentDataGpu>? EnvironmentSettingsChanged;
-    internal event Action<Camera>? CameraSettingsChanged;
+    public event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
 
     internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
     internal Vector3 CameraPositionDebug => scene?.GetCameraViewSnapshot().Position ?? Vector3.Zero;
@@ -61,6 +60,9 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         get => scene?.RenderMode ?? renderMode;
         set
         {
+            if (RenderMode == value)
+                return;
+
             renderMode = value;
             Log.Information("Viewer render mode set to {RenderMode}.", value);
             if (scene is not null)
@@ -186,25 +188,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         e.Handled = true;
     }
 
-    internal bool TryGetBindlessTextureDescriptors(out DescriptorSetLayout layout, out DescriptorSet set)
-    {
-        if (scene is null || raytracer is null)
-        {
-            layout = default;
-            set = default;
-            return false;
-        }
-
-        var result = scene.Synchronize(() =>
-        {
-            var success = raytracer.TryGetBindlessTextureDescriptors(out var resolvedLayout, out var resolvedSet);
-            return (success, resolvedLayout, resolvedSet);
-        });
-        layout = result.resolvedLayout;
-        set = result.resolvedSet;
-        return result.success;
-    }
-
     internal bool TryPickInstance(
         Point localPosition,
         Size viewportSize,
@@ -295,7 +278,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             BuildRenderResourcesIfNeeded();
             initialized = true;
             RaiseEnvironmentSettingsChanged();
-            RaiseCameraSettingsChanged();
             QueueNextFrame();
         }
         catch (Exception ex)
@@ -314,7 +296,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         GpuStructLayoutValidator.ValidateOrThrow();
 
         scene = new Scene(context, input);
-        scene.Camera.Changed += OnSceneCameraChanged;
+        scene.EnvironmentChanged += OnSceneEnvironmentChanged;
         scene.SetRenderMode(renderMode);
         scene.TryLoadDefaultEnvironment();
         raytracer = GpuRaytracer.Create(context, scene);
@@ -345,7 +327,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         {
             scene.Synchronize(() =>
             {
-                scene.Camera.Changed -= OnSceneCameraChanged;
+                scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
                 overlayCompositor?.Dispose();
                 raytracer?.Dispose();
                 scene.Dispose();
@@ -503,13 +485,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             EnvironmentSettingsChanged?.Invoke(scene.Environment);
     }
 
-    private void RaiseCameraSettingsChanged()
-    {
-        if (scene is not null)
-            CameraSettingsChanged?.Invoke(scene.Camera);
-    }
-
-    private void OnSceneCameraChanged() => RaiseCameraSettingsChanged();
+    private void OnSceneEnvironmentChanged(EnvironmentSettings settings) => EnvironmentSettingsChanged?.Invoke(settings);
 
     private void OnLayoutUpdated(object? sender, EventArgs e)
     {

@@ -19,7 +19,8 @@ public enum SceneDirtyFlags : byte
     Tlas = 1 << 0,
     Meshes = 1 << 1,
     Textures = 1 << 2,
-    Accumulation = 1 << 3
+    Accumulation = 1 << 3,
+    Settings = 1 << 4
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 44)]
@@ -129,28 +130,54 @@ internal unsafe struct BvhNodeGpu
     public uint SplitAxis;
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 32)]
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 8)]
 internal struct PushDataGpu
+{
+    public int Frame;
+    public int IsMoving;
+
+    public PushDataGpu()
+    {
+        Frame = 0;
+        IsMoving = 0;
+    }
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 28)]
+internal struct RenderSettingsDataGpu
 {
     public int Samples;
     public int DiffuseBounces;
     public int SpecularBounces;
     public int TransmissionBounces;
     public float Exposure;
-    public int Frame;
-    public int IsMoving;
+    public int TransparentBackground;
     public int RenderMode;
 
-    public PushDataGpu()
+    public RenderSettingsDataGpu()
     {
         Samples = 1;
         DiffuseBounces = 2;
         SpecularBounces = 2;
         TransmissionBounces = 2;
         Exposure = 0f;
-        Frame = 0;
-        IsMoving = 0;
+        TransparentBackground = 0;
         RenderMode = 0;
+    }
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 140)]
+internal struct SceneSettingsDataGpu
+{
+    public RenderSettingsDataGpu RenderSettings;
+    public CameraDataGpu Camera;
+    public EnvironmentDataGpu Environment;
+
+    public SceneSettingsDataGpu()
+    {
+        RenderSettings = new RenderSettingsDataGpu();
+        Camera = new CameraDataGpu();
+        Environment = new EnvironmentDataGpu();
     }
 }
 
@@ -208,21 +235,6 @@ internal struct CameraDataGpu
     }
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 144)]
-internal struct PushConstantsDataGpu
-{
-    public PushDataGpu Push;
-    public CameraDataGpu Camera;
-    public EnvironmentDataGpu Environment;
-
-    public PushConstantsDataGpu()
-    {
-        Push = new PushDataGpu();
-        Camera = new CameraDataGpu();
-        Environment = new EnvironmentDataGpu();
-    }
-}
-
 internal static class GpuStructLayoutValidator
 {
     public static void ValidateOrThrow()
@@ -234,10 +246,11 @@ internal static class GpuStructLayoutValidator
         ValidateType<ComputeInstanceGpu>(144, (nameof(ComputeInstanceGpu.Transform), 0), (nameof(ComputeInstanceGpu.InverseTransform), 64), (nameof(ComputeInstanceGpu.MeshId), 128), (nameof(ComputeInstanceGpu.Pad1), 132), (nameof(ComputeInstanceGpu.Pad2), 136), (nameof(ComputeInstanceGpu.Pad3), 140));
         ValidateType<AabbGpu>(32, (nameof(AabbGpu.MinBounds), 0), (nameof(AabbGpu.Pad0), 12), (nameof(AabbGpu.MaxBounds), 16), (nameof(AabbGpu.Pad1), 28));
         ValidateType<BvhNodeGpu>(76, (nameof(BvhNodeGpu.LeftBounds), 0), (nameof(BvhNodeGpu.RightBounds), 32), (nameof(BvhNodeGpu.RightChildOrPrimIndex), 64), (nameof(BvhNodeGpu.PrimCount), 68), (nameof(BvhNodeGpu.SplitAxis), 72));
-        ValidateType<PushDataGpu>(32, (nameof(PushDataGpu.Samples), 0), (nameof(PushDataGpu.DiffuseBounces), 4), (nameof(PushDataGpu.SpecularBounces), 8), (nameof(PushDataGpu.TransmissionBounces), 12), (nameof(PushDataGpu.Exposure), 16), (nameof(PushDataGpu.Frame), 20), (nameof(PushDataGpu.IsMoving), 24), (nameof(PushDataGpu.RenderMode), 28));
+        ValidateType<PushDataGpu>(8, (nameof(PushDataGpu.Frame), 0), (nameof(PushDataGpu.IsMoving), 4));
+        ValidateType<RenderSettingsDataGpu>(28, (nameof(RenderSettingsDataGpu.Samples), 0), (nameof(RenderSettingsDataGpu.DiffuseBounces), 4), (nameof(RenderSettingsDataGpu.SpecularBounces), 8), (nameof(RenderSettingsDataGpu.TransmissionBounces), 12), (nameof(RenderSettingsDataGpu.Exposure), 16), (nameof(RenderSettingsDataGpu.TransparentBackground), 20), (nameof(RenderSettingsDataGpu.RenderMode), 24));
         ValidateType<EnvironmentDataGpu>(48, (nameof(EnvironmentDataGpu.TextureIndex), 0), (nameof(EnvironmentDataGpu.CdfTextureIndex), 4), (nameof(EnvironmentDataGpu.Rotation), 8), (nameof(EnvironmentDataGpu.VisibleExposure), 12), (nameof(EnvironmentDataGpu.LightingExposure), 16), (nameof(EnvironmentDataGpu.Visible), 20), (nameof(EnvironmentDataGpu.DirectionalDirection), 24), (nameof(EnvironmentDataGpu.DirectionalIntensity), 36), (nameof(EnvironmentDataGpu.Pad0), 40), (nameof(EnvironmentDataGpu.Pad1), 44));
         ValidateType<CameraDataGpu>(64, (nameof(CameraDataGpu.Position), 0), (nameof(CameraDataGpu.Aperture), 12), (nameof(CameraDataGpu.Direction), 16), (nameof(CameraDataGpu.FocusDistance), 28), (nameof(CameraDataGpu.Horizontal), 32), (nameof(CameraDataGpu.FocalLength), 44), (nameof(CameraDataGpu.Vertical), 48), (nameof(CameraDataGpu.BokehBias), 60));
-        ValidateType<PushConstantsDataGpu>(144, (nameof(PushConstantsDataGpu.Push), 0), (nameof(PushConstantsDataGpu.Camera), 32), (nameof(PushConstantsDataGpu.Environment), 96));
+        ValidateType<SceneSettingsDataGpu>(140, (nameof(SceneSettingsDataGpu.RenderSettings), 0), (nameof(SceneSettingsDataGpu.Camera), 28), (nameof(SceneSettingsDataGpu.Environment), 92));
     }
 
     private static void ValidateType<T>(int expectedSize, params (string Field, int Offset)[] offsets)

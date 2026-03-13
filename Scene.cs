@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Numerics;
 using Avalonia;
 using CUE4Parse.UE4.Objects.Core.Math;
@@ -30,19 +31,24 @@ public sealed class Scene : IDisposable, IScene
     public IReadOnlyList<MeshAsset> MeshAssets => meshAssets;
     public IReadOnlyList<MeshInstance> MeshInstances => meshInstances;
     public IReadOnlyList<SceneHierarchyNode> HierarchyRoots => hierarchyRoots;
-    private EnvironmentDataGpu environment = new();
     public Camera Camera { get; }
-    public ref EnvironmentDataGpu Environment => ref environment;
+    public EnvironmentSettings Environment { get; }
+    public RenderSettings RenderSettings { get; }
 
-    internal RenderMode RenderMode { get; private set; } = RenderMode.FullPathTracing;
+    internal RenderMode RenderMode => RenderSettings.RenderMode;
     public Context Context => context;
     internal event Action? CameraChanged;
+    internal event Action<EnvironmentSettings>? EnvironmentChanged;
 
     internal Scene(Context context, Input input)
     {
         this.context = context;
         Camera = new Camera(input ?? throw new ArgumentNullException(nameof(input)));
+        Environment = new EnvironmentSettings();
+        RenderSettings = new RenderSettings();
         Camera.Changed += OnCameraUpdated;
+        Environment.PropertyChanged += OnEnvironmentUpdated;
+        RenderSettings.PropertyChanged += OnRenderSettingsUpdated;
     }
 
     internal T Synchronize<T>(Func<T> action)
@@ -251,51 +257,14 @@ public sealed class Scene : IDisposable, IScene
             if (cdfTexture is not null && cdfTexture.Index < 0)
                 Add(cdfTexture);
 
-            environment.TextureIndex = texture.Index;
-            environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
-            NotifyEnvironmentChanged();
-        });
-    }
-
-    public void SetEnvironmentVisibleExposure(float exposureStops)
-    {
-        Synchronize(() =>
-        {
-            environment.VisibleExposure = exposureStops;
-            NotifyEnvironmentChanged();
-        });
-    }
-
-    public void SetEnvironmentLightingExposure(float exposureStops)
-    {
-        Synchronize(() =>
-        {
-            environment.LightingExposure = exposureStops;
-            NotifyEnvironmentChanged();
+            Environment.TextureIndex = texture.Index;
+            Environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
         });
     }
 
     public void SetRenderMode(RenderMode renderMode)
     {
-        Synchronize(() =>
-        {
-            if (RenderMode == renderMode)
-                return;
-
-            RenderMode = renderMode;
-            Log.Information("Scene render mode changed to {RenderMode}.", renderMode);
-            SetDirty(SceneDirtyFlags.Accumulation);
-        });
-    }
-
-    internal void SetEnvironmentData(in EnvironmentDataGpu environment)
-    {
-        var environmentData = environment;
-        Synchronize(() =>
-        {
-            this.environment = environmentData;
-            NotifyEnvironmentChanged();
-        });
+        Synchronize(() => RenderSettings.RenderMode = renderMode);
     }
 
     public void TryLoadDefaultEnvironment()
@@ -500,6 +469,8 @@ public sealed class Scene : IDisposable, IScene
         // Ensure submitted GPU work is complete before releasing scene resources.
         context.WaitForSubmittedCommandBuffers();
         Camera.Changed -= OnCameraUpdated;
+        Environment.PropertyChanged -= OnEnvironmentUpdated;
+        RenderSettings.PropertyChanged -= OnRenderSettingsUpdated;
         foreach (var texture in textures)
             texture.Dispose();
         foreach (var mesh in meshAssets)
@@ -527,14 +498,27 @@ public sealed class Scene : IDisposable, IScene
         Quaternion Rotation,
         Vector3 ArcballPivot);
 
-    public void NotifyEnvironmentChanged()
-    {
-        SetDirty(SceneDirtyFlags.Accumulation);
-    }
-
     private void OnCameraUpdated()
     {
-        SetDirty(SceneDirtyFlags.Accumulation);
+        SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
         CameraChanged?.Invoke();
+    }
+
+    private void OnEnvironmentUpdated(object? sender, PropertyChangedEventArgs e)
+    {
+        SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
+        EnvironmentChanged?.Invoke(Environment);
+    }
+
+    private void OnRenderSettingsUpdated(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(RenderSettings.RenderMode))
+        {
+            Log.Information("Scene render mode changed to {RenderMode}.", RenderSettings.RenderMode);
+            SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
+            return;
+        }
+
+        SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }
 }

@@ -31,13 +31,13 @@ void shadeAmbientOcclusionSurface(
     out vec3 encodedNormal,
     out vec3 emission)
 {
-    albedo = (pushConstants.push.renderMode == 2)
+    albedo = (sceneSettings.renderSettings.renderMode == 2)
         ? sampleMaterialAlbedo(material, interpolatedUV)
         : vec3(1.0);
     encodedNormal = geometricFacingNormal * 0.5 + 0.5;
 
     float ao = estimateAmbientOcclusion(worldPosition, geometricFacingNormal, rngState);
-    emission = (pushConstants.push.renderMode == 2)
+    emission = (sceneSettings.renderSettings.renderMode == 2)
         ? shadeAmbientOcclusionWithAlbedo(albedo, ao)
         : shadeAmbientOcclusionOnly(ao);
 }
@@ -851,7 +851,7 @@ void shadeClosestHit(
     // 0: Full path tracing
     // 1: AO only (no texture sampling)
     // 2: AO + albedo texture only
-    if (pushConstants.push.renderMode == 1) {
+    if (sceneSettings.renderSettings.renderMode == 1) {
         shadeAmbientOcclusionSurface(
             worldPosition,
             geometricFacingNormal,
@@ -867,7 +867,7 @@ void shadeClosestHit(
         return;
     }
 
-    if (pushConstants.push.renderMode == 2) {
+    if (sceneSettings.renderSettings.renderMode == 2) {
         shadeAmbientOcclusionSurface(
             worldPosition,
             geometricFacingNormal,
@@ -952,7 +952,7 @@ void shadeClosestHit(
             metallic,
             roughness,
             swSpecular,
-            pushConstants.environment,
+            sceneSettings.environment,
             payload.rngState
         );
         handleOpaqueBSDF(viewDir, facingNormal, geometricFacingNormal, albedo, metallic, specular, roughness, payload);

@@ -15,7 +15,7 @@ layout(location = 1) rayPayloadEXT uint shadowPayload;
 hitAttributeEXT vec3 attribs;
 
 layout (push_constant, scalar) uniform PushConstants {
-    PushConstantsData pushConstants;
+    PushData pushConstants;
 };
 
 bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {

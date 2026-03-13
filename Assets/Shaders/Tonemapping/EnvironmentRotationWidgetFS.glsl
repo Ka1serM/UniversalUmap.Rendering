@@ -6,10 +6,10 @@ layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform PushConstants
 {
-    vec4 params0; // x = rotationDeg, y = bindless texture index
+    vec4 params0; // x = rotationDeg
 } pc;
 
-layout(set = 0, binding = 7) uniform sampler2D textureSamplers[];
+layout(set = 0, binding = 0) uniform sampler2D environmentTexture;
 
 void main()
 {
@@ -39,14 +39,10 @@ void main()
     float u = atan(d.z, d.x) / (2.0 * 3.14159265359) + 0.5;
     float envV = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
 
-    int textureIndex = int(pc.params0.y + 0.5);
     vec3 env = vec3(0.34, 0.47, 0.72);
-    if (textureIndex >= 0)
-    {
-        vec3 hdr = texture(textureSamplers[nonuniformEXT(textureIndex)], vec2(u, envV)).rgb;
-        env = hdr / (hdr + vec3(1.0));
-        env = pow(env, vec3(1.0 / 2.2));
-    }
+    vec3 hdr = texture(environmentTexture, vec2(u, envV)).rgb;
+    env = hdr / (hdr + vec3(1.0));
+    env = pow(env, vec3(1.0 / 2.2));
 
     float ndotv = max(dot(n, v), 0.0);
     float fresnel = pow(1.0 - ndotv, 3.0);

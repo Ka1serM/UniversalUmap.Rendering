@@ -205,7 +205,7 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
     HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
 
     if (hit.instanceIndex == INVALID_INSTANCE)
-        shadeMiss(rayDirection, pushConstants.environment, payload);
+        shadeMiss(rayDirection, sceneSettings.environment, sceneSettings.renderSettings, payload);
     else {
         const ComputeInstance inst = instances[hit.instanceIndex];
         const MeshAddresses mesh = meshes[inst.meshId];
@@ -244,7 +244,7 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
     HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
 
     if (hit.instanceIndex == INVALID_INSTANCE)
-        shadeMiss(rayDirection, pushConstants.environment, payload);
+        shadeMiss(rayDirection, sceneSettings.environment, sceneSettings.renderSettings, payload);
     else {
         const ComputeInstance inst = instances[hit.instanceIndex];
         const MeshAddresses mesh = meshes[inst.meshId];

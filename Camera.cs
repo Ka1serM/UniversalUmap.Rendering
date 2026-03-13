@@ -2,11 +2,12 @@ using System;
 using System.Numerics;
 using Avalonia;
 using Avalonia.Input;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Serilog;
 
 namespace UniversalUmap.Rendering;
 
-public sealed class Camera
+public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGpu>
 {
     private const float FixedSensorWidthMm = 32f;
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
@@ -19,72 +20,38 @@ public sealed class Camera
     private const float WheelDollyScale = 0.8f;
 
     private readonly Input input;
-    private CameraDataGpu data;
+    private CameraDataGpu data = new();
     private Vector3 position = new(0f, 0f, -2f);
     private Quaternion rotation = Quaternion.Identity;
     private PixelSize lastRenderSize = new(1, 1);
     private double lastInputLogSeconds;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HorizontalFovDegrees))]
+    private float focalLengthMm = 50f;
+
+    [ObservableProperty] private float aperture;
+    [ObservableProperty] private float focusDistance = 4f;
+    [ObservableProperty] private float bokehBias = 1f;
+
     internal Camera(Input input)
     {
         this.input = input ?? throw new ArgumentNullException(nameof(input));
-        data = new CameraDataGpu();
         RebuildData();
     }
 
-    public float FocalLengthMm
+    public float HorizontalFovDegrees
     {
-        get => data.FocalLength;
-        set
+        get
         {
-            var clamped = Math.Max(0.001f, value);
-            if (MathF.Abs(data.FocalLength - clamped) <= DataEpsilon)
-                return;
-
-            data.FocalLength = clamped;
-            RebuildData();
+            var focal = Math.Max(0.001f, FocalLengthMm);
+            return 2f * MathF.Atan(FixedSensorWidthMm / (2f * focal)) * (180f / MathF.PI);
         }
-    }
-
-    public float Aperture
-    {
-        get => data.Aperture;
         set
         {
-            var clamped = Math.Max(0f, value);
-            if (MathF.Abs(data.Aperture - clamped) <= DataEpsilon)
-                return;
-
-            data.Aperture = clamped;
-            RebuildData();
-        }
-    }
-
-    public float FocusDistance
-    {
-        get => data.FocusDistance;
-        set
-        {
-            var clamped = Math.Max(0.001f, value);
-            if (MathF.Abs(data.FocusDistance - clamped) <= DataEpsilon)
-                return;
-
-            data.FocusDistance = clamped;
-            RebuildData();
-        }
-    }
-
-    public float BokehBias
-    {
-        get => data.BokehBias;
-        set
-        {
-            var clamped = Math.Max(0.001f, value);
-            if (MathF.Abs(data.BokehBias - clamped) <= DataEpsilon)
-                return;
-
-            data.BokehBias = clamped;
-            RebuildData();
+            var clampedFov = Math.Clamp(value, 1f, 179f);
+            var halfAngleRadians = (clampedFov * MathF.PI / 180f) * 0.5f;
+            FocalLengthMm = FixedSensorWidthMm / (2f * MathF.Tan(halfAngleRadians));
         }
     }
 
@@ -95,6 +62,10 @@ public sealed class Camera
     public int IsMoving { get; private set; }
     internal CameraDataGpu Data => data;
     internal event Action? Changed;
+
+    CameraDataGpu IGpuSnapshot<CameraDataGpu>.ToStruct() => ToStruct();
+
+    internal CameraDataGpu ToStruct() => data;
 
     public void SetArcballPivot(Vector3 pivot)
     {
@@ -222,12 +193,16 @@ public sealed class Camera
         var right = Vector3.Normalize(Vector3.Transform(LocalRight, rotation));
         var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
         var sensorHeightMm = FixedSensorWidthMm / aspectRatio;
-
         var next = data;
+
         next.Position = position;
+        next.Aperture = Aperture;
         next.Direction = direction;
+        next.FocusDistance = FocusDistance;
         next.Horizontal = right * (FixedSensorWidthMm * 0.001f);
+        next.FocalLength = FocalLengthMm;
         next.Vertical = up * (sensorHeightMm * 0.001f);
+        next.BokehBias = BokehBias;
 
         if (IsDataEquivalent(data, next))
             return;
@@ -276,4 +251,48 @@ public sealed class Camera
     }
 
     private static float DegreesToRadians(float degrees) => degrees * (MathF.PI / 180f);
+
+    partial void OnFocalLengthMmChanged(float value)
+    {
+        if (EnsureClamped(value, 0.001f, FocalLengthMm, static (camera, next) => camera.FocalLengthMm = next))
+            return;
+
+        RebuildData();
+    }
+
+    partial void OnApertureChanged(float value)
+    {
+        if (EnsureClamped(value, 0f, Aperture, static (camera, next) => camera.Aperture = next))
+            return;
+
+        RebuildData();
+    }
+
+    partial void OnFocusDistanceChanged(float value)
+    {
+        if (EnsureClamped(value, 0.001f, FocusDistance, static (camera, next) => camera.FocusDistance = next))
+            return;
+
+        RebuildData();
+    }
+
+    partial void OnBokehBiasChanged(float value)
+    {
+        if (EnsureClamped(value, 0.001f, BokehBias, static (camera, next) => camera.BokehBias = next))
+            return;
+
+        RebuildData();
+    }
+
+    private bool EnsureClamped(float value, float minimum, float current, Action<Camera, float> setValue)
+    {
+        var clamped = Math.Max(minimum, value);
+        if (MathF.Abs(value - clamped) <= DataEpsilon)
+            return false;
+        if (MathF.Abs(current - clamped) <= DataEpsilon)
+            return true;
+
+        setValue(this, clamped);
+        return true;
+    }
 }

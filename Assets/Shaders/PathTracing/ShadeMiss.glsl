@@ -69,7 +69,7 @@ vec3 evaluateEnvironmentVisibleRadiance(in vec3 worldRayDirection, in Environmen
     return sampledColor;
 }
 
-void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, inout Payload payload) {
+void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in RenderSettingsData renderSettings, inout Payload payload) {
     vec3 envColor = payload.depth == 0
         ? evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData)
         : evaluateEnvironmentRadiance(worldRayDirection, environmentData);
@@ -87,20 +87,20 @@ void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in
     payload.albedo      = envColor;
     payload.normal      = vec3(0.0);
 
-    // If environment is invisible at primary ray → mark transparent background
-    if (payload.depth == 0 && environmentData.visible == 0)
+    // Primary misses can request transparency independently from environment visibility.
+    if ((payload.depth == 0 && environmentData.visible == 0) || (payload.depth == 0 && renderSettings.transparentBackground != 0))
         payload.flags |= ENV_TRANSPARENT;
 
     // Miss always terminates the ray
     payload.flags |= RAY_TERMINATED;
 }
 
-void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, inout AoPayload payload) {
+void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in RenderSettingsData renderSettings, inout AoPayload payload) {
     payload.emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
     payload.albedo = payload.emission;
     payload.normal = vec3(0.0);
 
-    if (environmentData.visible == 0)
+    if (environmentData.visible == 0 || renderSettings.transparentBackground != 0)
         payload.flags |= ENV_TRANSPARENT;
 
     payload.flags |= RAY_TERMINATED;

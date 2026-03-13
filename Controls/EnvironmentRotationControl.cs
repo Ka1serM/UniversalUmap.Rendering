@@ -21,12 +21,16 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     [StructLayout(LayoutKind.Sequential)]
     private struct PushConstants
     {
-        public Vector4 Params0; // x = rotationDeg, y = bindless texture index
+        public Vector4 Params0; // x = rotationDeg
     }
 
     private VulkanRasterShaderProgram? shaderProgram;
     private Context? shaderContext;
     private VulkanViewerControl? subscribedSource;
+    private DescriptorPool descriptorPool;
+    private DescriptorSetLayout descriptorSetLayout;
+    private DescriptorSet descriptorSet;
+    private int boundTextureIndex = int.MinValue;
 
     private bool suppressUiEvents;
     private bool hasRotationFromSource;
@@ -73,10 +77,22 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         base.OnDetachedFromVisualTree(e);
     }
 
-    protected override void OnGpuResourcesInvalidated()
+    protected override unsafe void OnGpuResourcesInvalidated()
     {
         shaderProgram?.Dispose();
         shaderProgram = null;
+        if (shaderContext is not null && descriptorSetLayout.Handle != default)
+        {
+            shaderContext.Api.DestroyDescriptorSetLayout(shaderContext.Device, descriptorSetLayout, default);
+            descriptorSetLayout = default;
+        }
+        if (shaderContext is not null && descriptorPool.Handle != default)
+        {
+            shaderContext.Api.DestroyDescriptorPool(shaderContext.Device, descriptorPool, default);
+            descriptorPool = default;
+        }
+        descriptorSet = default;
+        boundTextureIndex = int.MinValue;
         shaderContext = null;
     }
 
@@ -118,9 +134,10 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
 
         sourceScene.Synchronize(() =>
         {
+            UpdateEnvironmentTextureBinding(sourceScene);
             var push = new PushConstants
             {
-                Params0 = new Vector4(rotationDegrees, environmentTextureIndex, 0f, 0f)
+                Params0 = new Vector4(rotationDegrees, 0f, 0f, 0f)
             };
             shaderProgram.Draw(target, 3, null, 0, in push);
         });
@@ -181,17 +198,13 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             InvalidateGpuFrame();
             if (!suppressUiEvents && Source is { } source)
             {
-                var scene = source.Scene;
-                if (scene is not null)
-                {
-                    scene.Synchronize(() =>
+                    var scene = source.Scene;
+                    if (scene is not null)
                     {
-                        scene.Environment.Rotation = rotationDegrees;
-                        scene.NotifyEnvironmentChanged();
-                    });
+                        scene.Synchronize(() => scene.Environment.Rotation = rotationDegrees);
+                    }
                 }
             }
-        }
 
         TryWrapCapture(p);
         e.Handled = true;
@@ -247,11 +260,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
 
         shaderProgram?.Dispose();
         shaderContext = context;
-        if (Source is null || !Source.TryGetBindlessTextureDescriptors(out var bindlessSetLayout, out var bindlessSet))
-        {
-            shaderProgram = null;
-            return;
-        }
+        EnsureDescriptorResources(context);
         shaderProgram = new VulkanRasterShaderProgram(
             context,
             "SunDirectionWidgetVS.spv",
@@ -260,8 +269,74 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             ShaderStageFlags.FragmentBit,
             (uint)Marshal.SizeOf<PushConstants>(),
             enableAlphaBlending: true,
-            externalDescriptorSetLayout: bindlessSetLayout,
-            externalDescriptorSet: bindlessSet);
+            externalDescriptorSetLayout: descriptorSetLayout,
+            externalDescriptorSet: descriptorSet);
+    }
+
+    private unsafe void EnsureDescriptorResources(Context context)
+    {
+        if (descriptorSetLayout.Handle != default && descriptorPool.Handle != default && descriptorSet.Handle != default)
+            return;
+
+        var layoutBinding = new DescriptorSetLayoutBinding(
+            0,
+            DescriptorType.CombinedImageSampler,
+            1,
+            ShaderStageFlags.FragmentBit);
+        var layoutInfo = new DescriptorSetLayoutCreateInfo
+        {
+            SType = StructureType.DescriptorSetLayoutCreateInfo,
+            BindingCount = 1,
+            PBindings = &layoutBinding
+        };
+        context.Api.CreateDescriptorSetLayout(context.Device, in layoutInfo, default, out descriptorSetLayout).ThrowOnError();
+
+        var poolSize = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 1);
+        var poolInfo = new DescriptorPoolCreateInfo
+        {
+            SType = StructureType.DescriptorPoolCreateInfo,
+            MaxSets = 1,
+            PoolSizeCount = 1,
+            PPoolSizes = &poolSize
+        };
+        context.Api.CreateDescriptorPool(context.Device, in poolInfo, default, out descriptorPool).ThrowOnError();
+
+        var allocInfo = new DescriptorSetAllocateInfo
+        {
+            SType = StructureType.DescriptorSetAllocateInfo,
+            DescriptorPool = descriptorPool,
+            DescriptorSetCount = 1
+        };
+        var descriptorSetLayoutLocal = descriptorSetLayout;
+        allocInfo.PSetLayouts = &descriptorSetLayoutLocal;
+        context.Api.AllocateDescriptorSets(context.Device, in allocInfo, out descriptorSet).ThrowOnError();
+    }
+
+    private unsafe void UpdateEnvironmentTextureBinding(Scene scene)
+    {
+        if (shaderContext is null || descriptorSet.Handle == default)
+            return;
+
+        if (boundTextureIndex == environmentTextureIndex)
+            return;
+
+        DescriptorImageInfo imageInfo;
+        if (environmentTextureIndex >= 0 && environmentTextureIndex < scene.Textures.Count)
+            imageInfo = scene.Textures[environmentTextureIndex].GetDescriptorImageInfo();
+        else
+            imageInfo = default;
+
+        var write = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 0,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.CombinedImageSampler,
+            PImageInfo = &imageInfo
+        };
+        shaderContext.Api.UpdateDescriptorSets(shaderContext.Device, 1, in write, 0, null);
+        boundTextureIndex = environmentTextureIndex;
     }
 
     private void SubscribeToSource(VulkanViewerControl? source)
@@ -287,7 +362,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             subscribedSource = null;
     }
 
-    private void OnEnvironmentSettingsChanged(EnvironmentDataGpu settings)
+    private void OnEnvironmentSettingsChanged(EnvironmentSettings settings)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
