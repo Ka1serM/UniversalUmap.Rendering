@@ -2,8 +2,9 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public sealed class MeshInstance
 {

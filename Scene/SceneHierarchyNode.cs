@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public enum SceneHierarchyNodeKind
 {

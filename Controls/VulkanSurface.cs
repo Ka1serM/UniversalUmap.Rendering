@@ -3,6 +3,8 @@ using Avalonia.Platform;
 using Avalonia.Rendering.Composition;
 using Serilog;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 

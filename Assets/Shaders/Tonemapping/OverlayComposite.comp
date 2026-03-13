@@ -24,7 +24,7 @@ layout(push_constant) uniform OverlayPushConstants {
 } pc;
 
 vec3 applyTonemap(vec3 hdrColor) {
-    return aces(hdrColor);
+    return uncharted2(hdrColor);
 }
 
 ivec2 toPickPixel(ivec2 outputPixel, ivec2 outputSize) {

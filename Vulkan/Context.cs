@@ -5,8 +5,10 @@ using Serilog;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Scenes;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 public sealed class Context : IDisposable
 {

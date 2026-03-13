@@ -31,7 +31,7 @@ vec2 roundBokeh(float u1, float u2, float edgeBias) {
 void generatePrimaryRay(
     in ivec2 pixelCoord,
     in ivec2 screenSize,
-    in CameraData camera,
+    in CameraDataGpu camera,
     inout SamplerState samplerState,
     in bool deterministicSample,
     in bool useThinLens,

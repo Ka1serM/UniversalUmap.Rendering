@@ -1,7 +1,9 @@
 using System;
 using Avalonia;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Raytracing;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 internal sealed class GpuScenePicker
 {
@@ -43,22 +45,14 @@ internal sealed class GpuScenePicker
 
         var queryPixelX = pixelX;
         var queryPixelY = pixelY;
-        var result = scene.Synchronize(() =>
+        if (!raytracer.QueryPixelUInt(raytracer.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
+            !scene.TrySelectInstance(pickedId, out instance))
         {
-            if (!raytracer.QueryPixelUInt(raytracer.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
-                pickedId == SharedShaderDefines.InvalidInstance ||
-                pickedId >= scene.MeshInstances.Count)
-            {
-                scene.ClearSelection();
-                return ((MeshInstance?)null, SharedShaderDefines.InvalidInstance, false);
-            }
+            instanceId = SharedShaderDefines.InvalidInstance;
+            return false;
+        }
 
-            scene.SelectInstance((int)pickedId);
-            return (scene.MeshInstances[(int)pickedId], pickedId, true);
-        });
-
-        instance = result.Item1;
-        instanceId = result.Item2;
-        return result.Item3;
+        instanceId = pickedId;
+        return true;
     }
 }

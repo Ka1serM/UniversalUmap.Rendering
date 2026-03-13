@@ -1,4 +1,4 @@
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public enum RenderMode
 {

@@ -14,7 +14,7 @@ layout(location = 1) rayPayloadEXT uint shadowPayload;
 hitAttributeEXT vec3 attribs;
 
 layout (push_constant, scalar) uniform PushConstants {
-    PushData pushConstants;
+    PushDataGpu pushConstants;
 };
 
 bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
@@ -54,14 +54,14 @@ vec3 computeShadowTerminatorPointLocal(
 #include "../PathTracing/ShadeClosestHit.glsl"
 
 void main() {
-   const MeshAddresses mesh = meshes[gl_InstanceCustomIndexEXT];
+   const MeshAddressesGpu mesh = meshes[gl_InstanceCustomIndexEXT];
    VertexBuffer vertexBuf = VertexBuffer(mesh.vertexAddress);
    IndexBuffer indexBuf = IndexBuffer(mesh.indexAddress);
    FaceBuffer faceBuf = FaceBuffer(mesh.faceAddress);
    MaterialBuffer materialBuf = MaterialBuffer(mesh.materialAddress);
 
    const Face face = faceBuf.data[gl_PrimitiveID];
-   const Material material = materialBuf.data[face.materialIndex];
+   const MaterialData material = materialBuf.data[face.materialIndex];
 
    const uint i0 = indexBuf.data[3 * gl_PrimitiveID + 0];
    const uint i1 = indexBuf.data[3 * gl_PrimitiveID + 1];

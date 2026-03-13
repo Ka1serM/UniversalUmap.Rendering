@@ -1,12 +1,11 @@
 using CommunityToolkit.Mvvm.ComponentModel;
-
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public partial class RenderSettings : ObservableObject
     , IGpuSnapshot<RenderSettingsDataGpu>
 {
     [ObservableProperty] private int samplesPerPixel = 1;
-    [ObservableProperty] private int pathDepth = 1;
+    [ObservableProperty] private int pathDepth = 4;
     [ObservableProperty] private float exposure;
     [ObservableProperty] private bool transparentBackground;
     [ObservableProperty] private RenderMode renderMode = RenderMode.PathTracing;

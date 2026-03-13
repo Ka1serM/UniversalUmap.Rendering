@@ -5,8 +5,11 @@ using Avalonia;
 using Avalonia.Platform;
 using Serilog;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Raytracing;
 
 internal abstract unsafe class GpuRaytracer : IDisposable
 {
@@ -221,19 +224,19 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         if (!Scene.IsDirty(SceneDirtyFlags.Textures))
             return;
 
-        var textures = Scene.Textures;
-        if (textures.Count > MaxTextures)
-            throw new InvalidOperationException($"Too many textures for bindless descriptor array ({textures.Count} > {MaxTextures}).");
+        var textures = Scene.GetTexturesSnapshot();
+        if (textures.Length > MaxTextures)
+            throw new InvalidOperationException($"Too many textures for bindless descriptor array ({textures.Length} > {MaxTextures}).");
 
-        if (textures.Count == 0)
+        if (textures.Length == 0)
         {
             Log.Information("No textures bound for bindless descriptor array.");
             Scene.ClearDirty(SceneDirtyFlags.Textures);
             return;
         }
 
-        var descriptors = new DescriptorImageInfo[textures.Count];
-        for (var i = 0; i < textures.Count; i++)
+        var descriptors = new DescriptorImageInfo[textures.Length];
+        for (var i = 0; i < textures.Length; i++)
             descriptors[i] = textures[i].GetDescriptorImageInfo();
 
         fixed (DescriptorImageInfo* pDescriptors = descriptors)

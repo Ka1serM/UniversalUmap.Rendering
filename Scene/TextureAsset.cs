@@ -7,8 +7,10 @@ using CUE4Parse.UE4.Assets.Exports.Texture;
 using Serilog;
 using Silk.NET.Vulkan;
 using StbImageSharp;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public sealed unsafe class TextureAsset : IDisposable
 {

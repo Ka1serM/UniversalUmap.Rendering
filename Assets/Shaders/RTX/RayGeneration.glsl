@@ -12,7 +12,7 @@
 #include "../Bindings.glsl"
 
 layout (push_constant, scalar) uniform PushConstants {
-    PushData pushConstants;
+    PushDataGpu pushConstants;
 };
 
 layout (location = 0) rayPayloadEXT Payload payload;

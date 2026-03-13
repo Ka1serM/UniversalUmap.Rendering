@@ -1,7 +1,6 @@
 using System.Numerics;
 using CommunityToolkit.Mvvm.ComponentModel;
-
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public partial class EnvironmentSettings : ObservableObject
     , IGpuSnapshot<EnvironmentDataGpu>
@@ -9,11 +8,11 @@ public partial class EnvironmentSettings : ObservableObject
     [ObservableProperty] private int textureIndex = -1;
     [ObservableProperty] private int cdfTextureIndex = -1;
     [ObservableProperty] private float rotation;
-    [ObservableProperty] private float visibleExposure = 2f;
-    [ObservableProperty] private float lightingExposure = 2f;
+    [ObservableProperty] private float visibleExposure = 1.5f;
+    [ObservableProperty] private float lightingExposure = 1.5f;
     [ObservableProperty] private bool visible = true;
     [ObservableProperty] private Vector3 directionalDirection = new(0.41338775f, -0.7398497f, 0.53078514f);
-    [ObservableProperty] private float directionalIntensity = 7f;
+    [ObservableProperty] private float directionalIntensity = 3f;
 
     EnvironmentDataGpu IGpuSnapshot<EnvironmentDataGpu>.ToStruct() => ToStruct();
 

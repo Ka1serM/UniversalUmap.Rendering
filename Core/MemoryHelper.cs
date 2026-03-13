@@ -1,6 +1,6 @@
 using Silk.NET.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Core;
 
 internal static class MemoryHelper
 {

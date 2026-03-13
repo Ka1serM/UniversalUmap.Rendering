@@ -6,8 +6,9 @@ using Avalonia;
 using Avalonia.Platform;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Core;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 public sealed unsafe class ImageResource : IDisposable
 {

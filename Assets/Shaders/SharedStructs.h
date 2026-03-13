@@ -1,5 +1,5 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-// Generated from UniversalUmap.Rendering/SharedStructs.cs. Do not edit by hand.
+// Generated from UniversalUmap.Rendering/Assets/Shaders/SharedStructs.cs. Do not edit by hand.
 
 #define INVALID_INSTANCE 0xFFFFFFFFu
 #define GROUP_SIZE 16
@@ -19,7 +19,7 @@ struct Face
     int materialIndex;
 };
 
-struct Material
+struct MaterialData
 {
     vec3 albedo;
     int albedoIndex;
@@ -41,7 +41,7 @@ struct Material
     float opacity;
 };
 
-struct MeshAddresses
+struct MeshAddressesGpu
 {
     uint64_t vertexAddress;
     uint64_t indexAddress;
@@ -51,7 +51,7 @@ struct MeshAddresses
     uint64_t bvhIndexAddress;
 };
 
-struct ComputeInstance
+struct ComputeInstanceGpu
 {
     mat4 transform;
     mat4 inverseTransform;
@@ -61,7 +61,7 @@ struct ComputeInstance
     uint _pad3;
 };
 
-struct AABB
+struct AabbGpu
 {
     vec3 minBounds;
     float _pad0;
@@ -69,22 +69,22 @@ struct AABB
     float _pad1;
 };
 
-struct BVHNode
+struct BvhNodeGpu
 {
-    AABB leftBounds;
-    AABB rightBounds;
+    AabbGpu leftBounds;
+    AabbGpu rightBounds;
     uint rightChildOrPrimIndex;
     uint primCount;
     uint splitAxis;
 };
 
-struct PushData
+struct PushDataGpu
 {
     int frame;
     int isMoving;
 };
 
-struct RenderSettingsData
+struct RenderSettingsDataGpu
 {
     int samples;
     int diffuseBounces;
@@ -95,7 +95,7 @@ struct RenderSettingsData
     int renderMode;
 };
 
-struct EnvironmentData
+struct EnvironmentDataGpu
 {
     int textureIndex;
     int cdfTextureIndex;
@@ -109,7 +109,7 @@ struct EnvironmentData
     int _pad1;
 };
 
-struct CameraData
+struct CameraDataGpu
 {
     vec3 position;
     float aperture;
@@ -119,6 +119,13 @@ struct CameraData
     float focalLength;
     vec3 vertical;
     float bokehBias;
+};
+
+struct SceneSettingsDataGpu
+{
+    RenderSettingsDataGpu renderSettings;
+    CameraDataGpu camera;
+    EnvironmentDataGpu environment;
 };
 
 // Shader-only declarations.
@@ -158,3 +165,4 @@ struct HitInfo {
     uint primitiveIndex;
     vec3 barycentrics;
 };
+

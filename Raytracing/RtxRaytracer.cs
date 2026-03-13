@@ -4,8 +4,11 @@ using System.Runtime.InteropServices;
 using Serilog;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Raytracing;
 
 internal sealed unsafe class RtxRaytracer : GpuRaytracer
 {

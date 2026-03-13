@@ -40,7 +40,7 @@ bool intersectTriangle(vec3 rayOrigin, vec3 rayDirection, vec3 v0, vec3 v1, vec3
     return false;
 }
 
-bool intersectAABB(vec3 rayOrigin, vec3 invDir, AABB box, out float tmin, out float tmax) {
+bool intersectAABB(vec3 rayOrigin, vec3 invDir, AabbGpu box, out float tmin, out float tmax) {
     const float EPSILON = 1e-6; // small tolerance for numerical precision
 
     vec3 t0s = (box.minBounds - rayOrigin) * invDir;
@@ -56,7 +56,7 @@ bool intersectAABB(vec3 rayOrigin, vec3 invDir, AABB box, out float tmin, out fl
     return tmin <= tmax + EPSILON && tmax >= 0.0;
 }
 
-void traverseBVH(vec3 rayOrigin, vec3 rayDirection, MeshAddresses mesh, inout HitInfo hit, float tMin) {
+void traverseBVH(vec3 rayOrigin, vec3 rayDirection, MeshAddressesGpu mesh, inout HitInfo hit, float tMin) {
     vec3 invDir = 1.0 / rayDirection;
 
     // Construct buffer references from the 64-bit addresses using your new names.
@@ -71,7 +71,7 @@ void traverseBVH(vec3 rayOrigin, vec3 rayDirection, MeshAddresses mesh, inout Hi
 
     while (stackPtr > 0) {
         uint nodeIndex = stack[--stackPtr];
-        BVHNode node = bvh.data[nodeIndex];
+        BvhNodeGpu node = bvh.data[nodeIndex];
 
         // --- LEAF NODE ---
         if (node.primCount > 0) {
@@ -134,7 +134,7 @@ HitInfo traceScene(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
     bestHit.primitiveIndex = INVALID_INSTANCE;
 
     for (int i = 0; i < instances.length(); ++i) {
-        ComputeInstance inst = instances[i];
+        ComputeInstanceGpu inst = instances[i];
         
         if (inst.meshId == 0xFFFFFFFF)
             continue;
@@ -150,7 +150,7 @@ HitInfo traceScene(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax) {
         localHit.t = bestHit.t;
         localHit.primitiveIndex = INVALID_INSTANCE;
 
-        MeshAddresses mesh = meshes[inst.meshId];
+        MeshAddressesGpu mesh = meshes[inst.meshId];
         traverseBVH(localOrigin, localDir, mesh, localHit, tMin);
 
         if (localHit.primitiveIndex != INVALID_INSTANCE) {
@@ -207,10 +207,10 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
     if (hit.instanceIndex == INVALID_INSTANCE)
         shadeMiss(rayDirection, sceneSettings.environment, sceneSettings.renderSettings, payload);
     else {
-        const ComputeInstance inst = instances[hit.instanceIndex];
-        const MeshAddresses mesh = meshes[inst.meshId];
+        const ComputeInstanceGpu inst = instances[hit.instanceIndex];
+        const MeshAddressesGpu mesh = meshes[inst.meshId];
         const Face face = FaceBuffer(mesh.faceAddress).data[hit.primitiveIndex];
-        const Material material = MaterialBuffer(mesh.materialAddress).data[face.materialIndex];
+        const MaterialData material = MaterialBuffer(mesh.materialAddress).data[face.materialIndex];
 
         const Vertex v0 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 0]];
         const Vertex v1 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 1]];
@@ -246,10 +246,10 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
     if (hit.instanceIndex == INVALID_INSTANCE)
         shadeMiss(rayDirection, sceneSettings.environment, sceneSettings.renderSettings, payload);
     else {
-        const ComputeInstance inst = instances[hit.instanceIndex];
-        const MeshAddresses mesh = meshes[inst.meshId];
+        const ComputeInstanceGpu inst = instances[hit.instanceIndex];
+        const MeshAddressesGpu mesh = meshes[inst.meshId];
         const Face face = FaceBuffer(mesh.faceAddress).data[hit.primitiveIndex];
-        const Material material = MaterialBuffer(mesh.materialAddress).data[face.materialIndex];
+        const MaterialData material = MaterialBuffer(mesh.materialAddress).data[face.materialIndex];
 
         const Vertex v0 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 0]];
         const Vertex v1 = VertexBuffer(mesh.vertexAddress).data[IndexBuffer(mesh.indexAddress).data[3 * hit.primitiveIndex + 1]];

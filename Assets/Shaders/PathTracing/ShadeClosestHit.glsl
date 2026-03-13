@@ -14,7 +14,7 @@ bool traceShadowRay(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax);
 
 float fresnelDielectric(float cosThetaI, float etaI, float etaT);
 
-vec3 sampleMaterialAlbedo(in Material material, in vec2 interpolatedUV) {
+vec3 sampleMaterialAlbedo(in MaterialData material, in vec2 interpolatedUV) {
     vec3 albedo = material.albedo;
     if (material.albedoIndex != -1)
         albedo *= texture(textureSamplers[material.albedoIndex], interpolatedUV).rgb;
@@ -24,7 +24,7 @@ vec3 sampleMaterialAlbedo(in Material material, in vec2 interpolatedUV) {
 void shadeAmbientOcclusionSurface(
     in vec3 worldPosition,
     in vec3 geometricFacingNormal,
-    in Material material,
+    in MaterialData material,
     in vec2 interpolatedUV,
     inout uint rngState,
     out vec3 albedo,
@@ -201,7 +201,7 @@ int binarySearchConditionalCdf(int cdfTextureIndex, int width, int y, float xi) 
 }
 
 vec3 sampleEnvironmentDirection(
-    in EnvironmentData environmentData,
+    in EnvironmentDataGpu environmentData,
     inout uint rngState,
     out float lightPdf)
 {
@@ -668,7 +668,7 @@ vec3 estimateDirectLighting(
     float metallic,
     float roughness,
     float swSpecular,
-    in EnvironmentData environmentData,
+    in EnvironmentDataGpu environmentData,
     inout uint rngState
 ) {
     vec3 directContribution = vec3(0.0);
@@ -837,7 +837,7 @@ void shadeClosestHit(
     in vec3 interpolatedTangent,
     in vec2 interpolatedUV,
     in vec3 worldRayDirection,
-    in Material material,
+    in MaterialData material,
     inout Payload payload)
 {
     payload.position = worldPosition;
@@ -970,7 +970,7 @@ void shadeClosestHit(
     in vec3 interpolatedTangent,
     in vec2 interpolatedUV,
     in vec3 worldRayDirection,
-    in Material material,
+    in MaterialData material,
     inout AoPayload payload)
 {
     vec3 viewDir = fastNormalize(-worldRayDirection);

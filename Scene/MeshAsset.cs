@@ -9,8 +9,10 @@ using CUE4Parse_Conversion.Meshes.PSK;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Raytracing;
+using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public sealed class MeshAsset : IDisposable
 {

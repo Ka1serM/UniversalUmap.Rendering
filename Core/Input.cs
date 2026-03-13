@@ -4,7 +4,7 @@ using Avalonia;
 using Avalonia.Input;
 using Serilog;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Core;
 
 internal sealed class Input
 {

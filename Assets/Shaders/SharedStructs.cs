@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using UniversalUmap.Rendering.Scenes;
 
 namespace UniversalUmap.Rendering;
 
@@ -135,12 +136,6 @@ internal struct PushDataGpu
 {
     public int Frame;
     public int IsMoving;
-
-    public PushDataGpu()
-    {
-        Frame = 0;
-        IsMoving = 0;
-    }
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 28)]
@@ -153,32 +148,6 @@ internal struct RenderSettingsDataGpu
     public float Exposure;
     public int TransparentBackground;
     public int RenderMode;
-
-    public RenderSettingsDataGpu()
-    {
-        Samples = 1;
-        DiffuseBounces = 2;
-        SpecularBounces = 2;
-        TransmissionBounces = 2;
-        Exposure = 0f;
-        TransparentBackground = 0;
-        RenderMode = 0;
-    }
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 140)]
-internal struct SceneSettingsDataGpu
-{
-    public RenderSettingsDataGpu RenderSettings;
-    public CameraDataGpu Camera;
-    public EnvironmentDataGpu Environment;
-
-    public SceneSettingsDataGpu()
-    {
-        RenderSettings = new RenderSettingsDataGpu();
-        Camera = new CameraDataGpu();
-        Environment = new EnvironmentDataGpu();
-    }
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 48)]
@@ -194,20 +163,6 @@ public struct EnvironmentDataGpu
     public float DirectionalIntensity;
     public int Pad0;
     public int Pad1;
-
-    public EnvironmentDataGpu()
-    {
-        TextureIndex = -1;
-        CdfTextureIndex = -1;
-        Rotation = 0f;
-        VisibleExposure = 2f;
-        LightingExposure = 2f;
-        Visible = 1;
-        DirectionalDirection = new Vector3(0.41338775f, -0.7398497f, 0.53078514f);
-        DirectionalIntensity = 7f;
-        Pad0 = 0;
-        Pad1 = 0;
-    }
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
@@ -221,18 +176,14 @@ internal struct CameraDataGpu
     public float FocalLength;
     public Vector3 Vertical;
     public float BokehBias;
+}
 
-    public CameraDataGpu()
-    {
-        Position = new Vector3(0f, 0f, -2f);
-        Aperture = 0f;
-        Direction = new Vector3(0f, 0f, 1f);
-        FocusDistance = 4f;
-        Horizontal = new Vector3(1f, 0f, 0f);
-        FocalLength = 50f;
-        Vertical = new Vector3(0f, 1f, 0f);
-        BokehBias = 1f;
-    }
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 140)]
+internal struct SceneSettingsDataGpu
+{
+    public RenderSettingsDataGpu RenderSettings;
+    public CameraDataGpu Camera;
+    public EnvironmentDataGpu Environment;
 }
 
 internal static class GpuStructLayoutValidator

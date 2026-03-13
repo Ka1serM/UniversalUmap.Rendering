@@ -88,10 +88,10 @@
 
   <Target Name="GenerateSharedStructsHeader"
           BeforeTargets="CompileShaders"
-          Inputs="$(ProjectDir)SharedStructs.cs;$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\Program.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj"
+          Inputs="$(ProjectDir)Assets\Shaders\SharedStructs.cs;$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\Program.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj"
           Outputs="$(ProjectDir)Assets\Shaders\SharedStructs.h">
-    <Message Text="Generating SharedStructs.h from SharedStructs.cs..." Importance="High" />
-    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj" -- "$(ProjectDir)SharedStructs.cs" "$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h" "$(ProjectDir)Assets\Shaders\SharedStructs.h"'
+    <Message Text="Generating SharedStructs.h from Assets\Shaders\SharedStructs.cs..." Importance="High" />
+    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj" -- "$(ProjectDir)Assets\Shaders\SharedStructs.cs" "$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h" "$(ProjectDir)Assets\Shaders\SharedStructs.h"'
           LogStandardErrorAsError="true" />
   </Target>
   

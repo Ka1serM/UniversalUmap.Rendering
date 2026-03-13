@@ -3,7 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Numerics;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Raytracing;
 
 internal static class BvhBuilder
 {

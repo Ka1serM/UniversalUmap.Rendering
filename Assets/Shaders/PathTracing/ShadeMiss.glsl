@@ -3,12 +3,12 @@
 
 #include "../Bindings.glsl"
 
-bool hasDirectionalLight(in EnvironmentData environmentData) {
+bool hasDirectionalLight(in EnvironmentDataGpu environmentData) {
     return environmentData.directionalIntensity > EPSILON &&
            dot(environmentData.directionalDirection, environmentData.directionalDirection) > EPSILON;
 }
 
-vec3 getDirectionalLightDirection(in EnvironmentData environmentData) {
+vec3 getDirectionalLightDirection(in EnvironmentDataGpu environmentData) {
     vec3 d = environmentData.directionalDirection;
     float l2 = dot(d, d);
     if (l2 <= EPSILON)
@@ -30,7 +30,7 @@ vec2 directionToEnvironmentUv(in vec3 worldRayDirection, in float rotationDegree
     return uv;
 }
 
-vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentData environmentData, in float exposureStops) {
+vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops) {
     if (environmentData.textureIndex == -1)
         return vec3(1.0);
 
@@ -38,7 +38,7 @@ vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentData env
     return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exp2(exposureStops);
 }
 
-float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
         return 0.0;
 
@@ -55,21 +55,21 @@ float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in Environme
     return uvPdf / max(2.0 * PI * PI * sinTheta, EPSILON);
 }
 
-float evaluateNeeLightPdfForDirection(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+float evaluateNeeLightPdfForDirection(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     return evaluateEnvironmentPdfForDirection(worldRayDirection, environmentData);
 }
 
-vec3 evaluateEnvironmentRadiance(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+vec3 evaluateEnvironmentRadiance(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.lightingExposure);
     return sampledColor;
 }
 
-vec3 evaluateEnvironmentVisibleRadiance(in vec3 worldRayDirection, in EnvironmentData environmentData) {
+vec3 evaluateEnvironmentVisibleRadiance(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.visibleExposure);
     return sampledColor;
 }
 
-void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in RenderSettingsData renderSettings, inout Payload payload) {
+void shadeMiss(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout Payload payload) {
     vec3 envColor = payload.depth == 0
         ? evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData)
         : evaluateEnvironmentRadiance(worldRayDirection, environmentData);
@@ -95,7 +95,7 @@ void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in
     payload.flags |= RAY_TERMINATED;
 }
 
-void shadeMiss(in vec3 worldRayDirection, in EnvironmentData environmentData, in RenderSettingsData renderSettings, inout AoPayload payload) {
+void shadeMiss(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout AoPayload payload) {
     payload.emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
     payload.albedo = payload.emission;
     payload.normal = vec3(0.0);

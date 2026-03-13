@@ -13,7 +13,7 @@
 layout(location = 0) rayPayloadInEXT AoPayload payload;
 
 layout (push_constant, scalar) uniform PushConstants {
-    PushData pushConstants;
+    PushDataGpu pushConstants;
 };
 
 void main()

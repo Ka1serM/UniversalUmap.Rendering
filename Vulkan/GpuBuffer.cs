@@ -1,8 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 internal sealed unsafe class GpuBuffer : IDisposable
 {

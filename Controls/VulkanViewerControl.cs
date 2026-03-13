@@ -11,6 +11,10 @@ using Avalonia.Rendering.Composition;
 using Avalonia.VisualTree;
 using Serilog;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Raytracing;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 

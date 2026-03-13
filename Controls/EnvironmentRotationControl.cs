@@ -9,6 +9,9 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
@@ -321,8 +324,8 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             return;
 
         DescriptorImageInfo imageInfo;
-        if (environmentTextureIndex >= 0 && environmentTextureIndex < scene.Textures.Count)
-            imageInfo = scene.Textures[environmentTextureIndex].GetDescriptorImageInfo();
+        if (scene.TryGetTextureAt(environmentTextureIndex, out var texture) && texture is not null)
+            imageInfo = texture.GetDescriptorImageInfo();
         else
             imageInfo = default;
 

@@ -3,8 +3,9 @@ using System.Runtime.InteropServices;
 using Avalonia.Platform;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Core;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 public sealed class SemaphorePair : IDisposable
 {

@@ -15,7 +15,7 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 
 // Push Constants
 layout (push_constant, scalar) uniform PushConstants {
-    PushData pushConstants;
+    PushDataGpu pushConstants;
 };
 
 

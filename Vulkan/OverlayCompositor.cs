@@ -2,8 +2,9 @@ using System;
 using System.Runtime.InteropServices;
 using Serilog;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Vulkan;
 
 public sealed unsafe class OverlayCompositor : IDisposable
 {

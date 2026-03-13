@@ -1,7 +1,7 @@
 using System;
 using Silk.NET.Vulkan;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Core;
 
 public sealed class VulkanException : Exception
 {

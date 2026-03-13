@@ -1,7 +1,7 @@
 using System.Reflection;
 using Serilog;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Core;
 
 internal static class EmbeddedAssets
 {

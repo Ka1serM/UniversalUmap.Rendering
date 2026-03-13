@@ -6,6 +6,9 @@ using Avalonia;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Serilog;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Scenes;
+using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering;
 
@@ -14,8 +17,6 @@ public sealed class Scene : IDisposable, IScene
     private readonly Context context;
     private readonly List<SceneHierarchyNode> hierarchyRoots = [];
     private readonly object sync = new();
-    private readonly List<TextureAsset> textures = [];
-    private readonly List<MeshAsset> meshAssets = [];
     private readonly List<MeshInstance> meshInstances = [];
     private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MeshAsset> meshAssetsByName = new(StringComparer.OrdinalIgnoreCase);
@@ -27,10 +28,6 @@ public sealed class Scene : IDisposable, IScene
         SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
             ? meshInstances[SelectedInstanceIndex]
             : null;
-    public IReadOnlyList<TextureAsset> Textures => textures;
-    public IReadOnlyList<MeshAsset> MeshAssets => meshAssets;
-    public IReadOnlyList<MeshInstance> MeshInstances => meshInstances;
-    public IReadOnlyList<SceneHierarchyNode> HierarchyRoots => hierarchyRoots;
     public Camera Camera { get; }
     public EnvironmentSettings Environment { get; }
     public RenderSettings RenderSettings { get; }
@@ -73,7 +70,6 @@ public sealed class Scene : IDisposable, IScene
 
     private TAsset AddNamedAsset<TAsset>(
         TAsset asset,
-        List<TAsset> items,
         Dictionary<string, TAsset> itemsByName,
         Func<TAsset, string> getName,
         Action<TAsset, int> initializeIndex,
@@ -86,12 +82,16 @@ public sealed class Scene : IDisposable, IScene
             if (itemsByName.ContainsKey(name))
                 throw new InvalidOperationException($"{assetType} already exists: {name}");
 
-            initializeIndex(asset, items.Count);
-            items.Add(asset);
+            initializeIndex(asset, itemsByName.Count);
             itemsByName[name] = asset;
             SetDirty(dirtyFlagsToSet);
             return asset;
         });
+    }
+
+    private bool ContainsMeshAsset(MeshAsset meshAsset)
+    {
+        return meshAssetsByName.TryGetValue(meshAsset.Name, out var existing) && ReferenceEquals(existing, meshAsset);
     }
 
     private TAsset? GetOrAddNamedAsset<TAsset>(
@@ -150,7 +150,6 @@ public sealed class Scene : IDisposable, IScene
     {
         var added = AddNamedAsset(
             texture,
-            textures,
             texturesByName,
             static item => item.Name,
             static (item, index) => item.Index = index,
@@ -169,7 +168,6 @@ public sealed class Scene : IDisposable, IScene
     {
         return AddNamedAsset(
             mesh,
-            meshAssets,
             meshAssetsByName,
             static item => item.Name,
             static (item, index) => item.MeshIndex = (uint)index,
@@ -190,7 +188,7 @@ public sealed class Scene : IDisposable, IScene
                 throw new ArgumentException("Instance name is empty", nameof(instance));
             if (meshInstances.Exists(existing => existing.Name.Equals(instance.Name, StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"Mesh instance already exists: {instance.Name}");
-            if (!meshAssets.Contains(instance.MeshAsset))
+            if (!ContainsMeshAsset(instance.MeshAsset))
                 throw new InvalidOperationException($"Mesh asset '{instance.MeshAsset.Name}' must be added before creating instances.");
 
             meshInstances.Add(instance);
@@ -349,10 +347,9 @@ public sealed class Scene : IDisposable, IScene
             context.WaitForSubmittedCommandBuffers();
             meshInstances.Clear();
 
-            foreach (var mesh in meshAssets)
+            foreach (var mesh in meshAssetsByName.Values)
                 mesh.Dispose();
 
-            meshAssets.Clear();
             meshAssetsByName.Clear();
 
             SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
@@ -367,6 +364,43 @@ public sealed class Scene : IDisposable, IScene
     public IReadOnlyList<SceneHierarchyNode> GetHierarchyRootsSnapshot()
     {
         return Synchronize(() => hierarchyRoots.ToArray());
+    }
+
+    internal TextureAsset[] GetTexturesSnapshot()
+    {
+        return Synchronize(() => texturesByName.Values.ToArray());
+    }
+
+    internal bool TryGetTextureAt(int index, out TextureAsset? texture)
+    {
+        var result = Synchronize(() =>
+        {
+            if (index < 0 || index >= texturesByName.Count)
+                return ((TextureAsset?)null, false);
+
+            return (texturesByName.Values.ElementAt(index), true);
+        });
+
+        texture = result.Item1;
+        return result.Item2;
+    }
+
+    internal bool TrySelectInstance(uint instanceId, out MeshInstance? instance)
+    {
+        var result = Synchronize(() =>
+        {
+            if (instanceId == SharedShaderDefines.InvalidInstance || instanceId >= meshInstances.Count)
+            {
+                SelectedInstanceIndex = -1;
+                return ((MeshInstance?)null, false);
+            }
+
+            SelectedInstanceIndex = (int)instanceId;
+            return (meshInstances[SelectedInstanceIndex], true);
+        });
+
+        instance = result.Item1;
+        return result.Item2;
     }
 
     public void SetArcballPivot(Vector3 pivot)
@@ -436,15 +470,16 @@ public sealed class Scene : IDisposable, IScene
 
     internal byte[] BuildMeshAddressData()
     {
-        if (meshAssets.Count == 0)
+        if (meshAssetsByName.Count == 0)
         {
             var empty = new MeshAddressesGpu();
             return StructPacking.ToBytes(new[] { empty });
         }
 
-        var addresses = new MeshAddressesGpu[meshAssets.Count];
-        for (var i = 0; i < meshAssets.Count; i++)
-            addresses[i] = meshAssets[i].GetBufferAddresses();
+        var addresses = new MeshAddressesGpu[meshAssetsByName.Count];
+        var index = 0;
+        foreach (var meshAsset in meshAssetsByName.Values)
+            addresses[index++] = meshAsset.GetBufferAddresses();
 
         return StructPacking.ToBytes(addresses);
     }
@@ -471,14 +506,12 @@ public sealed class Scene : IDisposable, IScene
         Camera.Changed -= OnCameraUpdated;
         Environment.PropertyChanged -= OnEnvironmentUpdated;
         RenderSettings.PropertyChanged -= OnRenderSettingsUpdated;
-        foreach (var texture in textures)
+        foreach (var texture in texturesByName.Values)
             texture.Dispose();
-        foreach (var mesh in meshAssets)
+        foreach (var mesh in meshAssetsByName.Values)
             mesh.Dispose();
 
         meshInstances.Clear();
-        meshAssets.Clear();
-        textures.Clear();
         meshAssetsByName.Clear();
         texturesByName.Clear();
         hierarchyRoots.Clear();

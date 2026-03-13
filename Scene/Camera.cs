@@ -4,8 +4,9 @@ using Avalonia;
 using Avalonia.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Serilog;
+using UniversalUmap.Rendering.Core;
 
-namespace UniversalUmap.Rendering;
+namespace UniversalUmap.Rendering.Scenes;
 
 public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGpu>
 {
