@@ -52,7 +52,7 @@ void generatePrimaryRay(
     const vec3 camDir = normalize(camera.direction);
     const vec3 horizontal = camera.horizontal;
     const vec3 vertical = camera.vertical;
-    float focalLength = camera.focalLength * 0.001; // mm to m
+    float focalLength = camera.focalLength;
 
     // Compute image plane point.
     vec3 imagePlaneCenter = camPos + camDir * focalLength;
@@ -64,7 +64,7 @@ void generatePrimaryRay(
 
     // Apply depth of field if aperture is larger than a pinhole.
     if (useThinLens && camera.aperture > 0.0) {
-        float apertureRadius = (camera.focalLength / camera.aperture) * 0.5 * 0.001;
+        float apertureRadius = camera.aperture;
         vec2 lensSampleRaw = getSample2D(samplerState);
         vec2 lensSample = roundBokeh(lensSampleRaw.x, lensSampleRaw.y, camera.bokehBias) * apertureRadius;
         vec3 lensU = normalize(horizontal);

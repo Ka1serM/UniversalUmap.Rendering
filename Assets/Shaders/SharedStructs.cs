@@ -68,11 +68,11 @@ public struct MaterialData
 
     public MaterialData()
     {
-        Albedo = Vector3.One;
+        Albedo = new Vector3(0.8f, 0.8f, 0.8f);
         AlbedoIndex = -1;
-        Specular = 0.5f;
+        Specular = 0f;
         Metallic = 0f;
-        Roughness = 0f;
+        Roughness = 1f;
         Ior = 1.5f;
         SpecularIndex = -1;
         MetallicIndex = -1;
@@ -154,19 +154,27 @@ internal struct RenderSettingsDataGpu
     public int RenderMode;
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 48)]
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 72)]
 public struct EnvironmentDataGpu
 {
     public int TextureIndex;
     public int CdfTextureIndex;
+    public float RotationSin;
+    public float RotationCos;
+    public float VisibleExposureScale;
+    public float LightingExposureScale;
+    public float MaxTextureLod;
+    public int Visible;
+
+    public Vector3 DirectionalDirection;
+    public float DirectionalIntensity;
+
     public float Rotation;
     public float VisibleExposure;
     public float LightingExposure;
-    public int Visible;
-    public Vector3 DirectionalDirection;
-    public float DirectionalIntensity;
     public int Pad0;
     public int Pad1;
+    public int Pad2;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
@@ -203,9 +211,9 @@ internal static class GpuStructLayoutValidator
         ValidateType<BvhNodeGpu>(76, (nameof(BvhNodeGpu.LeftBounds), 0), (nameof(BvhNodeGpu.RightBounds), 32), (nameof(BvhNodeGpu.RightChildOrPrimIndex), 64), (nameof(BvhNodeGpu.PrimCount), 68), (nameof(BvhNodeGpu.SplitAxis), 72));
         ValidateType<PushDataGpu>(8, (nameof(PushDataGpu.Frame), 0), (nameof(PushDataGpu.IsMoving), 4));
         ValidateType<RenderSettingsDataGpu>(44, (nameof(RenderSettingsDataGpu.Samples), 0), (nameof(RenderSettingsDataGpu.DiffuseBounces), 4), (nameof(RenderSettingsDataGpu.SpecularBounces), 8), (nameof(RenderSettingsDataGpu.TransmissionBounces), 12), (nameof(RenderSettingsDataGpu.AdaptiveSamplingEnabled), 16), (nameof(RenderSettingsDataGpu.AdaptiveMinSamples), 20), (nameof(RenderSettingsDataGpu.AdaptiveTargetError), 24), (nameof(RenderSettingsDataGpu.RussianRouletteStartBounce), 28), (nameof(RenderSettingsDataGpu.Exposure), 32), (nameof(RenderSettingsDataGpu.TransparentBackground), 36), (nameof(RenderSettingsDataGpu.RenderMode), 40));
-        ValidateType<EnvironmentDataGpu>(48, (nameof(EnvironmentDataGpu.TextureIndex), 0), (nameof(EnvironmentDataGpu.CdfTextureIndex), 4), (nameof(EnvironmentDataGpu.Rotation), 8), (nameof(EnvironmentDataGpu.VisibleExposure), 12), (nameof(EnvironmentDataGpu.LightingExposure), 16), (nameof(EnvironmentDataGpu.Visible), 20), (nameof(EnvironmentDataGpu.DirectionalDirection), 24), (nameof(EnvironmentDataGpu.DirectionalIntensity), 36), (nameof(EnvironmentDataGpu.Pad0), 40), (nameof(EnvironmentDataGpu.Pad1), 44));
+        ValidateType<EnvironmentDataGpu>(72, (nameof(EnvironmentDataGpu.TextureIndex), 0), (nameof(EnvironmentDataGpu.CdfTextureIndex), 4), (nameof(EnvironmentDataGpu.RotationSin), 8), (nameof(EnvironmentDataGpu.RotationCos), 12), (nameof(EnvironmentDataGpu.VisibleExposureScale), 16), (nameof(EnvironmentDataGpu.LightingExposureScale), 20), (nameof(EnvironmentDataGpu.MaxTextureLod), 24), (nameof(EnvironmentDataGpu.Visible), 28), (nameof(EnvironmentDataGpu.DirectionalDirection), 32), (nameof(EnvironmentDataGpu.DirectionalIntensity), 44), (nameof(EnvironmentDataGpu.Rotation), 48), (nameof(EnvironmentDataGpu.VisibleExposure), 52), (nameof(EnvironmentDataGpu.LightingExposure), 56), (nameof(EnvironmentDataGpu.Pad0), 60), (nameof(EnvironmentDataGpu.Pad1), 64), (nameof(EnvironmentDataGpu.Pad2), 68));
         ValidateType<CameraDataGpu>(64, (nameof(CameraDataGpu.Position), 0), (nameof(CameraDataGpu.Aperture), 12), (nameof(CameraDataGpu.Direction), 16), (nameof(CameraDataGpu.FocusDistance), 28), (nameof(CameraDataGpu.Horizontal), 32), (nameof(CameraDataGpu.FocalLength), 44), (nameof(CameraDataGpu.Vertical), 48), (nameof(CameraDataGpu.BokehBias), 60));
-        ValidateType<SceneSettingsDataGpu>(156, (nameof(SceneSettingsDataGpu.RenderSettings), 0), (nameof(SceneSettingsDataGpu.Camera), 44), (nameof(SceneSettingsDataGpu.Environment), 108));
+        ValidateType<SceneSettingsDataGpu>(180, (nameof(SceneSettingsDataGpu.RenderSettings), 0), (nameof(SceneSettingsDataGpu.Camera), 44), (nameof(SceneSettingsDataGpu.Environment), 108));
     }
 
     private static void ValidateType<T>(int expectedSize, params (string Field, int Offset)[] offsets)

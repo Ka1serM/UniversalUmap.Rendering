@@ -149,6 +149,22 @@ vec3 visualizeBuffer(ivec2 pixel, ivec2 outputSize, vec4 hdrImage)
     return applyTonemap(hdrImage.rgb);
 }
 
+bool hasSelectionOutline(ivec2 pixel, ivec2 outputSize, bool centerSelected)
+{
+    const int outlineRadius = 2;
+    for (int y = -outlineRadius; y <= outlineRadius; ++y) {
+        for (int x = -outlineRadius; x <= outlineRadius; ++x) {
+            if (x == 0 && y == 0)
+                continue;
+
+            if (isSelectedHit(pixel + ivec2(x, y), outputSize) != centerSelected)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 outputSize = imageSize(outputImage);
@@ -164,19 +180,7 @@ void main() {
     }
 
     bool centerSelected = isSelectedHit(pixel, outputSize);
-    bool edge = false;
-    const int outlineRadius = 2;
-    for (int y = -outlineRadius; y <= outlineRadius && !edge; ++y) {
-        for (int x = -outlineRadius; x <= outlineRadius; ++x) {
-            if (x == 0 && y == 0)
-                continue;
-            bool neighborSelected = isSelectedHit(pixel + ivec2(x, y), outputSize);
-            if (neighborSelected != centerSelected) {
-                edge = true;
-                break;
-            }
-        }
-    }
+    bool edge = hasSelectionOutline(pixel, outputSize, centerSelected);
 
     if (edge) {
         const vec3 outlineColor = vec3(1.0, 0.78, 0.12);

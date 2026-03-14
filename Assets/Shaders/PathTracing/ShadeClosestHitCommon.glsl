@@ -4,6 +4,7 @@
 
 #include "../Common.glsl"
 #include "ShadeMiss.glsl"
+#include "RenderPolicyCommon.glsl"
 
 // Forward declarations used by AO helper includes.
 vec3 sampleDiffuse(vec3 N, inout uint rngState);
@@ -60,6 +61,7 @@ vec3 shadeAmbientOcclusionPbrSurface(
     in float roughness,
     in float swSpecular,
     in vec3 baseEmission,
+    in EnvironmentDataGpu environmentData,
     inout uint rngState)
 {
     float ao = estimateAmbientOcclusion(worldPosition, geometricFacingNormal, rngState);
@@ -74,27 +76,24 @@ vec3 shadeAmbientOcclusionPbrSurface(
         metallic,
         roughness,
         swSpecular,
-        sceneSettings.environment,
+        environmentData,
         rngState);
 
-    int envLevels = sceneSettings.environment.textureIndex >= 0
-        ? textureQueryLevels(textureSamplers[sceneSettings.environment.textureIndex])
-        : 1;
-    float maxEnvLod = max(float(envLevels - 1), 0.0);
+    float maxEnvLod = max(environmentData.maxTextureLod, 0.0);
     float perceptualRoughness = clamp(roughness, 0.0, 1.0);
     float specularLod = perceptualRoughness * maxEnvLod;
     float diffuseLod = maxEnvLod;
 
     vec3 diffuseEnvironment = sampleEnvironmentMapColorLod(
         shadingFacingNormal,
-        sceneSettings.environment,
-        sceneSettings.environment.lightingExposure,
+        environmentData,
+        environmentData.lightingExposureScale,
         diffuseLod);
     vec3 reflectedDir = reflect(-viewDir, shadingFacingNormal);
     vec3 specularEnvironment = sampleEnvironmentMapColorLod(
         reflectedDir,
-        sceneSettings.environment,
-        sceneSettings.environment.lightingExposure,
+        environmentData,
+        environmentData.lightingExposureScale,
         specularLod);
 
     float dielectricF0 = dielectricF0FromSpecular(specular);
@@ -318,12 +317,9 @@ vec3 sampleEnvironmentDirection(
 
     // sampleEnvironmentMapColor applies +rotation before lookup.
     // Convert sampled env-space direction back into world-space by inverse rotation.
-    float radRotation = radians(environmentData.rotation);
-    float s = sin(radRotation);
-    float c = cos(radRotation);
     vec3 worldDir = rotatedDir;
-    worldDir.x = rotatedDir.x * c + rotatedDir.z * s;
-    worldDir.z = -rotatedDir.x * s + rotatedDir.z * c;
+    worldDir.x = rotatedDir.x * environmentData.rotationCos + rotatedDir.z * environmentData.rotationSin;
+    worldDir.z = -rotatedDir.x * environmentData.rotationSin + rotatedDir.z * environmentData.rotationCos;
     return fastNormalize(worldDir);
 }
 
@@ -634,7 +630,7 @@ vec3 estimateDirectLighting(
 
     float lightPdf = 0.0;
     vec3 lightDir = sampleEnvironmentDirection(environmentData, rngState, lightPdf);
-    vec3 Li = sampleEnvironmentMapColor(lightDir, environmentData, environmentData.lightingExposure);
+    vec3 Li = sampleEnvironmentMapColor(lightDir, environmentData, environmentData.lightingExposureScale);
     float NdotLGeom = max(dot(geometricNormal, lightDir), 0.0);
     if (NdotLGeom <= 0.0 || lightPdf <= 0.0)
         return directContribution;

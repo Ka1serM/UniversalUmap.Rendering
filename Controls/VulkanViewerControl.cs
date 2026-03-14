@@ -479,7 +479,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         if (change.Property == BoundsProperty || change.Property == IsVisibleProperty)
+        {
+            if (change.Property == BoundsProperty)
+                UpdateCameraRenderSizeFromLayout();
+
             QueueNextFrame();
+        }
 
         base.OnPropertyChanged(change);
     }
@@ -507,7 +512,24 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
         lastLayoutSize = size;
         lastLayoutScaling = scale;
+        UpdateCameraRenderSizeFromLayout();
         QueueNextFrame();
+    }
+
+    private void UpdateCameraRenderSizeFromLayout()
+    {
+        if (scene is null)
+            return;
+
+        var root = this.GetVisualRoot();
+        if (root is null)
+            return;
+
+        var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
+        if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
+            return;
+
+        scene.UpdateCameraRenderSize(pixelSize);
     }
 
     private bool IsCurrentLifecycle(long version) => running && lifecycleVersion == version;

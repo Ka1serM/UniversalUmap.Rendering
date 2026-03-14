@@ -147,6 +147,14 @@ public sealed class Scene : IDisposable, IScene
         });
     }
 
+    public void UpdateCameraRenderSize(PixelSize renderSize)
+    {
+        Synchronize(() =>
+        {
+            Camera.UpdateRenderSize(renderSize);
+        });
+    }
+
     public TextureAsset Add(TextureAsset texture)
     {
         var added = AddNamedAsset(
@@ -264,6 +272,7 @@ public sealed class Scene : IDisposable, IScene
 
             Environment.TextureIndex = texture.Index;
             Environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
+            Environment.MaxTextureLod = Math.Max(texture.Image.MipLevels - 1u, 0u);
         });
     }
 

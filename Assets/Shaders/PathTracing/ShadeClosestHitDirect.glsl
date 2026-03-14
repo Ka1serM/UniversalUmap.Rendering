@@ -88,6 +88,7 @@ void shadeClosestHit(
         roughness,
         swSpecular,
         emission,
+        sceneSettings.environment,
         payload.rngState);
     payload.attenuation = vec3(1.0);
     payload.nextDirection = worldRayDirection;

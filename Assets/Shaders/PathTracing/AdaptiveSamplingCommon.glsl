@@ -5,6 +5,7 @@ struct AdaptiveSamplingContext {
     vec4 prevColorData;
     vec4 prevAdaptiveData;
     float exposureScale;
+    bool hasHistory;
     bool adaptiveSamplingEnabled;
     int adaptiveMinSamples;
     float adaptiveTargetError;
@@ -21,15 +22,16 @@ struct AdaptiveSamplingFrameState {
 AdaptiveSamplingContext loadAdaptiveSamplingContext(ivec2 pixelCoord)
 {
     AdaptiveSamplingContext context;
-    context.prevColorData = imageLoad(outputColor, pixelCoord);
-    context.prevAdaptiveData = imageLoad(outputAdaptiveState, pixelCoord);
+    context.hasHistory = pushConstants.frame > 0;
+    context.prevColorData = context.hasHistory ? imageLoad(outputColor, pixelCoord) : vec4(0.0);
+    context.prevAdaptiveData = context.hasHistory ? imageLoad(outputAdaptiveState, pixelCoord) : vec4(0.0);
     context.exposureScale = exp2(sceneSettings.renderSettings.exposure);
-    context.adaptiveSamplingEnabled = sceneSettings.renderSettings.adaptiveSamplingEnabled != 0;
+    context.adaptiveSamplingEnabled = sceneSettings.renderSettings.adaptiveSamplingEnabled != 0 && !isInteractiveFrame();
     context.adaptiveMinSamples = max(1, sceneSettings.renderSettings.adaptiveMinSamples);
     context.adaptiveTargetError = max(sceneSettings.renderSettings.adaptiveTargetError, 0.0);
-    context.previousTotalSamples = pushConstants.frame > 0 ? context.prevAdaptiveData.z : 0.0;
+    context.previousTotalSamples = context.hasHistory ? context.prevAdaptiveData.z : 0.0;
     context.wasConverged = false;
-    if (pushConstants.frame > 0 && context.adaptiveSamplingEnabled && context.previousTotalSamples >= float(context.adaptiveMinSamples)) {
+    if (context.hasHistory && context.adaptiveSamplingEnabled && context.previousTotalSamples >= float(context.adaptiveMinSamples)) {
         float historyVariance = context.previousTotalSamples > 1.0
             ? context.prevAdaptiveData.y / max(context.previousTotalSamples - 1.0, 1.0)
             : 0.0;
@@ -60,6 +62,8 @@ void updateAdaptiveSamplingState(
     inout AdaptiveSamplingFrameState state)
 {
     state.samplesTaken++;
+    if (!context.adaptiveSamplingEnabled)
+        return;
 
     float sampleLuminance = luminance(sampleColor);
     float sampleMetric = log2(1.0 + sampleLuminance * context.exposureScale);
@@ -131,16 +135,9 @@ void finalizeAdaptiveSampling(
 
     float historySamples = context.previousTotalSamples;
     float totalSamples = historySamples + newSamplesF;
-    float combinedMetricMean = combineAdaptiveMean(context.prevAdaptiveData.x, historySamples, frameState.metricMean, frameState.samplesTaken);
-    float combinedMetricM2 = combineAdaptiveM2(context.prevAdaptiveData.x, context.prevAdaptiveData.y, historySamples, frameState.metricMean, frameState.metricM2, frameState.samplesTaken);
-    float combinedRelativeError = computeAdaptiveRelativeError(combinedMetricMean, combinedMetricM2, totalSamples);
-    float converged = context.adaptiveSamplingEnabled &&
-                      totalSamples >= float(context.adaptiveMinSamples) &&
-                      combinedRelativeError <= context.adaptiveTargetError ? 1.0 : 0.0;
 
     vec3 prevColorPremult = context.prevColorData.rgb * context.prevColorData.a * historySamples;
     float prevAlpha = context.prevColorData.a;
-
     vec3 newColorWithExposure = newColor * context.exposureScale;
     vec3 newColorPremult = newColorWithExposure * newAlpha;
 
@@ -152,6 +149,19 @@ void finalizeAdaptiveSampling(
         : 0.0;
 
     vec3 finalColor = (finalAlpha > 0.0) ? finalColorPremult / finalAlpha : vec3(0.0);
+
+    if (!context.adaptiveSamplingEnabled) {
+        finalColorData = vec4(finalColor, finalAlpha);
+        finalAdaptiveData = vec4(0.0, 0.0, totalSamples, 0.0);
+        return;
+    }
+
+    float combinedMetricMean = combineAdaptiveMean(context.prevAdaptiveData.x, historySamples, frameState.metricMean, frameState.samplesTaken);
+    float combinedMetricM2 = combineAdaptiveM2(context.prevAdaptiveData.x, context.prevAdaptiveData.y, historySamples, frameState.metricMean, frameState.metricM2, frameState.samplesTaken);
+    float combinedRelativeError = computeAdaptiveRelativeError(combinedMetricMean, combinedMetricM2, totalSamples);
+    float converged = context.adaptiveSamplingEnabled &&
+                      totalSamples >= float(context.adaptiveMinSamples) &&
+                      combinedRelativeError <= context.adaptiveTargetError ? 1.0 : 0.0;
     finalColorData = vec4(finalColor, finalAlpha);
     finalAdaptiveData = vec4(combinedMetricMean, combinedMetricM2, totalSamples, converged);
 }

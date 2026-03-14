@@ -1,6 +1,7 @@
 #ifndef RAY_GENERATION_GLSL
 #define RAY_GENERATION_GLSL
 
+#include "RenderPolicyCommon.glsl"
 #include "PrimaryRayCommon.glsl"
 #include "AdaptiveSamplingCommon.glsl"
 #include "PayloadUtils.glsl"
@@ -20,7 +21,12 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     vec3 temporalReference = pushConstants.frame > 0
         ? adaptiveContext.prevColorData.rgb / max(adaptiveContext.exposureScale, EPSILON)
         : vec3(0.0);
-    int russianRouletteStartBounce = max(1, sceneSettings.renderSettings.russianRouletteStartBounce);
+    int russianRouletteStartBounce = effectiveRussianRouletteStartBounce();
+    int maxBounces = effectiveMaxBounceCount();
+    int sampleCount = effectivePrimarySampleCount();
+    bool adaptiveEnabled = adaptiveContext.adaptiveSamplingEnabled;
+    bool canReuseStablePrimary = isInteractiveFrame() || (sceneSettings.camera.aperture <= 0.0);
+    Payload stablePrimaryPayload;
 
     if (shouldSkipAdaptiveSampling(adaptiveContext)) {
         return;
@@ -33,53 +39,60 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     bool stableHit = false;
     AdaptiveSamplingFrameState adaptiveFrameState = createAdaptiveSamplingFrameState();
 
-    for (int sampleIndex = 0; sampleIndex < sceneSettings.renderSettings.samples; ++sampleIndex) {
+    for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
         if (sampleIndex == 0) {
             SamplerState stableSamplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
             vec3 stableRayOrigin, stableRayDirection;
             generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, stableSamplerState, true, false, stableRayOrigin, stableRayDirection);
 
-            initializePayload(payload, rngState, 0u);
+            initializePayload(stablePrimaryPayload, rngState, 0u);
 
             #ifdef USE_COMPUTE
-                traceRayCompute(stableRayOrigin, stableRayDirection, 0.001, 1000.0, payload);
+                traceRayCompute(stableRayOrigin, stableRayDirection, 0.001, 1000.0, stablePrimaryPayload);
             #else
+                payload = stablePrimaryPayload;
                 traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, stableRayOrigin, 0.001, stableRayDirection, 1000.0, 0);
+                stablePrimaryPayload = payload;
             #endif
 
             // Selection relies on every mode keeping crypto/position from the stable primary hit.
-            imageStore(outputCrypto, pickPixelCoord, uvec4(payload.objectIndex, 0, 0, 0));
-            if (payload.objectIndex != INVALID_INSTANCE)
-                imageStore(outputPosition, pickPixelCoord, vec4(payload.position, 1.0));
+            imageStore(outputCrypto, pickPixelCoord, uvec4(stablePrimaryPayload.objectIndex, 0, 0, 0));
+            if (stablePrimaryPayload.objectIndex != INVALID_INSTANCE)
+                imageStore(outputPosition, pickPixelCoord, vec4(stablePrimaryPayload.position, 1.0));
             else
                 imageStore(outputPosition, pickPixelCoord, vec4(0));
 
-            stableHit = ((payload.flags & ENV_TRANSPARENT) == 0u);
-            stableAlbedo = stableHit ? payload.albedo : vec3(0.0);
-            stableNormal = stableHit ? payload.normal : vec3(0.0);
+            stableHit = ((stablePrimaryPayload.flags & ENV_TRANSPARENT) == 0u);
+            stableAlbedo = stableHit ? stablePrimaryPayload.albedo : vec3(0.0);
+            stableNormal = stableHit ? stablePrimaryPayload.normal : vec3(0.0);
         }
 
         SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.frame + sampleIndex);
         bool deterministicSample = (sampleIndex == 0);
+        bool useThinLens = !isInteractiveFrame();
 
         vec3 rayOrigin, rayDirection;
-        generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, deterministicSample, true, rayOrigin, rayDirection);
+        generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, deterministicSample, useThinLens, rayOrigin, rayDirection);
 
         vec3 throughput = vec3(1.0);
         vec3 sampleRadiance = vec3(0.0);
         int diffuseCount = 0;
         int specularCount = 0;
         int transmissionCount = 0;
-        int maxBounces = max(sceneSettings.renderSettings.diffuseBounces, max(sceneSettings.renderSettings.specularBounces, sceneSettings.renderSettings.transmissionBounces));
 
         for (int bounce = 0; bounce < maxBounces; ++bounce) {
-            initializePayload(payload, rngState, uint(bounce));
+            bool reusePrimaryPayload = (sampleIndex == 0) && canReuseStablePrimary && (bounce == 0);
+            if (reusePrimaryPayload) {
+                payload = stablePrimaryPayload;
+            } else {
+                initializePayload(payload, rngState, uint(bounce));
 
-            #ifdef USE_COMPUTE
-                traceRayCompute(rayOrigin, rayDirection, 0.001, 1000.0, payload);
-            #else
-                traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, rayOrigin, 0.001, rayDirection, 1000.0, 0);
-            #endif
+                #ifdef USE_COMPUTE
+                    traceRayCompute(rayOrigin, rayDirection, 0.001, 1000.0, payload);
+                #else
+                    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, rayOrigin, 0.001, rayDirection, 1000.0, 0);
+                #endif
+            }
 
             rayOrigin = payload.position;
             rngState = payload.rngState;
@@ -137,7 +150,7 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
             transmissionCount);
         accumulatedColor += filteredRadiance;
         updateAdaptiveSamplingState(adaptiveContext, filteredRadiance, adaptiveFrameState);
-        if (shouldTerminateAdaptiveSampling(adaptiveContext, adaptiveFrameState))
+        if (adaptiveEnabled && shouldTerminateAdaptiveSampling(adaptiveContext, adaptiveFrameState))
             break;
     }
 
@@ -150,7 +163,6 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
     vec3 finalAlbedo = stableAlbedo;
     vec3 finalNormal = stableNormal;
 
-    // Store results
     imageStore(outputColor, pixelCoord, finalColorData);
     imageStore(outputAlbedo, pixelCoord, vec4(finalAlbedo, 1.0));
     imageStore(outputNormal, pixelCoord, vec4(finalNormal, 0.0));

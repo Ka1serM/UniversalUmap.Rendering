@@ -692,6 +692,9 @@ public sealed class Context : IDisposable
                 var commandBuffer = usedCommandBuffers[i];
                 try
                 {
+                    if (commandBuffer.IsExternallyTracked)
+                        continue;
+
                     if (!waitForCompletion && !commandBuffer.IsExecutionComplete())
                         continue;
 
@@ -765,6 +768,7 @@ public sealed class Context : IDisposable
         private List<IDisposable>? retainedResources;
         private bool started;
         private bool ended;
+        private int externalReferenceCount;
 
         internal unsafe CommandBuffer(Context owner)
         {
@@ -784,6 +788,7 @@ public sealed class Context : IDisposable
         internal Context Context { get; }
         public Silk.NET.Vulkan.CommandBuffer InternalHandle { get; }
         internal Fence Fence { get; }
+        internal bool IsExternallyTracked => externalReferenceCount > 0;
 
         public IntPtr Handle => InternalHandle.Handle;
 
@@ -814,6 +819,19 @@ public sealed class Context : IDisposable
         {
             retainedResources ??= new List<IDisposable>(2);
             retainedResources.Add(resource);
+        }
+
+        internal void AddExternalReference()
+        {
+            externalReferenceCount++;
+        }
+
+        internal void ReleaseExternalReference()
+        {
+            if (externalReferenceCount == 0)
+                throw new InvalidOperationException("Command buffer external reference count is already zero.");
+
+            externalReferenceCount--;
         }
 
         internal bool IsExecutionComplete()

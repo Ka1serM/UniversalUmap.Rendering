@@ -33,7 +33,7 @@ void main() {
 
    vec3 worldPosition = (gl_ObjectToWorldEXT * vec4(localPosition, 1.0)).xyz;
    vec3 worldShadowPosition = (gl_ObjectToWorldEXT * vec4(localShadowPosition, 1.0)).xyz;
-   mat3 normalMatrix = transpose(inverse(mat3(gl_ObjectToWorldEXT)));
+   mat3 normalMatrix = transpose(mat3(gl_WorldToObjectEXT));
 
    vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
    vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);

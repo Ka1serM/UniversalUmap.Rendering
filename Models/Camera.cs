@@ -170,6 +170,12 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         UpdateData(renderSize);
     }
 
+    public void UpdateRenderSize(PixelSize renderSize)
+    {
+        lastRenderSize = renderSize;
+        UpdateData(renderSize);
+    }
+
     internal static bool IsDataEquivalent(in CameraDataGpu a, in CameraDataGpu b)
     {
         var epsilonSq = DataEpsilon * DataEpsilon;
@@ -197,11 +203,11 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var next = data;
 
         next.Position = position;
-        next.Aperture = Aperture;
+        next.Aperture = Aperture > 0f ? (FocalLengthMm / Aperture) * 0.5f * 0.001f : 0f;
         next.Direction = direction;
         next.FocusDistance = FocusDistance;
         next.Horizontal = right * (FixedSensorWidthMm * 0.001f);
-        next.FocalLength = FocalLengthMm;
+        next.FocalLength = FocalLengthMm * 0.001f;
         next.Vertical = up * (sensorHeightMm * 0.001f);
         next.BokehBias = BokehBias;
 

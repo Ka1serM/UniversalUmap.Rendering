@@ -57,7 +57,6 @@
                   Arguments="--target-env=vulkan1.3" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/MissDirect.glsl"
                   Arguments="--target-env=vulkan1.3" />
-
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl"
                   Arguments="--target-env=vulkan1.3" />
 
@@ -67,7 +66,6 @@
                   Arguments="-DUSE_COMPUTE=1" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracerDirect.comp"
                   Arguments="-DUSE_COMPUTE=1" />
-
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/OverlayComposite.comp" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/FullScreenTriVS.glsl"

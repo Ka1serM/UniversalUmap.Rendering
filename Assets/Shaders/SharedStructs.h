@@ -103,14 +103,20 @@ struct EnvironmentDataGpu
 {
     int textureIndex;
     int cdfTextureIndex;
-    float rotation;
-    float visibleExposure;
-    float lightingExposure;
+    float rotationSin;
+    float rotationCos;
+    float visibleExposureScale;
+    float lightingExposureScale;
+    float maxTextureLod;
     int visible;
     vec3 directionalDirection;
     float directionalIntensity;
+    float rotation;
+    float visibleExposure;
+    float lightingExposure;
     int _pad0;
     int _pad1;
+    int _pad2;
 };
 
 struct CameraDataGpu

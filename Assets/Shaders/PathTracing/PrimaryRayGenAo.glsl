@@ -1,6 +1,7 @@
 #ifndef PRIMARY_RAY_GEN_AO_GLSL
 #define PRIMARY_RAY_GEN_AO_GLSL
 
+#include "RenderPolicyCommon.glsl"
 #include "PrimaryRayCommon.glsl"
 #include "AdaptiveSamplingCommon.glsl"
 #include "PayloadUtils.glsl"
@@ -17,13 +18,14 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
     uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.frame * 16777619));
     uint rngState = seed.x;
     AdaptiveSamplingContext adaptiveContext = loadAdaptiveSamplingContext(pixelCoord);
+    bool adaptiveEnabled = adaptiveContext.adaptiveSamplingEnabled;
 
     if (shouldSkipAdaptiveSampling(adaptiveContext))
         return;
 
     SamplerState samplerState = initSamplerState(pixelCoord, pushConstants.frame);
     vec3 rayOrigin, rayDirection;
-    generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, true, false, rayOrigin, rayDirection);
+    generatePrimaryRay(pixelCoord, screenSize, sceneSettings.camera, samplerState, true, !isInteractiveFrame(), rayOrigin, rayDirection);
 
     initializeAoPayload(payload, rngState);
 
@@ -40,7 +42,10 @@ void primaryRayGenAo(ivec2 pixelCoord, ivec2 screenSize)
         imageStore(outputPosition, pickPixelCoord, vec4(0));
 
     AdaptiveSamplingFrameState adaptiveFrameState = createAdaptiveSamplingFrameState();
-    updateAdaptiveSamplingState(adaptiveContext, payload.emission, adaptiveFrameState);
+    if (adaptiveEnabled)
+        updateAdaptiveSamplingState(adaptiveContext, payload.emission, adaptiveFrameState);
+    else
+        adaptiveFrameState.samplesTaken = 1;
 
     float newAlpha = float((payload.flags & ENV_TRANSPARENT) == 0u);
     vec4 finalColorData;

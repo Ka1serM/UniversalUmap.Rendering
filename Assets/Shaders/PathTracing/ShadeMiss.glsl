@@ -16,13 +16,10 @@ vec3 getDirectionalLightDirection(in EnvironmentDataGpu environmentData) {
     return d * inversesqrt(l2);
 }
 
-vec2 directionToEnvironmentUv(in vec3 worldRayDirection, in float rotationDegrees) {
-    float radRotation = radians(rotationDegrees);
-    float s = sin(radRotation);
-    float c = cos(radRotation);
-    vec3 rotatedDir = normalize(worldRayDirection);
-    rotatedDir.x = worldRayDirection.x * c - worldRayDirection.z * s;
-    rotatedDir.z = worldRayDirection.x * s + worldRayDirection.z * c;
+vec2 directionToEnvironmentUv(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
+    vec3 rotatedDir = worldRayDirection;
+    rotatedDir.x = worldRayDirection.x * environmentData.rotationCos - worldRayDirection.z * environmentData.rotationSin;
+    rotatedDir.z = worldRayDirection.x * environmentData.rotationSin + worldRayDirection.z * environmentData.rotationCos;
 
     vec2 uv;
     uv.x = atan(rotatedDir.z, rotatedDir.x) / (2.0 * PI) + 0.5;
@@ -34,16 +31,16 @@ vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentDataGpu 
     if (environmentData.textureIndex == -1)
         return vec3(1.0);
 
-    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
-    return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exp2(exposureStops);
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
+    return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exposureStops;
 }
 
 vec3 sampleEnvironmentMapColorLod(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops, in float lod) {
     if (environmentData.textureIndex == -1)
         return vec3(1.0);
 
-    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
-    return textureLod(textureSamplers[environmentData.textureIndex], uv, max(lod, 0.0)).rgb * exp2(exposureStops);
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
+    return textureLod(textureSamplers[environmentData.textureIndex], uv, max(lod, 0.0)).rgb * exposureStops;
 }
 
 float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
@@ -54,7 +51,7 @@ float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in Environme
     if (envSize.x <= 0 || envSize.y <= 0)
         return 0.0;
 
-    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
     int x = clamp(int(floor(uv.x * float(envSize.x))), 0, envSize.x - 1);
     int y = clamp(int(floor(uv.y * float(envSize.y))), 0, envSize.y - 1);
     float uvPdf = max(texelFetch(textureSamplers[environmentData.cdfTextureIndex], ivec2(x, y), 0).a, 0.0);
@@ -68,12 +65,12 @@ float evaluateNeeLightPdfForDirection(in vec3 worldRayDirection, in EnvironmentD
 }
 
 vec3 evaluateEnvironmentRadiance(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
-    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.lightingExposure);
+    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.lightingExposureScale);
     return sampledColor;
 }
 
 vec3 evaluateEnvironmentVisibleRadiance(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
-    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.visibleExposure);
+    vec3 sampledColor = sampleEnvironmentMapColor(worldRayDirection, environmentData, environmentData.visibleExposureScale);
     return sampledColor;
 }
 

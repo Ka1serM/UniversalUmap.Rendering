@@ -29,7 +29,7 @@ void traceRayCompute(vec3 rayOrigin, vec3 rayDirection, float tMin, float tMax, 
 
         vec3 worldPos = (inst.transform * vec4(localPos, 1.0)).xyz;
         vec3 worldShadowPos = (inst.transform * vec4(localShadowPos, 1.0)).xyz;
-        mat3 normalMatrix = transpose(inverse(mat3(inst.transform)));
+        mat3 normalMatrix = transpose(mat3(inst.inverseTransform));
 
         vec3 geometricNormalWorld = normalize(normalMatrix * geometricNormalLocal);
         vec3 shadingNormalWorld = normalize(normalMatrix * shadingNormalLocal);

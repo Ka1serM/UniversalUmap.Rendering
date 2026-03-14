@@ -5,7 +5,7 @@ const float AoMaxDistance = 1.5;
 
 float estimateAmbientOcclusion(vec3 worldPosition, vec3 geometricNormal, inout uint rngState)
 {
-    int aoSampleCount = max(sceneSettings.renderSettings.samples, 1);
+    int aoSampleCount = effectiveAoSampleCount();
     float occluded = 0.0;
     for (int i = 0; i < aoSampleCount; ++i) {
         vec3 dir = sampleDiffuse(geometricNormal, rngState);
