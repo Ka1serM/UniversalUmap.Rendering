@@ -1,0 +1,188 @@
+#version 460
+
+#include "../SharedStructs.h"
+#include "../Tonemapping/agx.glsl"
+#include "../Tonemapping/aces.glsl"
+#include "../Tonemapping/filmic.glsl"
+#include "../Tonemapping/lottes.glsl"
+#include "../Tonemapping/neutral.glsl"
+#include "../Tonemapping/reinhard.glsl"
+#include "../Tonemapping/reinhard2.glsl"
+#include "../Tonemapping/uchimura.glsl"
+#include "../Tonemapping/uncharted2.glsl"
+#include "../Tonemapping/unreal.glsl"
+
+layout(local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D inputColorImage;
+layout(binding = 1, rgba8) readonly uniform image2D inputAlbedoImage;
+layout(binding = 2, rgba16f) readonly uniform image2D inputNormalImage;
+layout(binding = 3, r32ui) readonly uniform uimage2D inputCryptoImage;
+layout(binding = 4, rgba16f) readonly uniform image2D inputPositionImage;
+layout(binding = 5, rgba32f) readonly uniform image2D inputAdaptiveImage;
+layout(binding = 6, rgba8) writeonly uniform image2D outputImage;
+
+layout(push_constant) uniform OverlayPushConstants {
+    uint selectedInstanceId;
+    int visualizationMode;
+    float adaptiveTargetError;
+    int adaptiveMinSamples;
+} pc;
+
+const int BUFFER_VISUALIZATION_FINAL_COLOR = 0;
+const int BUFFER_VISUALIZATION_ALBEDO = 1;
+const int BUFFER_VISUALIZATION_NORMALS = 2;
+const int BUFFER_VISUALIZATION_POSITION = 3;
+const int BUFFER_VISUALIZATION_CRYPTO_ID = 4;
+const int BUFFER_VISUALIZATION_ADAPTIVE_THRESHOLD = 5;
+const float ADAPTIVE_EPSILON = 1e-6;
+
+vec3 applyTonemap(vec3 hdrColor) {
+    return uncharted2(hdrColor);
+}
+
+ivec2 toPickPixel(ivec2 outputPixel, ivec2 outputSize) {
+    return ivec2(outputPixel.x, (outputSize.y - 1) - outputPixel.y);
+}
+
+bool isSelectedHit(ivec2 outputPixel, ivec2 outputSize) {
+    if (outputPixel.x < 0 || outputPixel.y < 0 || outputPixel.x >= outputSize.x || outputPixel.y >= outputSize.y)
+        return false;
+
+    ivec2 pickPixel = toPickPixel(outputPixel, outputSize);
+    uint cryptoId = imageLoad(inputCryptoImage, pickPixel).x;
+    if (cryptoId != pc.selectedInstanceId)
+        return false;
+
+    vec4 packedPosition = imageLoad(inputPositionImage, pickPixel);
+    return packedPosition.w > 0.5;
+}
+
+vec3 adaptiveHeatmap(float progress)
+{
+    vec3 red = vec3(0.92, 0.16, 0.10);
+    vec3 orange = vec3(0.98, 0.60, 0.16);
+    vec3 green = vec3(0.15, 0.78, 0.27);
+    if (progress < 0.5)
+        return mix(red, orange, progress * 2.0);
+    return mix(orange, green, (progress - 0.5) * 2.0);
+}
+
+vec3 visualizeAdaptiveThreshold(ivec2 pixel)
+{
+    vec4 adaptiveState = imageLoad(inputAdaptiveImage, pixel);
+    float meanMetric = adaptiveState.x;
+    float metricM2 = adaptiveState.y;
+    float totalSamples = adaptiveState.z;
+    float converged = adaptiveState.w;
+
+    if (totalSamples < 0.5)
+        return vec3(0.0);
+
+    float variance = totalSamples > 1.0 ? metricM2 / max(totalSamples - 1.0, 1.0) : 0.0;
+    float standardError = sqrt(max(variance, 0.0) / max(totalSamples, 1.0));
+    float relativeError = standardError / max(abs(meanMetric), ADAPTIVE_EPSILON);
+    float thresholdProgress = pc.adaptiveTargetError <= 0.0
+        ? converged
+        : clamp(1.0 - (relativeError / max(pc.adaptiveTargetError, 0.0001)), 0.0, 1.0);
+
+    if (totalSamples < float(pc.adaptiveMinSamples))
+        thresholdProgress *= clamp(totalSamples / max(float(pc.adaptiveMinSamples), 1.0), 0.0, 1.0);
+
+    return adaptiveHeatmap(max(thresholdProgress, converged));
+}
+
+vec3 visualizeNormals(ivec2 pixel)
+{
+    return clamp(imageLoad(inputNormalImage, pixel).rgb, 0.0, 1.0);
+}
+
+vec3 visualizeAlbedo(ivec2 pixel)
+{
+    return clamp(imageLoad(inputAlbedoImage, pixel).rgb, 0.0, 1.0);
+}
+
+vec3 visualizePosition(ivec2 pixel, ivec2 outputSize)
+{
+    ivec2 pickPixel = toPickPixel(pixel, outputSize);
+    vec4 packedPosition = imageLoad(inputPositionImage, pickPixel);
+    if (packedPosition.w <= 0.5)
+        return vec3(0.0);
+
+    vec3 position = packedPosition.xyz;
+    vec3 compressed = position / (1.0 + abs(position));
+    return compressed * 0.5 + 0.5;
+}
+
+vec3 hashIdToColor(uint id)
+{
+    uint x = id * 1664525u + 1013904223u;
+    x ^= x >> 16;
+    vec3 color = vec3(
+        float((x >>  0) & 255u),
+        float((x >>  8) & 255u),
+        float((x >> 16) & 255u)) / 255.0;
+    return mix(color, vec3(1.0), 0.15);
+}
+
+vec3 visualizeCryptoId(ivec2 pixel, ivec2 outputSize)
+{
+    ivec2 pickPixel = toPickPixel(pixel, outputSize);
+    uint cryptoId = imageLoad(inputCryptoImage, pickPixel).x;
+    if (cryptoId == INVALID_INSTANCE)
+        return vec3(0.0);
+    return hashIdToColor(cryptoId);
+}
+
+vec3 visualizeBuffer(ivec2 pixel, ivec2 outputSize, vec4 hdrImage)
+{
+    if (pc.visualizationMode == BUFFER_VISUALIZATION_ALBEDO)
+        return visualizeAlbedo(pixel);
+    if (pc.visualizationMode == BUFFER_VISUALIZATION_NORMALS)
+        return visualizeNormals(pixel);
+    if (pc.visualizationMode == BUFFER_VISUALIZATION_POSITION)
+        return visualizePosition(pixel, outputSize);
+    if (pc.visualizationMode == BUFFER_VISUALIZATION_CRYPTO_ID)
+        return visualizeCryptoId(pixel, outputSize);
+    if (pc.visualizationMode == BUFFER_VISUALIZATION_ADAPTIVE_THRESHOLD)
+        return visualizeAdaptiveThreshold(pixel);
+    return applyTonemap(hdrImage.rgb);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = imageSize(outputImage);
+    if (pixel.x >= outputSize.x || pixel.y >= outputSize.y)
+        return;
+
+    vec4 hdrImage = imageLoad(inputColorImage, pixel);
+    vec3 color = visualizeBuffer(pixel, outputSize, hdrImage);
+
+    if (pc.selectedInstanceId == INVALID_INSTANCE) {
+        imageStore(outputImage, pixel, vec4(color, hdrImage.a));
+        return;
+    }
+
+    bool centerSelected = isSelectedHit(pixel, outputSize);
+    bool edge = false;
+    const int outlineRadius = 2;
+    for (int y = -outlineRadius; y <= outlineRadius && !edge; ++y) {
+        for (int x = -outlineRadius; x <= outlineRadius; ++x) {
+            if (x == 0 && y == 0)
+                continue;
+            bool neighborSelected = isSelectedHit(pixel + ivec2(x, y), outputSize);
+            if (neighborSelected != centerSelected) {
+                edge = true;
+                break;
+            }
+        }
+    }
+
+    if (edge) {
+        const vec3 outlineColor = vec3(1.0, 0.78, 0.12);
+        const float outlineStrength = 0.9;
+        color = mix(color, outlineColor, outlineStrength);
+    }
+
+    imageStore(outputImage, pixel, vec4(color, hdrImage.a));
+}

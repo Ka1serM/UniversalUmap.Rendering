@@ -1,0 +1,150 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:UniversalUmap.Rendering.Controls"
+             x:Class="UniversalUmap.Rendering.Controls.RenderModeSwitcher"
+             x:DataType="controls:RenderModeSwitcher">
+    <UserControl.Styles>
+        <Style Selector="controls|RenderModeSwitcher Border#Shell">
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="BoxShadow" Value="0 6 18 0 #55000000" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Border#ShellContent">
+            <Setter Property="Background" Value="#E51A1A1A" />
+            <Setter Property="CornerRadius" Value="10" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Button.modeSegment">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="#B8FFFFFF" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Padding="{TemplateBinding Padding}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Button.modeSegment:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
+            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected">
+            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
+            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
+            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected:pressed">
+            <Setter Property="Background" Value="{DynamicResource AppAccentPressedBrush}" />
+            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        </Style>
+
+        <Style Selector="controls|RenderModeSwitcher Border.segmentDivider">
+            <Setter Property="Width" Value="1" />
+            <Setter Property="Margin" Value="0,5" />
+            <Setter Property="Background" Value="#24FFFFFF" />
+        </Style>
+    </UserControl.Styles>
+
+    <Border x:Name="Shell">
+        <Border x:Name="ShellContent"
+                ClipToBounds="True">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto">
+                <Button x:Name="AoButton"
+                        Grid.Column="0"
+                        Classes="modeSegment"
+                        Click="AoButton_OnClick"
+                        ToolTip.Tip="Ambient Occlusion">
+                    <Viewbox Width="18" Height="18">
+                        <Canvas Width="18" Height="18">
+                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                                     Stroke="{Binding $parent[Button].Foreground}"
+                                     StrokeThickness="1.2" />
+                            <Path Data="M4.5,9 C5.2,5.4 8.4,3.4 11.8,3.4 C13.1,3.4 14.3,3.7 15.4,4.3"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1" />
+                            <Path Data="M3.9,10.5 C4.9,12.8 7.1,14.5 9.8,14.8"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1"
+                                  Opacity="0.85" />
+                        </Canvas>
+                    </Viewbox>
+                </Button>
+
+                <Border Grid.Column="1" Classes="segmentDivider" />
+
+                <Button x:Name="DirectLightingButton"
+                        Grid.Column="2"
+                        Classes="modeSegment"
+                        Click="DirectLightingButton_OnClick"
+                        ToolTip.Tip="Direct Lighting">
+                    <Viewbox Width="18" Height="18">
+                        <Canvas Width="18" Height="18">
+                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                                     Stroke="{Binding $parent[Button].Foreground}"
+                                     StrokeThickness="1.2" />
+                            <Path Data="M4.1,11.7 C6.6,11.1 7.7,9.3 8.6,7.7 C9.5,6.1 10.8,4.7 14.1,4.1"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1" />
+                            <Path Data="M3.8,8.7 C5.8,8.2 7.1,7.1 8.1,5.6"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1"
+                                  Opacity="0.8" />
+                            <Path Data="M8.8,13.6 C10.5,12.9 11.7,11.7 13.1,9.5 C13.7,8.5 14.5,7.8 15.3,7.4"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1"
+                                  Opacity="0.9" />
+                        </Canvas>
+                    </Viewbox>
+                </Button>
+
+                <Border Grid.Column="3" Classes="segmentDivider" />
+
+                <Button x:Name="PathTracingButton"
+                        Grid.Column="4"
+                        Classes="modeSegment"
+                        Click="PathTracingButton_OnClick"
+                        ToolTip.Tip="Path Tracing">
+                    <Viewbox Width="18" Height="18">
+                        <Canvas Width="18" Height="18">
+                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                                     Stroke="{Binding $parent[Button].Foreground}"
+                                     StrokeThickness="1.2" />
+                            <Path Data="M4.7,5.6 C6.7,3.9 9.7,3.3 12.3,4.1 C14.6,4.8 15.8,6.2 16,7.7"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1" />
+                            <Path Data="M5.1,12.7 C6.7,14 8.8,14.7 11.1,14.5 C13.8,14.2 15.8,12.4 16.2,9.8"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1"
+                                  Opacity="0.9" />
+                            <Path Data="M8.4,5.3 C9.7,6.4 10.6,7.6 11.1,9.1"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  StrokeThickness="1"
+                                  Opacity="0.75" />
+                        </Canvas>
+                    </Viewbox>
+                </Button>
+            </Grid>
+        </Border>
+    </Border>
+</UserControl>

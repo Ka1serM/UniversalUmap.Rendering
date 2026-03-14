@@ -38,6 +38,14 @@ vec3 sampleEnvironmentMapColor(in vec3 worldRayDirection, in EnvironmentDataGpu 
     return texture(textureSamplers[environmentData.textureIndex], uv).rgb * exp2(exposureStops);
 }
 
+vec3 sampleEnvironmentMapColorLod(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops, in float lod) {
+    if (environmentData.textureIndex == -1)
+        return vec3(1.0);
+
+    vec2 uv = directionToEnvironmentUv(worldRayDirection, environmentData.rotation);
+    return textureLod(textureSamplers[environmentData.textureIndex], uv, max(lod, 0.0)).rgb * exp2(exposureStops);
+}
+
 float evaluateEnvironmentPdfForDirection(in vec3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
         return 0.0;

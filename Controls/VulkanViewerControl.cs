@@ -453,8 +453,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             overlayCompositor.Record(
                 commandBuffer,
                 raytracer.OutputColor,
+                raytracer.OutputAlbedo,
+                raytracer.OutputNormal,
                 raytracer.OutputCrypto,
                 raytracer.OutputPosition,
+                raytracer.OutputAdaptiveState,
+                (int)scene.RenderSettings.BufferVisualization,
+                scene.RenderSettings.AdaptiveTargetError,
+                scene.RenderSettings.AdaptiveMinSamples,
                 selectedInstanceId,
                 target);
             context.SubmitCommandBuffer(commandBuffer);

@@ -2,6 +2,7 @@
 #define RAY_GENERATION_GLSL
 
 #include "PrimaryRayCommon.glsl"
+#include "AdaptiveSamplingCommon.glsl"
 #include "PayloadUtils.glsl"
 
 void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
@@ -15,17 +16,22 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
 
     uvec2 seed = pcg2d(uvec2(pixelCoord) ^ uvec2(pushConstants.frame * 16777619));
     uint rngState = seed.x;
-    vec4 prevColorData = imageLoad(outputColor, pixelCoord);
-    float exposureScale = exp2(sceneSettings.renderSettings.exposure);
+    AdaptiveSamplingContext adaptiveContext = loadAdaptiveSamplingContext(pixelCoord);
     vec3 temporalReference = pushConstants.frame > 0
-        ? prevColorData.rgb / max(exposureScale, EPSILON)
+        ? adaptiveContext.prevColorData.rgb / max(adaptiveContext.exposureScale, EPSILON)
         : vec3(0.0);
+    int russianRouletteStartBounce = max(1, sceneSettings.renderSettings.russianRouletteStartBounce);
+
+    if (shouldSkipAdaptiveSampling(adaptiveContext)) {
+        return;
+    }
 
     vec3 accumulatedColor = vec3(0.0);
     bool hitAnything = false;
     vec3 stableAlbedo = vec3(0.0);
     vec3 stableNormal = vec3(0.0);
     bool stableHit = false;
+    AdaptiveSamplingFrameState adaptiveFrameState = createAdaptiveSamplingFrameState();
 
     for (int sampleIndex = 0; sampleIndex < sceneSettings.renderSettings.samples; ++sampleIndex) {
         if (sampleIndex == 0) {
@@ -102,13 +108,15 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
             throughput *= payload.attenuation;
             rayDirection = payload.nextDirection;
 
-            //RUSSIAN ROULETTE TERMINATION
-            if (bounce > 2) { //start RR after a few bounces
-                float p_continue = clamp(luminance(throughput), 0.05, 1.0);
-                if (rand(payload.rngState) > p_continue) 
-                  payload.flags |= RAY_TERMINATED;
+            float russianRouletteSurvivalProbability = computeRussianRouletteSurvivalProbability(
+                throughput,
+                bounce,
+                russianRouletteStartBounce);
+            if (russianRouletteSurvivalProbability < 1.0) {
+                if (rand(payload.rngState) > russianRouletteSurvivalProbability)
+                    payload.flags |= RAY_TERMINATED;
                 else
-                  throughput /= p_continue; // keep estimator unbiased
+                    throughput /= russianRouletteSurvivalProbability;
             }
 
             if ((payload.flags & RAY_TERMINATED) != 0u)
@@ -120,42 +128,33 @@ void primaryRayGen(ivec2 pixelCoord, ivec2 screenSize) {
             runningReference = max(runningReference, accumulatedColor / float(sampleIndex));
 
         int bounceCount = diffuseCount + specularCount + transmissionCount;
-        accumulatedColor += suppressFireflies(
+        vec3 filteredRadiance = suppressFireflies(
             sampleRadiance,
             runningReference,
             bounceCount,
             diffuseCount,
             specularCount,
             transmissionCount);
+        accumulatedColor += filteredRadiance;
+        updateAdaptiveSamplingState(adaptiveContext, filteredRadiance, adaptiveFrameState);
+        if (shouldTerminateAdaptiveSampling(adaptiveContext, adaptiveFrameState))
+            break;
     }
 
-    // Average per-pixel over samples
-    vec3 newColor = accumulatedColor / float(sceneSettings.renderSettings.samples);
     float newAlpha = float(hitAnything);
-    float frameF = float(pushConstants.frame);
-
-    vec3 prevColorPremult = prevColorData.rgb * prevColorData.a;
-    float prevAlpha = prevColorData.a;
-
-    // Apply exposure
-    vec3 newColorWithExposure = newColor * exposureScale;
-    vec3 newColorPremult = newColorWithExposure * newAlpha;
-
-    // Accumulate premultiplied color
-    vec3 finalColorPremult = (prevColorPremult * frameF + newColorPremult) / (frameF + 1.0);
-    float finalAlpha = (prevAlpha * frameF + newAlpha) / (frameF + 1.0);
-
-    // Un-premultiply for storage
-    vec3 finalColor = (finalAlpha > 0.0) ? finalColorPremult / finalAlpha : vec3(0.0);
+    vec4 finalColorData;
+    vec4 finalAdaptiveData;
+    finalizeAdaptiveSampling(adaptiveContext, adaptiveFrameState, accumulatedColor, newAlpha, finalColorData, finalAdaptiveData);
 
     // Stable auxiliary buffers from deterministic sample 0 (no temporal accumulation).
     vec3 finalAlbedo = stableAlbedo;
     vec3 finalNormal = stableNormal;
 
     // Store results
-    imageStore(outputColor, pixelCoord, vec4(finalColor, finalAlpha));
+    imageStore(outputColor, pixelCoord, finalColorData);
     imageStore(outputAlbedo, pixelCoord, vec4(finalAlbedo, 1.0));
     imageStore(outputNormal, pixelCoord, vec4(finalNormal, 0.0));
+    imageStore(outputAdaptiveState, pixelCoord, finalAdaptiveData);
 }
 
 #endif // RAY_GENERATION_GLSL

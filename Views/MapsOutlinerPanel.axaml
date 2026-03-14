@@ -1,0 +1,71 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:icons="clr-namespace:FluentIcons.Avalonia.Fluent;assembly=FluentIcons.Avalonia.Fluent"
+             xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
+             xmlns:models="clr-namespace:UniversalUmap.Rendering.Scenes;assembly=UniversalUmap.Rendering"
+             mc:Ignorable="d"
+             x:Class="UniversalUmap.Rendering.Views.MapsOutlinerPanel"
+             x:DataType="viewModels:MapsOutlinerPanelViewModel">
+    <Grid>
+        <TreeView x:Name="OutlinerTreeView"
+                  ItemsSource="{Binding Items}"
+                  SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                  AutoScrollToSelectedItem="True"
+                  Background="Transparent">
+            <TreeView.ItemContainerTheme>
+                <ControlTheme TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                    <Setter Property="IsExpanded" Value="{ReflectionBinding IsExpanded}" />
+                    <Setter Property="IsSelected" Value="{ReflectionBinding IsSelected}" />
+                </ControlTheme>
+            </TreeView.ItemContainerTheme>
+            <TreeView.ItemTemplate>
+                <TreeDataTemplate x:DataType="models:SceneHierarchyNode"
+                                  ItemsSource="{Binding Children}">
+                    <Grid Margin="0,0,0,4" ColumnDefinitions="Auto,*,Auto">
+                        <Border Grid.Column="0"
+                                Width="24"
+                                Height="24"
+                                Margin="0,0,8,0"
+                                Background="#14FFFFFF"
+                                CornerRadius="6"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <icons:SymbolIcon HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              FontSize="13"
+                                              Symbol="{Binding Kind, Converter={StaticResource SceneNodeKindToSymbol}}" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="1">
+                            <TextBlock VerticalAlignment="Center"
+                                       Text="{Binding Name}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock VerticalAlignment="Center"
+                                       Opacity="0.55"
+                                       FontSize="11"
+                                       Text="{Binding Subtitle}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Border Grid.Column="2"
+                                IsVisible="{Binding HasInstanceCount}"
+                                Background="#1AFFFFFF"
+                                CornerRadius="8"
+                                Padding="6,2"
+                                VerticalAlignment="Center">
+                            <TextBlock FontSize="11"
+                                       Opacity="0.72"
+                                       Text="{Binding InstanceCountText}" />
+                        </Border>
+                    </Grid>
+                </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+        </TreeView>
+
+        <TextBlock IsVisible="{Binding IsEmpty}"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Opacity="0.45"
+                   FontSize="14"
+                   Text="Scene empty" />
+    </Grid>
+</UserControl>

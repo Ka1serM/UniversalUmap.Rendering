@@ -29,7 +29,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HorizontalFovDegrees))]
-    private float focalLengthMm = 50f;
+    private float focalLengthMm = 21f;
 
     [ObservableProperty] private float aperture;
     [ObservableProperty] private float focusDistance = 4f;

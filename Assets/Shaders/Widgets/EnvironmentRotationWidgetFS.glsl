@@ -40,7 +40,10 @@ void main()
     float envV = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
 
     vec3 env = vec3(0.34, 0.47, 0.72);
-    vec3 hdr = texture(environmentTexture, vec2(u, envV)).rgb;
+    // The environment widget is a small preview. Sampling mip 0 avoids the
+    // visible horizontal seam introduced by wrapped lat-long maps with a
+    // non-seam-aware generated mip chain.
+    vec3 hdr = textureLod(environmentTexture, vec2(u, envV), 0.0).rgb;
     env = hdr / (hdr + vec3(1.0));
     env = pow(env, vec3(1.0 / 2.2));
 

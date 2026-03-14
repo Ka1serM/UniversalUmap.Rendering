@@ -23,7 +23,7 @@ public sealed unsafe class ImageResource : IDisposable
     internal ImageView InternalView => imageView;
     internal DeviceMemory InternalMemory => imageMemory;
     public PixelSize Size { get; }
-    public uint MipLevels { get; } = 1;
+    public uint MipLevels { get; }
     public ulong MemorySize { get; }
     public ulong Handle => InternalHandle.Handle;
     public ulong ViewHandle => imageView.Handle;
@@ -36,10 +36,12 @@ public sealed unsafe class ImageResource : IDisposable
         uint format,
         PixelSize size,
         bool exportable,
-        IReadOnlyList<string> supportedHandleTypes)
+        IReadOnlyList<string> supportedHandleTypes,
+        uint mipLevels = 1)
     {
         this.context = context;
         Size = size;
+        MipLevels = Math.Max(1u, mipLevels);
         imageUsageFlags = ImageUsageFlags.ColorAttachmentBit
             | ImageUsageFlags.TransferDstBit
             | ImageUsageFlags.TransferSrcBit
@@ -201,6 +203,12 @@ public sealed unsafe class ImageResource : IDisposable
 
         currentLayout = destinationLayout;
         currentAccessFlags = destinationAccessFlags;
+    }
+
+    public void SetTrackedLayout(ImageLayout layout, AccessFlags accessFlags)
+    {
+        currentLayout = layout;
+        currentAccessFlags = accessFlags;
     }
 
     public unsafe void Dispose()

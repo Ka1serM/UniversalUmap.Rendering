@@ -23,6 +23,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     private ImageResource? normalImage;
     private ImageResource? cryptoImage;
     private ImageResource? positionImage;
+    private ImageResource? adaptiveStateImage;
     private GpuBuffer? sceneSettingsBuffer;
     private PixelSize renderImageSize;
 
@@ -60,8 +61,11 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     }
 
     public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
+    public ImageResource OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raytracer albedo image is not initialized");
+    public ImageResource OutputNormal => normalImage ?? throw new InvalidOperationException("Raytracer normal image is not initialized");
     public ImageResource OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raytracer crypto image is not initialized");
     public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
+    public ImageResource OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raytracer adaptive-state image is not initialized");
     public PixelSize RenderImageSize => renderImageSize;
 
     public void Record(ImageResource image, Context.CommandBuffer commandBuffer)
@@ -94,6 +98,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         normalImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         cryptoImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         positionImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        adaptiveStateImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
 
         ExecuteRaytracing(commandBuffer.InternalHandle, outputColorImage, CreatePushConstants(FrameIndex));
 
@@ -121,8 +126,9 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         var normalInfo = new DescriptorImageInfo(default, new ImageView(normalImage!.ViewHandle), ImageLayout.General);
         var cryptoInfo = new DescriptorImageInfo(default, new ImageView(cryptoImage!.ViewHandle), ImageLayout.General);
         var positionInfo = new DescriptorImageInfo(default, new ImageView(positionImage!.ViewHandle), ImageLayout.General);
+        var adaptiveStateInfo = new DescriptorImageInfo(default, new ImageView(adaptiveStateImage!.ViewHandle), ImageLayout.General);
 
-        var writes = stackalloc WriteDescriptorSet[5];
+        var writes = stackalloc WriteDescriptorSet[6];
         writes[0] = new WriteDescriptorSet
         {
             SType = StructureType.WriteDescriptorSet,
@@ -168,10 +174,19 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &positionInfo
         };
+        writes[5] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 6,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &adaptiveStateInfo
+        };
 
-        Context.Api.UpdateDescriptorSets(Context.Device, 5, writes, 0, null);
+        Context.Api.UpdateDescriptorSets(Context.Device, 6, writes, 0, null);
         lastBoundColorImageViewHandle = outputColorImage.ViewHandle;
-        Log.Information("Updated output image bindings (color/albedo/normal/crypto/position).");
+        Log.Information("Updated output image bindings (color/albedo/normal/crypto/position/adaptive-state).");
     }
 
     private bool UpdateSceneSettingsBinding()
@@ -190,7 +205,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = GetDescriptorSet(),
-            DstBinding = 7,
+            DstBinding = 8,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageBuffer,
             PBufferInfo = &settingsInfo
@@ -245,7 +260,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = GetDescriptorSet(),
-                DstBinding = 8,
+                DstBinding = 9,
                 DescriptorCount = (uint)descriptors.Length,
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 PImageInfo = pDescriptors
@@ -267,6 +282,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         normalImage?.Dispose();
         cryptoImage?.Dispose();
         positionImage?.Dispose();
+        adaptiveStateImage?.Dispose();
 
         var supportedHandles = GetSupportedHandleTypes();
         outputColorImage = new ImageResource(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
@@ -274,6 +290,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         normalImage = new ImageResource(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
         cryptoImage = new ImageResource(Context, (uint)Format.R32Uint, size, false, supportedHandles);
         positionImage = new ImageResource(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
+        adaptiveStateImage = new ImageResource(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
         renderImageSize = size;
         lastBoundColorImageViewHandle = 0;
         FrameIndex = 0;
@@ -292,6 +309,8 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         cryptoImage = null;
         positionImage?.Dispose();
         positionImage = null;
+        adaptiveStateImage?.Dispose();
+        adaptiveStateImage = null;
         renderImageSize = default;
         lastBoundColorImageViewHandle = 0;
     }

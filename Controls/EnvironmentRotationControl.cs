@@ -266,7 +266,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         EnsureDescriptorResources(context);
         shaderProgram = new VulkanRasterShaderProgram(
             context,
-            "SunDirectionWidgetVS.spv",
+            "FullScreenTriVS.spv",
             "EnvironmentRotationWidgetFS.spv",
             PrimitiveTopology.TriangleList,
             ShaderStageFlags.FragmentBit,

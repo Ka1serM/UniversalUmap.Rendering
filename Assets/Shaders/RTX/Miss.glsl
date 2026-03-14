@@ -6,20 +6,4 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : enable
 
-#include "../SharedStructs.h"
-#include "../Common.glsl"
-#include "../PathTracing/ShadeMiss.glsl"
-
-// Payload and Bindings
-layout(location = 0) rayPayloadInEXT Payload payload;
-
-// Push Constants
-layout (push_constant, scalar) uniform PushConstants {
-    PushDataGpu pushConstants;
-};
-
-
-void main()
-{
-    shadeMiss(gl_WorldRayDirectionEXT, sceneSettings.environment, sceneSettings.renderSettings, payload);
-}
+#include "MissPathTracing.glsl"

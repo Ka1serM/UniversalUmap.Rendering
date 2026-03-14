@@ -34,11 +34,13 @@ public sealed unsafe class TextureAsset : IDisposable
         ReadOnlySpan<byte> pixelBytes,
         uint width,
         uint height,
-        Format format)
+        Format format,
+        bool generateMipmaps = false)
     {
         this.context = context;
         Name = name;
         SourcePath = sourcePath;
+        var mipLevels = generateMipmaps ? CalculateMipLevels(width, height) : 1u;
 
         var staging = new GpuBuffer(
             context,
@@ -52,7 +54,8 @@ public sealed unsafe class TextureAsset : IDisposable
             (uint)format,
             new PixelSize((int)width, (int)height),
             exportable: false,
-            supportedHandleTypes: Array.Empty<string>());
+            supportedHandleTypes: Array.Empty<string>(),
+            mipLevels: mipLevels);
 
         var samplerInfo = new SamplerCreateInfo
         {
@@ -63,7 +66,9 @@ public sealed unsafe class TextureAsset : IDisposable
             AddressModeU = SamplerAddressMode.Repeat,
             AddressModeV = SamplerAddressMode.Repeat,
             AddressModeW = SamplerAddressMode.Repeat,
-            MaxAnisotropy = 1f
+            MaxAnisotropy = 1f,
+            MinLod = 0f,
+            MaxLod = mipLevels - 1
         };
         context.Api.CreateSampler(context.Device, in samplerInfo, default, out var sampler).ThrowOnError();
         Sampler = sampler;
@@ -92,10 +97,17 @@ public sealed unsafe class TextureAsset : IDisposable
             1,
             in copy);
 
-        Image.TransitionLayout(
-            commandBuffer.InternalHandle,
-            ImageLayout.ShaderReadOnlyOptimal,
-            AccessFlags.ShaderReadBit);
+        if (generateMipmaps && mipLevels > 1)
+        {
+            GenerateMipmaps(commandBuffer.InternalHandle, width, height, mipLevels);
+        }
+        else
+        {
+            Image.TransitionLayout(
+                commandBuffer.InternalHandle,
+                ImageLayout.ShaderReadOnlyOptimal,
+                AccessFlags.ShaderReadBit);
+        }
         context.RetainForExecution(commandBuffer, staging);
         context.SubmitAndWait(commandBuffer);
         Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
@@ -252,7 +264,8 @@ public sealed unsafe class TextureAsset : IDisposable
             hdrBytes,
             (uint)width,
             (uint)height,
-            Format.R32G32B32A32Sfloat);
+            Format.R32G32B32A32Sfloat,
+            generateMipmaps: true);
 
         var cdfPixels = BuildEnvironmentCdfTexture(rgba32f, width, height);
         var cdfBytes = MemoryMarshal.AsBytes(cdfPixels.AsSpan()).ToArray();
@@ -347,6 +360,122 @@ public sealed unsafe class TextureAsset : IDisposable
         }
 
         return outPixels;
+    }
+
+    private static uint CalculateMipLevels(uint width, uint height)
+    {
+        var maxDimension = Math.Max(width, height);
+        return (uint)MathF.Floor(MathF.Log2(maxDimension)) + 1u;
+    }
+
+    private void GenerateMipmaps(CommandBuffer commandBuffer, uint width, uint height, uint mipLevels)
+    {
+        var api = context.Api;
+        var mipWidth = (int)width;
+        var mipHeight = (int)height;
+
+        for (uint level = 1; level < mipLevels; level++)
+        {
+            var previousLevel = level - 1;
+
+            TransitionMipLevel(
+                api,
+                commandBuffer,
+                previousLevel,
+                ImageLayout.TransferDstOptimal,
+                AccessFlags.TransferWriteBit,
+                ImageLayout.TransferSrcOptimal,
+                AccessFlags.TransferReadBit);
+
+            TransitionMipLevel(
+                api,
+                commandBuffer,
+                level,
+                ImageLayout.Undefined,
+                AccessFlags.None,
+                ImageLayout.TransferDstOptimal,
+                AccessFlags.TransferWriteBit);
+
+            var nextWidth = Math.Max(1, mipWidth / 2);
+            var nextHeight = Math.Max(1, mipHeight / 2);
+            var blit = new ImageBlit
+            {
+                SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, previousLevel, 0, 1),
+                DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, level, 0, 1)
+            };
+            blit.SrcOffsets.Element0 = new Offset3D(0, 0, 0);
+            blit.SrcOffsets.Element1 = new Offset3D(mipWidth, mipHeight, 1);
+            blit.DstOffsets.Element0 = new Offset3D(0, 0, 0);
+            blit.DstOffsets.Element1 = new Offset3D(nextWidth, nextHeight, 1);
+
+            api.CmdBlitImage(
+                commandBuffer,
+                Image.InternalHandle,
+                ImageLayout.TransferSrcOptimal,
+                Image.InternalHandle,
+                ImageLayout.TransferDstOptimal,
+                1,
+                in blit,
+                Filter.Linear);
+
+            TransitionMipLevel(
+                api,
+                commandBuffer,
+                previousLevel,
+                ImageLayout.TransferSrcOptimal,
+                AccessFlags.TransferReadBit,
+                ImageLayout.ShaderReadOnlyOptimal,
+                AccessFlags.ShaderReadBit);
+
+            mipWidth = nextWidth;
+            mipHeight = nextHeight;
+        }
+
+        TransitionMipLevel(
+            api,
+            commandBuffer,
+            mipLevels - 1,
+            ImageLayout.TransferDstOptimal,
+            AccessFlags.TransferWriteBit,
+            ImageLayout.ShaderReadOnlyOptimal,
+            AccessFlags.ShaderReadBit);
+
+        Image.SetTrackedLayout(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
+    }
+
+    private void TransitionMipLevel(
+        Vk api,
+        CommandBuffer commandBuffer,
+        uint mipLevel,
+        ImageLayout sourceLayout,
+        AccessFlags sourceAccessMask,
+        ImageLayout destinationLayout,
+        AccessFlags destinationAccessMask)
+    {
+        var barrier = new ImageMemoryBarrier
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            SrcAccessMask = sourceAccessMask,
+            DstAccessMask = destinationAccessMask,
+            OldLayout = sourceLayout,
+            NewLayout = destinationLayout,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = Image.InternalHandle,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, mipLevel, 1, 0, 1)
+        };
+
+        api.CmdPipelineBarrier(
+            commandBuffer,
+            PipelineStageFlags.AllCommandsBit,
+            PipelineStageFlags.AllCommandsBit,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            in barrier);
     }
 
     private static bool TryMapUnrealToVulkanFormat(EPixelFormat format, out Format vkFormat)

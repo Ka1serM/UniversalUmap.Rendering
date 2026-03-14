@@ -1,0 +1,89 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
+             mc:Ignorable="d"
+             x:Class="UniversalUmap.Rendering.Views.MapsRenderSettingsPanel"
+             x:DataType="viewModels:MapsRenderSettingsPanelViewModel">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel HorizontalAlignment="Stretch" Spacing="12">
+            <StackPanel Spacing="3">
+                <TextBlock Text="Mode" FontSize="12" Opacity="0.9" />
+                <ComboBox ItemsSource="{Binding RenderModes}"
+                          SelectedItem="{Binding Model.RenderMode, Mode=TwoWay}" />
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Visualize Buffer" FontSize="12" Opacity="0.9" />
+                <ComboBox ItemsSource="{Binding BufferVisualizationModes}"
+                          SelectedItem="{Binding Model.BufferVisualization, Mode=TwoWay}" />
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Samples Per Pixel" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="1" Maximum="64" TickFrequency="1" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.SamplesPerPixel, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.SamplesPerPixel, StringFormat={}{0:0}}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Path Depth" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="1" Maximum="16" TickFrequency="1" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.PathDepth, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.PathDepth, StringFormat={}{0:0}}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Exposure (Stops)" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="-10" Maximum="10" TickFrequency="0.25" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.Exposure, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.Exposure, StringFormat={}{0:0.00}}" />
+                </Grid>
+            </StackPanel>
+
+            <CheckBox Content="Adaptive Sampling" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.AdaptiveSamplingEnabled, Mode=TwoWay}" />
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Adaptive Min Samples" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="1" Maximum="32" TickFrequency="1" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.AdaptiveMinSamples, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.AdaptiveMinSamples, StringFormat={}{0:0}}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Adaptive Target Error" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="0.005" Maximum="0.1" TickFrequency="0.005" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.AdaptiveTargetError, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.AdaptiveTargetError, StringFormat={}{0:0.000}}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Russian Roulette Start" FontSize="12" Opacity="0.9" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <Slider Grid.Column="0" Minimum="1" Maximum="12" TickFrequency="1" HorizontalAlignment="Stretch"
+                            Value="{Binding Model.RussianRouletteStartBounce, Mode=TwoWay}" />
+                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
+                               Text="{Binding Model.RussianRouletteStartBounce, StringFormat={}{0:0}}" />
+                </Grid>
+            </StackPanel>
+
+            <CheckBox Content="Transparent Background" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.TransparentBackground, Mode=TwoWay}" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

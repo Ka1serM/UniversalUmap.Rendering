@@ -6,7 +6,12 @@ public partial class RenderSettings : ObservableObject
 {
     [ObservableProperty] private int samplesPerPixel = 1;
     [ObservableProperty] private int pathDepth = 4;
-    [ObservableProperty] private float exposure;
+    [ObservableProperty] private bool adaptiveSamplingEnabled = true;
+    [ObservableProperty] private int adaptiveMinSamples = 4;
+    [ObservableProperty] private float adaptiveTargetError = 0.03f;
+    [ObservableProperty] private int russianRouletteStartBounce = 3;
+    [ObservableProperty] private BufferVisualizationMode bufferVisualization = BufferVisualizationMode.FinalColor;
+    [ObservableProperty] private float exposure = 0f;
     [ObservableProperty] private bool transparentBackground;
     [ObservableProperty] private RenderMode renderMode = RenderMode.PathTracing;
 
@@ -16,6 +21,9 @@ public partial class RenderSettings : ObservableObject
     {
         var clampedSamples = SamplesPerPixel < 1 ? 1 : SamplesPerPixel;
         var clampedPathDepth = PathDepth < 1 ? 1 : PathDepth;
+        var clampedAdaptiveMinSamples = AdaptiveMinSamples < 1 ? 1 : AdaptiveMinSamples;
+        var clampedAdaptiveTargetError = AdaptiveTargetError < 0f ? 0f : AdaptiveTargetError;
+        var clampedRussianRouletteStartBounce = RussianRouletteStartBounce < 1 ? 1 : RussianRouletteStartBounce;
 
         return new RenderSettingsDataGpu
         {
@@ -23,6 +31,10 @@ public partial class RenderSettings : ObservableObject
             DiffuseBounces = clampedPathDepth,
             SpecularBounces = clampedPathDepth,
             TransmissionBounces = clampedPathDepth,
+            AdaptiveSamplingEnabled = AdaptiveSamplingEnabled ? 1 : 0,
+            AdaptiveMinSamples = clampedAdaptiveMinSamples,
+            AdaptiveTargetError = clampedAdaptiveTargetError,
+            RussianRouletteStartBounce = clampedRussianRouletteStartBounce,
             Exposure = Exposure,
             TransparentBackground = TransparentBackground ? 1 : 0,
             RenderMode = (int)RenderMode

@@ -28,6 +28,7 @@ public sealed class Scene : IDisposable, IScene
         SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
             ? meshInstances[SelectedInstanceIndex]
             : null;
+    public event Action<int>? SelectedInstanceChanged;
     public Camera Camera { get; }
     public EnvironmentSettings Environment { get; }
     public RenderSettings RenderSettings { get; }
@@ -202,6 +203,11 @@ public sealed class Scene : IDisposable, IScene
         return FindNamedAsset(name, meshAssetsByName);
     }
 
+    public int GetInstanceCount()
+    {
+        return Synchronize(() => meshInstances.Count);
+    }
+
     public TextureAsset? FindTexture(string name)
     {
         return FindNamedAsset(name, texturesByName);
@@ -229,21 +235,22 @@ public sealed class Scene : IDisposable, IScene
 
     public void SelectInstance(int instanceIndex)
     {
-        Synchronize(() =>
+        var selectedInstanceIndex = Synchronize(() =>
         {
-            if (instanceIndex < 0 || instanceIndex >= meshInstances.Count)
-            {
-                SelectedInstanceIndex = -1;
-                return;
-            }
+            if (!TrySetSelectedInstanceIndexUnsafe(instanceIndex))
+                return int.MinValue;
 
-            SelectedInstanceIndex = instanceIndex;
+            return SelectedInstanceIndex;
         });
+
+        if (selectedInstanceIndex != int.MinValue)
+            SelectedInstanceChanged?.Invoke(selectedInstanceIndex);
     }
 
     public void ClearSelection()
     {
-        Synchronize(() => SelectedInstanceIndex = -1);
+        if (Synchronize(() => TrySetSelectedInstanceIndexUnsafe(-1)))
+            SelectedInstanceChanged?.Invoke(-1);
     }
 
     public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null)
@@ -389,18 +396,28 @@ public sealed class Scene : IDisposable, IScene
     {
         var result = Synchronize(() =>
         {
-            if (instanceId == SharedShaderDefines.InvalidInstance || instanceId >= meshInstances.Count)
-            {
-                SelectedInstanceIndex = -1;
-                return ((MeshInstance?)null, false);
-            }
-
-            SelectedInstanceIndex = (int)instanceId;
-            return (meshInstances[SelectedInstanceIndex], true);
+            var selectedInstanceIndex = instanceId == SharedShaderDefines.InvalidInstance || instanceId >= meshInstances.Count
+                ? -1
+                : (int)instanceId;
+            var changedSelection = TrySetSelectedInstanceIndexUnsafe(selectedInstanceIndex);
+            var selectedInstance = selectedInstanceIndex >= 0 ? meshInstances[selectedInstanceIndex] : null;
+            return (selectedInstance, selectedInstanceIndex >= 0, changedSelection);
         });
 
         instance = result.Item1;
+        if (result.Item3)
+            SelectedInstanceChanged?.Invoke(result.Item2 ? (int)instanceId : -1);
         return result.Item2;
+    }
+
+    private bool TrySetSelectedInstanceIndexUnsafe(int instanceIndex)
+    {
+        var normalizedIndex = instanceIndex >= 0 && instanceIndex < meshInstances.Count ? instanceIndex : -1;
+        if (SelectedInstanceIndex == normalizedIndex)
+            return false;
+
+        SelectedInstanceIndex = normalizedIndex;
+        return true;
     }
 
     public void SetArcballPivot(Vector3 pivot)
@@ -551,6 +568,9 @@ public sealed class Scene : IDisposable, IScene
             SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
             return;
         }
+
+        if (e.PropertyName == nameof(RenderSettings.BufferVisualization))
+            return;
 
         SetDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }

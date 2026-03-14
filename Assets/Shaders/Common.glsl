@@ -62,6 +62,16 @@ float powerHeuristic(float pdfA, float pdfB) {
     return a2 / max(a2 + b2, EPSILON);
 }
 
+float computeRussianRouletteSurvivalProbability(vec3 throughput, int bounce, int startBounce)
+{
+    if (bounce < startBounce)
+        return 1.0;
+
+    float pathEnergy = max(throughput.r, max(throughput.g, throughput.b));
+    float depthPenalty = 1.0 / (1.0 + 0.12 * float(max(bounce - startBounce, 0)));
+    return clamp(pathEnergy * depthPenalty, 0.1, 0.95);
+}
+
 // Barycentric Helpers
 vec3 calculateBarycentric(vec3 attribs) {
     return vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);

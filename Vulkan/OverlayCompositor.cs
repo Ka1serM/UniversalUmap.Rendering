@@ -12,6 +12,9 @@ public sealed unsafe class OverlayCompositor : IDisposable
     private struct OverlayPushConstants
     {
         public uint SelectedInstanceId;
+        public int VisualizationMode;
+        public float AdaptiveTargetError;
+        public int AdaptiveMinSamples;
     }
 
     private readonly Context context;
@@ -21,8 +24,11 @@ public sealed unsafe class OverlayCompositor : IDisposable
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
     private ulong lastColorInputViewHandle;
+    private ulong lastAlbedoInputViewHandle;
+    private ulong lastNormalInputViewHandle;
     private ulong lastCryptoInputViewHandle;
     private ulong lastPositionInputViewHandle;
+    private ulong lastAdaptiveInputViewHandle;
     private ulong lastOutputViewHandle;
     private bool hasLoggedDispatch;
 
@@ -44,21 +50,24 @@ public sealed unsafe class OverlayCompositor : IDisposable
             context.Api.CreateShaderModule(context.Device, in shaderInfo, default, out computeModule).ThrowOnError();
         }
 
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[4];
+        var layoutBindings = stackalloc DescriptorSetLayoutBinding[7];
         layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
 
         var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 4,
+            BindingCount = 7,
             PBindings = layoutBindings
         };
         context.Api.CreateDescriptorSetLayout(context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var poolSize = new DescriptorPoolSize(DescriptorType.StorageImage, 4);
+        var poolSize = new DescriptorPoolSize(DescriptorType.StorageImage, 7);
         var descriptorPoolInfo = new DescriptorPoolCreateInfo
         {
             SType = StructureType.DescriptorPoolCreateInfo,
@@ -120,21 +129,36 @@ public sealed unsafe class OverlayCompositor : IDisposable
     public void Record(
         Context.CommandBuffer commandBuffer,
         ImageResource colorInputImage,
+        ImageResource albedoInputImage,
+        ImageResource normalInputImage,
         ImageResource cryptoInputImage,
         ImageResource positionInputImage,
+        ImageResource adaptiveInputImage,
+        int visualizationMode,
+        float adaptiveTargetError,
+        int adaptiveMinSamples,
         uint selectedInstanceId,
         ImageResource outputImage)
     {
-        UpdateBindings(colorInputImage, cryptoInputImage, positionInputImage, outputImage);
+        UpdateBindings(colorInputImage, albedoInputImage, normalInputImage, cryptoInputImage, positionInputImage, adaptiveInputImage, outputImage);
 
         colorInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        albedoInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        normalInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
         cryptoInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
         positionInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        adaptiveInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
         outputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderWriteBit);
 
         context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipeline);
         context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipelineLayout, 0, 1, in descriptorSet, 0, null);
-        var pushConstants = new OverlayPushConstants { SelectedInstanceId = selectedInstanceId };
+        var pushConstants = new OverlayPushConstants
+        {
+            SelectedInstanceId = selectedInstanceId,
+            VisualizationMode = visualizationMode,
+            AdaptiveTargetError = adaptiveTargetError,
+            AdaptiveMinSamples = adaptiveMinSamples
+        };
         context.Api.CmdPushConstants(
             commandBuffer.InternalHandle,
             pipelineLayout,
@@ -158,21 +182,30 @@ public sealed unsafe class OverlayCompositor : IDisposable
 
     private void UpdateBindings(
         ImageResource colorInputImage,
+        ImageResource albedoInputImage,
+        ImageResource normalInputImage,
         ImageResource cryptoInputImage,
         ImageResource positionInputImage,
+        ImageResource adaptiveInputImage,
         ImageResource outputImage)
     {
         if (lastColorInputViewHandle == colorInputImage.ViewHandle &&
+            lastAlbedoInputViewHandle == albedoInputImage.ViewHandle &&
+            lastNormalInputViewHandle == normalInputImage.ViewHandle &&
             lastCryptoInputViewHandle == cryptoInputImage.ViewHandle &&
             lastPositionInputViewHandle == positionInputImage.ViewHandle &&
+            lastAdaptiveInputViewHandle == adaptiveInputImage.ViewHandle &&
             lastOutputViewHandle == outputImage.ViewHandle)
             return;
 
         var colorInputInfo = new DescriptorImageInfo(default, new ImageView(colorInputImage.ViewHandle), ImageLayout.General);
+        var albedoInputInfo = new DescriptorImageInfo(default, new ImageView(albedoInputImage.ViewHandle), ImageLayout.General);
+        var normalInputInfo = new DescriptorImageInfo(default, new ImageView(normalInputImage.ViewHandle), ImageLayout.General);
         var cryptoInputInfo = new DescriptorImageInfo(default, new ImageView(cryptoInputImage.ViewHandle), ImageLayout.General);
         var positionInputInfo = new DescriptorImageInfo(default, new ImageView(positionInputImage.ViewHandle), ImageLayout.General);
+        var adaptiveInputInfo = new DescriptorImageInfo(default, new ImageView(adaptiveInputImage.ViewHandle), ImageLayout.General);
         var outputInfo = new DescriptorImageInfo(default, new ImageView(outputImage.ViewHandle), ImageLayout.General);
-        var writes = stackalloc WriteDescriptorSet[4];
+        var writes = stackalloc WriteDescriptorSet[7];
         writes[0] = new WriteDescriptorSet
         {
             SType = StructureType.WriteDescriptorSet,
@@ -189,7 +222,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
             DstBinding = 1,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &cryptoInputInfo
+            PImageInfo = &albedoInputInfo
         };
         writes[2] = new WriteDescriptorSet
         {
@@ -198,7 +231,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
             DstBinding = 2,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &positionInputInfo
+            PImageInfo = &normalInputInfo
         };
         writes[3] = new WriteDescriptorSet
         {
@@ -207,15 +240,45 @@ public sealed unsafe class OverlayCompositor : IDisposable
             DstBinding = 3,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &cryptoInputInfo
+        };
+        writes[4] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 4,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &positionInputInfo
+        };
+        writes[5] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 5,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &adaptiveInputInfo
+        };
+        writes[6] = new WriteDescriptorSet
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = descriptorSet,
+            DstBinding = 6,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &outputInfo
         };
 
-        context.Api.UpdateDescriptorSets(context.Device, 4, writes, 0, null);
+        context.Api.UpdateDescriptorSets(context.Device, 7, writes, 0, null);
         lastColorInputViewHandle = colorInputImage.ViewHandle;
+        lastAlbedoInputViewHandle = albedoInputImage.ViewHandle;
+        lastNormalInputViewHandle = normalInputImage.ViewHandle;
         lastCryptoInputViewHandle = cryptoInputImage.ViewHandle;
         lastPositionInputViewHandle = positionInputImage.ViewHandle;
+        lastAdaptiveInputViewHandle = adaptiveInputImage.ViewHandle;
         lastOutputViewHandle = outputImage.ViewHandle;
-        Log.Information("OverlayCompositor image bindings updated (color/crypto/position/output).");
+        Log.Information("OverlayCompositor image bindings updated (color/albedo/normal/crypto/position/adaptive/output).");
     }
 
     public void Dispose()

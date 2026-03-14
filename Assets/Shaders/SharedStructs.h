@@ -90,6 +90,10 @@ struct RenderSettingsDataGpu
     int diffuseBounces;
     int specularBounces;
     int transmissionBounces;
+    int adaptiveSamplingEnabled;
+    int adaptiveMinSamples;
+    float adaptiveTargetError;
+    int russianRouletteStartBounce;
     float exposure;
     int transparentBackground;
     int renderMode;

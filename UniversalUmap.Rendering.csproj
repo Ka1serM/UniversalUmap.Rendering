@@ -41,15 +41,21 @@
                   Arguments="--target-env=vulkan1.3" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGenerationAo.glsl"
                   Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/RayGenerationDirect.glsl"
+                  Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHit.glsl"
                   Arguments="--target-env=vulkan1.3" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHitAo.glsl"
                   Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ClosestHitDirect.glsl"
+                  Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/Miss.glsl"
                   Arguments="--target-env=vulkan1.3" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/MissAo.glsl"
+                  Arguments="--target-env=vulkan1.3" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/MissDirect.glsl"
                   Arguments="--target-env=vulkan1.3" />
 
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/RTX/ShadowMiss.glsl"
@@ -59,14 +65,16 @@
                   Arguments="-DUSE_COMPUTE=1" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracerAo.comp"
                   Arguments="-DUSE_COMPUTE=1" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compute/PathTracerDirect.comp"
+                  Arguments="-DUSE_COMPUTE=1" />
 
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/OverlayComposite.comp" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/OverlayComposite.comp" />
 
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/SunDirectionWidgetVS.glsl"
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/FullScreenTriVS.glsl"
                   Arguments="-fshader-stage=vert" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/SunDirectionWidgetFS.glsl"
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/SunDirectionWidgetFS.glsl"
                   Arguments="-fshader-stage=frag" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Tonemapping/EnvironmentRotationWidgetFS.glsl"
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/EnvironmentRotationWidgetFS.glsl"
                   Arguments="-fshader-stage=frag" />
   </ItemGroup>
 

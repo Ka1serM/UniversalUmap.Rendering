@@ -13,11 +13,14 @@ namespace UniversalUmap.Rendering.Controls;
 public sealed class PanViewGizmoControl : CapturingControlBase
 {
     private const float HoverScaleBoost = 0.06f;
-    private static readonly Color FillColor = Color.FromArgb(166, 58, 58, 58);
-    private static readonly Color HoverColor = Color.FromArgb(200, 72, 72, 72);
+    private static readonly Color FillColor = Color.FromArgb(196, 26, 26, 26);
+    private static readonly Color HoverFillColor = Color.FromArgb(214, 82, 82, 82);
+    private static readonly Color ActiveFillColor = Color.FromArgb(235, 104, 104, 104);
     private static readonly IBrush FillBrush = new SolidColorBrush(FillColor);
-    private static readonly IBrush HoverBrush = new SolidColorBrush(HoverColor);
-    private static readonly IBrush PressBrush = new SolidColorBrush(Color.FromArgb(220, 92, 92, 92));
+    private static readonly IBrush HoverBrush = new SolidColorBrush(HoverFillColor);
+    private static readonly IBrush ActiveBrush = new SolidColorBrush(ActiveFillColor);
+    private static readonly IBrush IconBrush = new SolidColorBrush(Color.FromArgb(245, 255, 255, 255));
+    private readonly SymbolIcon icon;
 
     private readonly Border chrome;
     private readonly ScaleTransform hoverScale = new(1, 1);
@@ -45,11 +48,12 @@ public sealed class PanViewGizmoControl : CapturingControlBase
         {
             CornerRadius = new CornerRadius(19),
             Background = FillBrush,
-            Child = new SymbolIcon
+            BorderThickness = new Thickness(0),
+            Child = icon = new SymbolIcon
             {
                 Symbol = Symbol.HandDraw,
                 FontSize = 19,
-                Foreground = Brushes.White,
+                Foreground = IconBrush,
                 HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
                 VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
             }
@@ -148,16 +152,17 @@ public sealed class PanViewGizmoControl : CapturingControlBase
     {
         if (IsCaptureActive)
         {
-            chrome.Background = PressBrush;
+            chrome.Background = ActiveBrush;
+            icon.Foreground = IconBrush;
             hoverScale.ScaleX = 1d + HoverScaleBoost;
             hoverScale.ScaleY = 1d + HoverScaleBoost;
             return;
         }
 
         chrome.Background = isHovering ? HoverBrush : FillBrush;
+        icon.Foreground = IconBrush;
         var s = 1d + (isHovering ? HoverScaleBoost : 0d);
         hoverScale.ScaleX = s;
         hoverScale.ScaleY = s;
     }
-
 }

@@ -6,18 +6,10 @@
 #extension GL_EXT_buffer_reference: require
 #extension GL_EXT_scalar_block_layout: enable
 
-#include "../SharedStructs.h"
-
-layout (push_constant, scalar) uniform PushConstants {
-    PushDataGpu pushConstants;
-};
-
-#include "../Bindings.glsl"
-#include "../Common.glsl"
-#include "../PathTracing/Intersection.glsl"
+#include "PathTracerEntryShared.glsl"
+#include "../PathTracing/IntersectionPathTracing.glsl"
 #include "../PathTracing/PrimaryRayGen.glsl"
 
-layout (local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE) in;
 void main() {
     const ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     const ivec2 screenSize = imageSize(outputColor);

@@ -15,6 +15,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline fullPathPipeline;
     private readonly Pipeline aoPipeline;
+    private readonly Pipeline directPipeline;
 
     private GpuBuffer instancesBuffer;
     private GpuBuffer meshBuffer;
@@ -24,31 +25,34 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     {
         var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("PathTracer.spv");
         var aoShaderBytes = EmbeddedAssets.ReadByFileName("PathTracerAo.spv");
+        var directShaderBytes = EmbeddedAssets.ReadByFileName("PathTracerDirect.spv");
         using var mainName = new ByteString("main");
 
         var fullPathModule = CreateShaderModule(fullPathShaderBytes);
         var aoModule = CreateShaderModule(aoShaderBytes);
+        var directModule = CreateShaderModule(directShaderBytes);
 
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[9];
+        var layoutBindings = stackalloc DescriptorSetLayoutBinding[10];
         layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[8] = new DescriptorSetLayoutBinding(8, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit);
+        layoutBindings[8] = new DescriptorSetLayoutBinding(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        layoutBindings[9] = new DescriptorSetLayoutBinding(9, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit);
 
-        var bindingFlags = stackalloc DescriptorBindingFlags[9];
-        bindingFlags[8] = DescriptorBindingFlags.PartiallyBoundBit |
+        var bindingFlags = stackalloc DescriptorBindingFlags[10];
+        bindingFlags[9] = DescriptorBindingFlags.PartiallyBoundBit |
                           DescriptorBindingFlags.VariableDescriptorCountBit |
                           DescriptorBindingFlags.UpdateAfterBindBit;
 
         var bindingFlagsInfo = new DescriptorSetLayoutBindingFlagsCreateInfo
         {
             SType = StructureType.DescriptorSetLayoutBindingFlagsCreateInfo,
-            BindingCount = 9,
+            BindingCount = 10,
             PBindingFlags = bindingFlags
         };
 
@@ -56,7 +60,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
             Flags = DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit,
-            BindingCount = 9,
+            BindingCount = 10,
             PBindings = layoutBindings,
             PNext = &bindingFlagsInfo
         };
@@ -64,7 +68,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
         var poolSizes = stackalloc DescriptorPoolSize[3];
         poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 3);
-        poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 5);
+        poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 6);
         poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, MaxTextures);
         var descriptorPoolInfo = new DescriptorPoolCreateInfo
         {
@@ -112,7 +116,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
         var fullPathPipelineLocal = CreateComputePipeline(fullPathModule, pipelineLayoutLocal, mainName);
         var aoPipelineLocal = CreateComputePipeline(aoModule, pipelineLayoutLocal, mainName);
+        var directPipelineLocal = CreateComputePipeline(directModule, pipelineLayoutLocal, mainName);
 
+        Context.Api.DestroyShaderModule(Context.Device, directModule, default);
         Context.Api.DestroyShaderModule(Context.Device, aoModule, default);
         Context.Api.DestroyShaderModule(Context.Device, fullPathModule, default);
 
@@ -135,6 +141,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         pipelineLayout = pipelineLayoutLocal;
         fullPathPipeline = fullPathPipelineLocal;
         aoPipeline = aoPipelineLocal;
+        directPipeline = directPipelineLocal;
         Log.Information("Compute raytracer pipelines and descriptors created.");
 
         var initCommandBuffer = Context.CreateCommandBuffer();
@@ -187,7 +194,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 6,
+            DstBinding = 7,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageBuffer,
             PBufferInfo = &meshInfo
@@ -200,8 +207,13 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants)
     {
-        var isAoMode = Scene.RenderMode != RenderMode.PathTracing;
-        var selectedPipeline = isAoMode ? aoPipeline : fullPathPipeline;
+        var selectedPipeline = Scene.RenderMode switch
+        {
+            RenderMode.AmbientOcclusion => aoPipeline,
+            RenderMode.DirectLighting => directPipeline,
+            RenderMode.PathTracing => fullPathPipeline,
+            _ => fullPathPipeline
+        };
         Context.Api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, selectedPipeline);
         Context.Api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, pipelineLayout, 0, 1, in descriptorSet, 0, null);
 
@@ -268,6 +280,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
         if (aoPipeline.Handle != default)
             Context.Api.DestroyPipeline(Context.Device, aoPipeline, default);
+        if (directPipeline.Handle != default)
+            Context.Api.DestroyPipeline(Context.Device, directPipeline, default);
         if (fullPathPipeline.Handle != default)
             Context.Api.DestroyPipeline(Context.Device, fullPathPipeline, default);
         if (pipelineLayout.Handle != default)
