@@ -9,7 +9,6 @@ namespace UniversalUmap.Rendering.Raytracing;
 
 internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 {
-    private readonly DescriptorPool descriptorPool;
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
@@ -23,9 +22,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     public ComputeRaytracer(Context context, Scene scene)
         : base(context, scene)
     {
-        var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("PathTracer.spv");
-        var aoShaderBytes = EmbeddedAssets.ReadByFileName("PathTracerAo.spv");
-        var directShaderBytes = EmbeddedAssets.ReadByFileName("PathTracerDirect.spv");
+        var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("PathTracingPipeline.spv");
+        var aoShaderBytes = EmbeddedAssets.ReadByFileName("AoPipeline.spv");
+        var directShaderBytes = EmbeddedAssets.ReadByFileName("DirectLightingPipeline.spv");
         using var mainName = new ByteString("main");
 
         var fullPathModule = CreateShaderModule(fullPathShaderBytes);
@@ -66,20 +65,6 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         };
         Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var poolSizes = stackalloc DescriptorPoolSize[3];
-        poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 3);
-        poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 6);
-        poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, MaxTextures);
-        var descriptorPoolInfo = new DescriptorPoolCreateInfo
-        {
-            SType = StructureType.DescriptorPoolCreateInfo,
-            Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit,
-            MaxSets = 1,
-            PoolSizeCount = 3,
-            PPoolSizes = poolSizes
-        };
-        Context.Api.CreateDescriptorPool(Context.Device, in descriptorPoolInfo, default, out var descriptorPoolLocal).ThrowOnError();
-
         var descriptorCount = MaxTextures;
         var variableCountInfo = new DescriptorSetVariableDescriptorCountAllocateInfo
         {
@@ -91,7 +76,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         var allocInfo = new DescriptorSetAllocateInfo
         {
             SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = descriptorPoolLocal,
+            DescriptorPool = Context.DescriptorPool,
             DescriptorSetCount = 1,
             PSetLayouts = &descriptorSetLayoutLocal,
             PNext = &variableCountInfo
@@ -136,7 +121,6 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             new byte[16]);
 
         descriptorSetLayout = descriptorSetLayoutLocal;
-        descriptorPool = descriptorPoolLocal;
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
         fullPathPipeline = fullPathPipelineLocal;
@@ -288,7 +272,5 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
         if (descriptorSetLayout.Handle != default)
             Context.Api.DestroyDescriptorSetLayout(Context.Device, descriptorSetLayout, default);
-        if (descriptorPool.Handle != default)
-            Context.Api.DestroyDescriptorPool(Context.Device, descriptorPool, default);
     }
 }

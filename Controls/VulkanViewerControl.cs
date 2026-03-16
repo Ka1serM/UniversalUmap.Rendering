@@ -15,6 +15,8 @@ using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Raytracing;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
+using AvaloniaCompositor = Avalonia.Rendering.Composition.Compositor;
+using VulkanCompositor = UniversalUmap.Rendering.Vulkan.Compositor;
 
 namespace UniversalUmap.Rendering.Controls;
 
@@ -23,7 +25,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private static readonly IBrush HitTestBrush = Brushes.Transparent;
 
     private CompositionSurfaceVisual? visual;
-    private Compositor? compositor;
     private Context? context;
     private VulkanSurface? surface;
 
@@ -40,7 +41,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private Scene? scene;
     private GpuRaytracer? raytracer;
     private GpuScenePicker? picker;
-    private OverlayCompositor? overlayCompositor;
+    private VulkanCompositor? vulkanCompositor;
+    private AvaloniaCompositor? avaloniaCompositor;
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
 
@@ -74,7 +76,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             QueueNextFrame();
         }
     }
-
 
     public VulkanViewerControl()
     {
@@ -251,14 +252,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 return;
 
             var selfVisual = ElementComposition.GetElementVisual(this)!;
-            compositor = selfVisual.Compositor;
-            var drawingSurface = compositor.CreateDrawingSurface();
-            visual = compositor.CreateSurfaceVisual();
+            avaloniaCompositor = selfVisual.Compositor;
+            var drawingSurface = avaloniaCompositor.CreateDrawingSurface();
+            visual = avaloniaCompositor.CreateSurfaceVisual();
             visual.Size = new(Bounds.Width, Bounds.Height);
             visual.Surface = drawingSurface;
             ElementComposition.SetElementChildVisual(this, visual);
 
-            var interop = await compositor.TryGetCompositionGpuInterop();
+            var interop = await avaloniaCompositor.TryGetCompositionGpuInterop();
             if (!IsCurrentLifecycle(version))
                 return;
             if (interop is null)
@@ -268,7 +269,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 return;
             }
 
-            context = await Context.AcquireAsync(compositor);
+            context = await Context.AcquireAsync(avaloniaCompositor);
             if (!IsCurrentLifecycle(version))
                 return;
             if (context is null)
@@ -305,7 +306,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         scene.TryLoadDefaultEnvironment();
         raytracer = GpuRaytracer.Create(context, scene);
         picker = new GpuScenePicker(scene, raytracer);
-        overlayCompositor = new OverlayCompositor(context);
+        vulkanCompositor = new VulkanCompositor(context);
     }
 
     private async void ReinitializeAfterDeviceLoss()
@@ -332,13 +333,13 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             scene.Synchronize(() =>
             {
                 scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
-                overlayCompositor?.Dispose();
+                vulkanCompositor?.Dispose();
                 raytracer?.Dispose();
                 scene.Dispose();
             });
         }
 
-        overlayCompositor = null;
+        vulkanCompositor = null;
         raytracer = null;
         picker = null;
         scene = null;
@@ -363,7 +364,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             ElementComposition.SetElementChildVisual(this, null);
 
         visual = null;
-        compositor = null;
+        avaloniaCompositor = null;
     }
 
     private static async Task DisposeSurfaceChainAsync(Task previousDisposeTask, VulkanSurface activeSurface)
@@ -386,7 +387,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             return;
 
         var root = this.GetVisualRoot();
-        if (root is null || visual is null || surface is null || context is null || scene is null || raytracer is null || overlayCompositor is null)
+        if (root is null || visual is null || surface is null || context is null || scene is null || raytracer is null || avaloniaCompositor is null)
             return;
 
         var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
@@ -431,7 +432,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private void RenderFrame(ImageResource target)
     {
-        if (scene is null || context is null || raytracer is null || overlayCompositor is null)
+        if (scene is null || context is null || raytracer is null || vulkanCompositor is null)
             return;
 
         var nowTicks = renderTimer.ElapsedTicks;
@@ -450,7 +451,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             var selectedInstanceId = scene.SelectedInstanceIndex >= 0
                 ? (uint)scene.SelectedInstanceIndex
                 : SharedShaderDefines.InvalidInstance;
-            overlayCompositor.Record(
+            vulkanCompositor.Record(
                 commandBuffer,
                 raytracer.OutputColor,
                 raytracer.OutputAlbedo,
@@ -462,18 +463,19 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 scene.RenderSettings.AdaptiveTargetError,
                 scene.RenderSettings.AdaptiveMinSamples,
                 selectedInstanceId,
-                target);
+                target,
+                scene.Camera.IsMoving);
             context.SubmitCommandBuffer(commandBuffer);
         });
     }
 
     private void QueueNextFrame()
     {
-        if (!running || !initialized || updateQueued || compositor is null || !IsVisible)
+        if (!running || !initialized || updateQueued || avaloniaCompositor is null || !IsVisible)
             return;
 
         updateQueued = true;
-        compositor.RequestCompositionUpdate(update);
+        avaloniaCompositor.RequestCompositionUpdate(update);
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)

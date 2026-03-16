@@ -8,6 +8,8 @@ public partial class EnvironmentSettings : ObservableObject
 {
     [ObservableProperty] private int textureIndex = -1;
     [ObservableProperty] private int cdfTextureIndex = -1;
+    [ObservableProperty] private int irradianceMapIndex = -1;
+    [ObservableProperty] private int radianceMapIndex = -1;
     [ObservableProperty] private float rotation;
     [ObservableProperty] private float visibleExposure = 1.5f;
     [ObservableProperty] private float lightingExposure = 1.5f;
@@ -24,6 +26,8 @@ public partial class EnvironmentSettings : ObservableObject
         {
             TextureIndex = TextureIndex,
             CdfTextureIndex = CdfTextureIndex,
+            IrradianceMapIndex = IrradianceMapIndex,
+            RadianceMapIndex = RadianceMapIndex,
             RotationSin = MathF.Sin(Rotation * (MathF.PI / 180f)),
             RotationCos = MathF.Cos(Rotation * (MathF.PI / 180f)),
             VisibleExposureScale = MathF.Pow(2f, VisibleExposure),

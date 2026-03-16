@@ -6,19 +6,19 @@ using UniversalUmap.Rendering.Core;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
-public sealed unsafe class OverlayCompositor : IDisposable
+public sealed unsafe class Compositor : IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]
-    private struct OverlayPushConstants
+    private struct CompositePushConstants
     {
         public uint SelectedInstanceId;
         public int VisualizationMode;
         public float AdaptiveTargetError;
         public int AdaptiveMinSamples;
+        public int IsMoving;
     }
 
     private readonly Context context;
-    private readonly DescriptorPool descriptorPool;
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
@@ -32,10 +32,10 @@ public sealed unsafe class OverlayCompositor : IDisposable
     private ulong lastOutputViewHandle;
     private bool hasLoggedDispatch;
 
-    public OverlayCompositor(Context context)
+    public Compositor(Context context)
     {
         this.context = context;
-        var shaderBytes = EmbeddedAssets.ReadByFileName("OverlayComposite.spv");
+        var shaderBytes = EmbeddedAssets.ReadByFileName("Compositor.spv");
         using var mainName = new ByteString("main");
 
         ShaderModule computeModule;
@@ -67,20 +67,10 @@ public sealed unsafe class OverlayCompositor : IDisposable
         };
         context.Api.CreateDescriptorSetLayout(context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var poolSize = new DescriptorPoolSize(DescriptorType.StorageImage, 7);
-        var descriptorPoolInfo = new DescriptorPoolCreateInfo
-        {
-            SType = StructureType.DescriptorPoolCreateInfo,
-            MaxSets = 1,
-            PoolSizeCount = 1,
-            PPoolSizes = &poolSize
-        };
-        context.Api.CreateDescriptorPool(context.Device, in descriptorPoolInfo, default, out var descriptorPoolLocal).ThrowOnError();
-
         var allocInfo = new DescriptorSetAllocateInfo
         {
             SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = descriptorPoolLocal,
+            DescriptorPool = context.DescriptorPool,
             DescriptorSetCount = 1,
             PSetLayouts = &descriptorSetLayoutLocal
         };
@@ -96,7 +86,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
         {
             StageFlags = ShaderStageFlags.ComputeBit,
             Offset = 0,
-            Size = (uint)sizeof(OverlayPushConstants)
+            Size = (uint)sizeof(CompositePushConstants)
         };
         pipelineLayoutInfo.PushConstantRangeCount = 1;
         pipelineLayoutInfo.PPushConstantRanges = &pushConstantRange;
@@ -119,11 +109,10 @@ public sealed unsafe class OverlayCompositor : IDisposable
         context.Api.DestroyShaderModule(context.Device, computeModule, default);
 
         descriptorSetLayout = descriptorSetLayoutLocal;
-        descriptorPool = descriptorPoolLocal;
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
         pipeline = pipelineLocal;
-        Log.Information("OverlayCompositor pipeline created.");
+        Log.Information("Compositor pipeline created.");
     }
 
     public void Record(
@@ -138,7 +127,8 @@ public sealed unsafe class OverlayCompositor : IDisposable
         float adaptiveTargetError,
         int adaptiveMinSamples,
         uint selectedInstanceId,
-        ImageResource outputImage)
+        ImageResource outputImage,
+        int isMoving)
     {
         UpdateBindings(colorInputImage, albedoInputImage, normalInputImage, cryptoInputImage, positionInputImage, adaptiveInputImage, outputImage);
 
@@ -152,19 +142,20 @@ public sealed unsafe class OverlayCompositor : IDisposable
 
         context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipeline);
         context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipelineLayout, 0, 1, in descriptorSet, 0, null);
-        var pushConstants = new OverlayPushConstants
+        var pushConstants = new CompositePushConstants
         {
             SelectedInstanceId = selectedInstanceId,
             VisualizationMode = visualizationMode,
             AdaptiveTargetError = adaptiveTargetError,
-            AdaptiveMinSamples = adaptiveMinSamples
+            AdaptiveMinSamples = adaptiveMinSamples,
+            IsMoving = isMoving
         };
         context.Api.CmdPushConstants(
             commandBuffer.InternalHandle,
             pipelineLayout,
             ShaderStageFlags.ComputeBit,
             0,
-            (uint)sizeof(OverlayPushConstants),
+            (uint)sizeof(CompositePushConstants),
             &pushConstants);
 
         const uint groupSize = 16;
@@ -174,7 +165,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
         var groupCountY = (height + groupSize - 1) / groupSize;
         if (!hasLoggedDispatch)
         {
-            Log.Information("OverlayCompositor dispatch: {GroupCountX}x{GroupCountY} groups for {Width}x{Height}.", groupCountX, groupCountY, width, height);
+            Log.Information("Compositor dispatch: {GroupCountX}x{GroupCountY} groups for {Width}x{Height}.", groupCountX, groupCountY, width, height);
             hasLoggedDispatch = true;
         }
         context.Api.CmdDispatch(commandBuffer.InternalHandle, groupCountX, groupCountY, 1);
@@ -278,7 +269,7 @@ public sealed unsafe class OverlayCompositor : IDisposable
         lastPositionInputViewHandle = positionInputImage.ViewHandle;
         lastAdaptiveInputViewHandle = adaptiveInputImage.ViewHandle;
         lastOutputViewHandle = outputImage.ViewHandle;
-        Log.Information("OverlayCompositor image bindings updated (color/albedo/normal/crypto/position/adaptive/output).");
+        Log.Information("Compositor image bindings updated (color/albedo/normal/crypto/position/adaptive/output).");
     }
 
     public void Dispose()
@@ -289,7 +280,5 @@ public sealed unsafe class OverlayCompositor : IDisposable
             context.Api.DestroyPipelineLayout(context.Device, pipelineLayout, default);
         if (descriptorSetLayout.Handle != default)
             context.Api.DestroyDescriptorSetLayout(context.Device, descriptorSetLayout, default);
-        if (descriptorPool.Handle != default)
-            context.Api.DestroyDescriptorPool(context.Device, descriptorPool, default);
     }
 }

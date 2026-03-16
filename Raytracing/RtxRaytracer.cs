@@ -18,7 +18,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private readonly KhrAccelerationStructure accelExt;
     private readonly KhrRayTracingPipeline rtExt;
 
-    private readonly DescriptorPool descriptorPool;
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
@@ -94,16 +93,16 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             new byte[16]);
 
-        var fullPathRaygenBytes = EmbeddedAssets.ReadByFileName("RayGeneration.spv");
-        var aoRaygenBytes = EmbeddedAssets.ReadByFileName("RayGenerationAo.spv");
-        var directRaygenBytes = EmbeddedAssets.ReadByFileName("RayGenerationDirect.spv");
-        var missBytes = EmbeddedAssets.ReadByFileName("Miss.spv");
-        var aoMissBytes = EmbeddedAssets.ReadByFileName("MissAo.spv");
-        var directMissBytes = EmbeddedAssets.ReadByFileName("MissDirect.spv");
+        var fullPathRaygenBytes = EmbeddedAssets.ReadByFileName("PathTracingRaygen.spv");
+        var aoRaygenBytes = EmbeddedAssets.ReadByFileName("AoRaygen.spv");
+        var directRaygenBytes = EmbeddedAssets.ReadByFileName("DirectLightingRaygen.spv");
+        var missBytes = EmbeddedAssets.ReadByFileName("PathTracingMiss.spv");
+        var aoMissBytes = EmbeddedAssets.ReadByFileName("AoMiss.spv");
+        var directMissBytes = EmbeddedAssets.ReadByFileName("DirectLightingMiss.spv");
         var shadowMissBytes = EmbeddedAssets.ReadByFileName("ShadowMiss.spv");
-        var hitBytes = EmbeddedAssets.ReadByFileName("ClosestHit.spv");
-        var aoHitBytes = EmbeddedAssets.ReadByFileName("ClosestHitAo.spv");
-        var directHitBytes = EmbeddedAssets.ReadByFileName("ClosestHitDirect.spv");
+        var hitBytes = EmbeddedAssets.ReadByFileName("PathTracingClosesthit.spv");
+        var aoHitBytes = EmbeddedAssets.ReadByFileName("AoClosesthit.spv");
+        var directHitBytes = EmbeddedAssets.ReadByFileName("DirectLightingClosesthit.spv");
         using var mainName = new ByteString("main");
 
         var fullPathRaygenModule = CreateShaderModule(fullPathRaygenBytes);
@@ -162,21 +161,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         };
         Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var poolSizes = stackalloc DescriptorPoolSize[4];
-        poolSizes[0] = new DescriptorPoolSize(DescriptorType.AccelerationStructureKhr, 1);
-        poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 2);
-        poolSizes[2] = new DescriptorPoolSize(DescriptorType.StorageImage, 6);
-        poolSizes[3] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, MaxTextures);
-        var descriptorPoolInfo = new DescriptorPoolCreateInfo
-        {
-            SType = StructureType.DescriptorPoolCreateInfo,
-            Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit,
-            MaxSets = 1,
-            PoolSizeCount = 4,
-            PPoolSizes = poolSizes
-        };
-        Context.Api.CreateDescriptorPool(Context.Device, in descriptorPoolInfo, default, out var descriptorPoolLocal).ThrowOnError();
-
         var descriptorCount = MaxTextures;
         var variableCountInfo = new DescriptorSetVariableDescriptorCountAllocateInfo
         {
@@ -188,7 +172,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var allocInfo = new DescriptorSetAllocateInfo
         {
             SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = descriptorPoolLocal,
+            DescriptorPool = Context.DescriptorPool,
             DescriptorSetCount = 1,
             PSetLayouts = &descriptorSetLayoutLocal,
             PNext = &variableCountInfo
@@ -227,7 +211,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Context.Api.DestroyShaderModule(Context.Device, fullPathRaygenModule, default);
 
         descriptorSetLayout = descriptorSetLayoutLocal;
-        descriptorPool = descriptorPoolLocal;
         descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
         fullPathPipelineState = BuildShaderBindingTable(fullPathPipeline);
@@ -371,6 +354,10 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         PipelineLayout layout,
         ByteString mainName)
     {
+        const uint raygenStageIndex = 0;
+        const uint primaryMissStageIndex = 1;
+        const uint shadowMissStageIndex = 2;
+        const uint hitStageIndex = 3;
         var stages = stackalloc PipelineShaderStageCreateInfo[4];
         stages[0] = new PipelineShaderStageCreateInfo
         {
@@ -407,7 +394,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         {
             SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
             Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 0,
+            GeneralShader = raygenStageIndex,
             ClosestHitShader = shaderUnused,
             AnyHitShader = shaderUnused,
             IntersectionShader = shaderUnused
@@ -416,7 +403,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         {
             SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
             Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 1,
+            GeneralShader = primaryMissStageIndex,
             ClosestHitShader = shaderUnused,
             AnyHitShader = shaderUnused,
             IntersectionShader = shaderUnused
@@ -425,7 +412,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         {
             SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
             Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
-            GeneralShader = 2,
+            GeneralShader = shadowMissStageIndex,
             ClosestHitShader = shaderUnused,
             AnyHitShader = shaderUnused,
             IntersectionShader = shaderUnused
@@ -435,7 +422,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             SType = StructureType.RayTracingShaderGroupCreateInfoKhr,
             Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
             GeneralShader = shaderUnused,
-            ClosestHitShader = 3,
+            ClosestHitShader = hitStageIndex,
             AnyHitShader = shaderUnused,
             IntersectionShader = shaderUnused
         };
@@ -579,7 +566,5 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
         if (descriptorSetLayout.Handle != default)
             Context.Api.DestroyDescriptorSetLayout(Context.Device, descriptorSetLayout, default);
-        if (descriptorPool.Handle != default)
-            Context.Api.DestroyDescriptorPool(Context.Device, descriptorPool, default);
     }
 }

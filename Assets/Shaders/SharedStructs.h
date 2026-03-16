@@ -1,6 +1,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 // Generated from UniversalUmap.Rendering/Assets/Shaders/SharedStructs.cs. Do not edit by hand.
 
+#ifndef _SHARED_STRUCTS_GLSL_
+#define _SHARED_STRUCTS_GLSL_
+
 #define INVALID_INSTANCE 0xFFFFFFFFu
 #define GROUP_SIZE 16
 #define MAX_LEAF_SIZE 8
@@ -11,6 +14,7 @@ struct Vertex
     vec3 position;
     vec3 normal;
     vec3 tangent;
+    float tangentSign;
     vec2 uv;
 };
 
@@ -103,6 +107,8 @@ struct EnvironmentDataGpu
 {
     int textureIndex;
     int cdfTextureIndex;
+    int irradianceMapIndex;
+    int radianceMapIndex;
     float rotationSin;
     float rotationCos;
     float visibleExposureScale;
@@ -176,3 +182,4 @@ struct HitInfo {
     vec3 barycentrics;
 };
 
+#endif // _SHARED_STRUCTS_GLSL_

@@ -17,7 +17,7 @@ public abstract class VulkanShaderControl : CapturingControlBase
     protected static readonly IBrush HitTestBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
 
     private CompositionSurfaceVisual? visual;
-    private Compositor? compositor;
+    private Avalonia.Rendering.Composition.Compositor? avaloniaCompositor;
     private bool updateQueued;
     private bool frameDirty = true;
     private bool initialized;
@@ -111,14 +111,14 @@ public abstract class VulkanShaderControl : CapturingControlBase
                 return;
 
             var selfVisual = ElementComposition.GetElementVisual(this)!;
-            compositor = selfVisual.Compositor;
-            var drawingSurface = compositor.CreateDrawingSurface();
-            visual = compositor.CreateSurfaceVisual();
+            avaloniaCompositor = selfVisual.Compositor;
+            var drawingSurface = avaloniaCompositor.CreateDrawingSurface();
+            visual = avaloniaCompositor.CreateSurfaceVisual();
             visual.Size = new(Bounds.Width, Bounds.Height);
             visual.Surface = drawingSurface;
             ElementComposition.SetElementChildVisual(this, visual);
 
-            var interop = await compositor.TryGetCompositionGpuInterop();
+            var interop = await avaloniaCompositor.TryGetCompositionGpuInterop();
             if (!IsCurrentLifecycle(version))
                 return;
             if (interop is null)
@@ -128,7 +128,7 @@ public abstract class VulkanShaderControl : CapturingControlBase
                 return;
             }
 
-            context = await Context.AcquireAsync(compositor);
+            context = await Context.AcquireAsync(avaloniaCompositor);
             if (!IsCurrentLifecycle(version))
             {
                 return;
@@ -187,7 +187,7 @@ public abstract class VulkanShaderControl : CapturingControlBase
             ElementComposition.SetElementChildVisual(this, null);
 
         visual = null;
-        compositor = null;
+        avaloniaCompositor = null;
     }
 
     private static async Task DisposeSurfaceChainAsync(Task previousDisposeTask, VulkanSurface activeSurface)
@@ -260,11 +260,11 @@ public abstract class VulkanShaderControl : CapturingControlBase
 
     private void QueueNextFrame()
     {
-        if (!running || !initialized || !frameDirty || updateQueued || compositor is null || !IsVisible)
+        if (!running || !initialized || !frameDirty || updateQueued || avaloniaCompositor is null || !IsVisible)
             return;
 
         updateQueued = true;
-        compositor.RequestCompositionUpdate(update);
+        avaloniaCompositor.RequestCompositionUpdate(update);
     }
 
     private void OnLayoutUpdated(object? sender, EventArgs e)

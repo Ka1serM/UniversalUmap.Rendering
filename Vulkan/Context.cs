@@ -7,6 +7,7 @@ using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
 using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Scenes;
+using AvaloniaCompositor = Avalonia.Rendering.Composition.Compositor;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
@@ -17,6 +18,7 @@ public sealed class Context : IDisposable
     private readonly List<CommandBuffer> usedCommandBuffers = [];
     private readonly object sync = new();
     private CommandPool commandPool;
+    private DescriptorPool descriptorPool;
 
     public Vk Api { get; private set; }
     public Instance Instance { get; private set; }
@@ -26,6 +28,7 @@ public sealed class Context : IDisposable
     public uint QueueFamilyIndex { get; private set; }
     public bool RayTracingSupported { get; private set; }
     public string DeviceName { get; private set; } = string.Empty;
+    public DescriptorPool DescriptorPool => descriptorPool;
 
     public CommandBuffer CreateCommandBuffer()
     {
@@ -110,7 +113,7 @@ public sealed class Context : IDisposable
     {
         FreeUsedCommandBuffers(waitForCompletion: true);
     }
-    public static async Task<Context?> AcquireAsync(Compositor compositor)
+    public static async Task<Context?> AcquireAsync(AvaloniaCompositor compositor)
     {
         lock (SharedSync)
         {
@@ -494,6 +497,25 @@ public sealed class Context : IDisposable
                         QueueFamilyIndex = candidate.QueueFamilyIndex
                     };
                     api.CreateCommandPool(createdDevice, in commandPoolCreateInfo, default, out createdCommandPool).ThrowOnError();
+                    
+                    // Create a global descriptor pool large enough for all raytracing and compositing needs
+                    var poolSizes = stackalloc DescriptorPoolSize[5];
+                    poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 10);
+                    poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 30);
+                    poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 20_000); // 2 * MaxTextures
+                    poolSizes[3] = new DescriptorPoolSize(DescriptorType.AccelerationStructureKhr, 2);
+                    poolSizes[4] = new DescriptorPoolSize(DescriptorType.Sampler, 10);
+                    var descriptorPoolInfo = new DescriptorPoolCreateInfo
+                    {
+                        SType = StructureType.DescriptorPoolCreateInfo,
+                        Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit,
+                        MaxSets = 10,
+                        PoolSizeCount = 5,
+                        PPoolSizes = poolSizes
+                    };
+                    var createdDescriptorPool = default(DescriptorPool);
+                    api.CreateDescriptorPool(createdDevice, in descriptorPoolInfo, default, out createdDescriptorPool).ThrowOnError();
+                    
                     success = true;
 
                     Api = api;
@@ -503,6 +525,7 @@ public sealed class Context : IDisposable
                     Queue = queue;
                     QueueFamilyIndex = candidate.QueueFamilyIndex;
                     commandPool = createdCommandPool;
+                    descriptorPool = createdDescriptorPool;
                     RayTracingSupported = candidate.RayTracingEnabled;
                     DeviceName = candidate.Name;
                     Log.Information(
@@ -669,7 +692,11 @@ public sealed class Context : IDisposable
         TextureAsset.DisposeSharedStagingRing();
         WaitForSubmittedCommandBuffers();
         lock (sync)
+        {
+            if (descriptorPool.Handle != default)
+                Api.DestroyDescriptorPool(Device, descriptorPool, default);
             Api.DestroyCommandPool(Device, commandPool, default);
+        }
         Api.DestroyDevice(Device, default);
         Api.DestroyInstance(Instance, default);
 

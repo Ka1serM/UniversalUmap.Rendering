@@ -148,4 +148,22 @@ vec2 getSample2D(inout SamplerState s) {
     return fract((alpha * float(s.frame)) + s.randomOffset);
 }
 
+float computeShadowBias(vec3 worldPosition, float nDotLGeom) {
+    float sceneScale = max(max(abs(worldPosition.x), abs(worldPosition.y)), abs(worldPosition.z));
+    float baseBias = max(1e-4, sceneScale * 1e-6);
+    float grazingScale = 1.0 / max(nDotLGeom, 0.2);
+    return baseBias * grazingScale;
+}
+
+float computeRayOriginBias(vec3 worldPosition) {
+    float sceneScale = max(max(abs(worldPosition.x), abs(worldPosition.y)), abs(worldPosition.z));
+    return max(1e-4, sceneScale * 1e-6);
+}
+
+vec3 offsetRayOrigin(vec3 worldPosition, vec3 geometricNormal, vec3 outDirection) {
+    float bias = computeRayOriginBias(worldPosition);
+    float side = (dot(outDirection, geometricNormal) >= 0.0) ? 1.0 : -1.0;
+    return worldPosition + geometricNormal * (side * bias);
+}
+
 #endif

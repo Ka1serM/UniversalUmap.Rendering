@@ -261,7 +261,7 @@ public sealed class Scene : IDisposable, IScene
             SelectedInstanceChanged?.Invoke(-1);
     }
 
-    public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null)
+    public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null, TextureAsset? irradianceMap = null, TextureAsset? radianceMap = null)
     {
         Synchronize(() =>
         {
@@ -269,10 +269,17 @@ public sealed class Scene : IDisposable, IScene
                 Add(texture);
             if (cdfTexture is not null && cdfTexture.Index < 0)
                 Add(cdfTexture);
+            if (irradianceMap is not null && irradianceMap.Index < 0)
+                Add(irradianceMap);
+            if (radianceMap is not null && radianceMap.Index < 0)
+                Add(radianceMap);
 
             Environment.TextureIndex = texture.Index;
             Environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
-            Environment.MaxTextureLod = Math.Max(texture.Image.MipLevels - 1u, 0u);
+            Environment.IrradianceMapIndex = irradianceMap?.Index ?? -1;
+            Environment.RadianceMapIndex = radianceMap?.Index ?? -1;
+            var lodSource = radianceMap?.Image ?? texture.Image;
+            Environment.MaxTextureLod = Math.Max(lodSource.MipLevels - 1u, 0u);
         });
     }
 
@@ -283,7 +290,7 @@ public sealed class Scene : IDisposable, IScene
 
     public void TryLoadDefaultEnvironment()
     {
-        const string hdriFileName = "golden_gate_hills_4k.hdr";
+        const string hdriFileName = "kiara_1_dawn_4k.hdr";
         var embeddedHdr = EmbeddedAssets.ReadByFileName(hdriFileName);
 
         try
@@ -291,8 +298,10 @@ public sealed class Scene : IDisposable, IScene
             var textureSet = TextureAsset.CreateHdrWithCdf(context, hdriFileName, embeddedHdr);
             Add(textureSet.Environment);
             Add(textureSet.Cdf);
-            SetEnvironment(textureSet.Environment, textureSet.Cdf);
-            Log.Information("Loaded default environment from embedded asset '{HdrFileName}'.", hdriFileName);
+            Add(textureSet.IrradianceMap);
+            Add(textureSet.RadianceMap);
+            SetEnvironment(textureSet.Environment, textureSet.Cdf, textureSet.IrradianceMap, textureSet.RadianceMap);
+            Log.Information("Loaded default environment from embedded asset '{HdrFileName}' with IBL maps.", hdriFileName);
         }
         catch (Exception ex)
         {

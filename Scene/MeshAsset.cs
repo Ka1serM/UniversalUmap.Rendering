@@ -272,6 +272,7 @@ public sealed class MeshAsset : IDisposable
                     Position = corners[i],
                     Normal = normal,
                     Tangent = tangent,
+                    TangentSign = 1.0f,
                     UV = uvs[i]
                 });
             }
@@ -335,6 +336,7 @@ public sealed class MeshAsset : IDisposable
                     Position = position,
                     Normal = normal,
                     Tangent = tangent,
+                    TangentSign = 1.0f,
                     UV = uv
                 });
             }
@@ -514,6 +516,7 @@ public sealed class MeshAsset : IDisposable
                 Position = ConvertUnrealPosition(new Vector3(src.Position.X, src.Position.Y, src.Position.Z)),
                 Normal = ConvertUnrealDirection(new Vector3(src.Normal.X, src.Normal.Y, src.Normal.Z)),
                 Tangent = ConvertUnrealDirection(new Vector3(src.Tangent.X, src.Tangent.Y, src.Tangent.Z)),
+                TangentSign = src.Tangent.W * (UnrealToRendererFlipsHandedness ? -1f : 1f),
                 UV = new Vector2(src.UV.U, src.UV.V)
             };
         }
