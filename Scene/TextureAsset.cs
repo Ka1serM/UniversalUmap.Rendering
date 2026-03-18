@@ -1,8 +1,6 @@
 using System;
 using System.IO;
-using System.Numerics;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using Avalonia;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using Serilog;
@@ -15,10 +13,6 @@ namespace UniversalUmap.Rendering.Scenes;
 
 public sealed unsafe class TextureAsset : IDisposable
 {
-    private const float LuminanceEpsilon = 1e-8f;
-    private const int IrradianceMapSize = 32;
-    private const int RadianceMapSize = 256;
-
     public readonly record struct HdrTextureSet(TextureAsset Environment, TextureAsset Cdf, TextureAsset IrradianceMap, TextureAsset RadianceMap);
 
     private readonly Context context;
@@ -200,6 +194,33 @@ public sealed unsafe class TextureAsset : IDisposable
             Format.R8G8B8A8Unorm);
     }
 
+    public static TextureAsset CreateRgba32Float(
+        Context context,
+        string name,
+        string sourcePath,
+        ReadOnlySpan<byte> rgba32fBytes,
+        uint width,
+        uint height,
+        bool generateMipmaps = false)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Texture name is empty", nameof(name));
+        if (width == 0 || height == 0)
+            throw new ArgumentException("Texture dimensions must be > 0.");
+        if (rgba32fBytes.Length != width * height * 4 * sizeof(float))
+            throw new ArgumentException("RGBA32F byte payload size does not match width*height*4*sizeof(float).");
+
+        return new TextureAsset(
+            context,
+            name,
+            sourcePath,
+            rgba32fBytes,
+            width,
+            height,
+            Format.R32G32B32A32Sfloat,
+            generateMipmaps);
+    }
+
     public static bool TryCreateFromUTexture(
         Context context,
         UTexture texture,
@@ -270,230 +291,39 @@ public sealed unsafe class TextureAsset : IDisposable
             Format.R32G32B32A32Sfloat,
             generateMipmaps: true);
 
-        var cdfPixels = BuildEnvironmentCdfTexture(rgba32f, width, height);
-        var cdfBytes = MemoryMarshal.AsBytes(cdfPixels.AsSpan()).ToArray();
+        var derivedMaps = EnvironmentPrecompute.BuildDerivedMaps(rgba32f, width, height);
+        var cdfBytes = MemoryMarshal.AsBytes(derivedMaps.Cdf.Rgba32f.AsSpan()).ToArray();
         var cdf = new TextureAsset(
             context,
             $"{name}_cdf",
             sourcePath,
             cdfBytes,
-            (uint)width,
-            (uint)height,
+            (uint)derivedMaps.Cdf.Width,
+            (uint)derivedMaps.Cdf.Height,
             Format.R32G32B32A32Sfloat);
 
-        var irradianceMap = CreateIrradianceMap(context, name, sourcePath, rgba32f, width, height);
-        var radianceMap = CreateRadianceMap(context, name, sourcePath, rgba32f, width, height);
-
-        return new HdrTextureSet(environment, cdf, irradianceMap, radianceMap);
-    }
-
-    private static float[] BuildEnvironmentCdfTexture(float[] rgba32f, int width, int height)
-    {
-        var texelCount = width * height;
-        var conditionalCdf = new float[texelCount];
-        var weights = new float[texelCount];
-        var marginalWeights = new float[height];
-        var marginalCdf = new float[height];
-        var totalWeight = 0f;
-
-        for (var y = 0; y < height; y++)
-        {
-            var theta = MathF.PI * ((y + 0.5f) / height);
-            var sinTheta = MathF.Max(MathF.Sin(theta), LuminanceEpsilon);
-            var rowSum = 0f;
-            var rowBase = y * width;
-
-            for (var x = 0; x < width; x++)
-            {
-                var px = (rowBase + x) * 4;
-                var rgb = new Vector3(rgba32f[px], rgba32f[px + 1], rgba32f[px + 2]);
-                var weighted = MathF.Max(0f, (0.2126f * rgb.X) + (0.7152f * rgb.Y) + (0.0722f * rgb.Z)) * sinTheta;
-                weights[rowBase + x] = weighted;
-                rowSum += weighted;
-            }
-
-            marginalWeights[y] = rowSum;
-            totalWeight += rowSum;
-
-            if (rowSum <= LuminanceEpsilon)
-            {
-                for (var x = 0; x < width; x++)
-                    conditionalCdf[rowBase + x] = (x + 1f) / width;
-                continue;
-            }
-
-            var accum = 0f;
-            for (var x = 0; x < width; x++)
-            {
-                accum += weights[rowBase + x];
-                conditionalCdf[rowBase + x] = accum / rowSum;
-            }
-        }
-
-        if (totalWeight <= LuminanceEpsilon)
-        {
-            for (var y = 0; y < height; y++)
-                marginalCdf[y] = (y + 1f) / height;
-            totalWeight = 1f;
-        }
-        else
-        {
-            var accum = 0f;
-            for (var y = 0; y < height; y++)
-            {
-                accum += marginalWeights[y];
-                marginalCdf[y] = accum / totalWeight;
-            }
-        }
-
-        var outPixels = new float[texelCount * 4];
-        for (var y = 0; y < height; y++)
-        {
-            var rowBase = y * width;
-            var rowWeight = marginalWeights[y];
-            var rowPdf = totalWeight > LuminanceEpsilon ? rowWeight / totalWeight : 1f / height;
-            for (var x = 0; x < width; x++)
-            {
-                var texel = rowBase + x;
-                var outBase = texel * 4;
-                var texelWeight = weights[texel];
-                var conditionalPdf = rowWeight > LuminanceEpsilon ? texelWeight / rowWeight : 1f / width;
-                var uvPdf = rowPdf * conditionalPdf;
-                outPixels[outBase + 0] = conditionalCdf[texel];
-                outPixels[outBase + 1] = marginalCdf[y];
-                outPixels[outBase + 2] = rowPdf;
-                outPixels[outBase + 3] = uvPdf;
-            }
-        }
-
-        return outPixels;
-    }
-
-    private static TextureAsset CreateIrradianceMap(Context context, string name, string sourcePath, float[] rgba32f, int srcWidth, int srcHeight)
-    {
-        // Irradiance map: 32x32, cosine-weighted hemisphere integration for PBR diffuse IBL
-        const int dstSize = IrradianceMapSize;
-        const int sampleCount = 128;
-        var irradiancePixels = new float[dstSize * dstSize * 4];
-
-        Parallel.For(0, dstSize, y =>
-        {
-            for (int x = 0; x < dstSize; x++)
-            {
-                // Match shader mapping in directionToEnvironmentUv:
-                // u = atan(z, x)/(2*pi)+0.5, v = 1 - acos(y)/pi
-                float u = (x + 0.5f) / dstSize;
-                float v = (y + 0.5f) / dstSize;
-                float phi = (u - 0.5f) * (2.0f * MathF.PI);
-                float theta = (1.0f - v) * MathF.PI;
-
-                float sinTheta = MathF.Sin(theta);
-                Vector3 normal = new(
-                    MathF.Cos(phi) * sinTheta,
-                    MathF.Cos(theta),
-                    MathF.Sin(phi) * sinTheta);
-
-                Vector3 irradiance = Vector3.Zero;
-                for (int i = 0; i < sampleCount; i++)
-                {
-                    // Cosine-weighted hemisphere sample
-                    float u1 = (i + 0.5f) / sampleCount;
-                    float u2 = (i * 0.618033988749895f) % 1f;
-
-                    float r = MathF.Sqrt(u1);
-                    float thetaSample = 2.0f * MathF.PI * u2;
-                    float xSample = r * MathF.Cos(thetaSample);
-                    float ySample = r * MathF.Sin(thetaSample);
-                    float zSample = MathF.Sqrt(MathF.Max(0f, 1f - u1));
-
-                    // Tangent space to world space
-                    Vector3 tangent, bitangent;
-                    if (MathF.Abs(normal.Y) < 0.99f)
-                    {
-                        tangent = Vector3.Normalize(Vector3.Cross(new Vector3(0, 1, 0), normal));
-                    }
-                    else
-                    {
-                        tangent = Vector3.Normalize(Vector3.Cross(new Vector3(1, 0, 0), normal));
-                    }
-                    bitangent = Vector3.Cross(normal, tangent);
-                    Vector3 sampleDir = tangent * xSample + bitangent * ySample + normal * zSample;
-                    sampleDir = Vector3.Normalize(sampleDir);
-
-                    float clampedY = MathF.Max(-1f, MathF.Min(1f, sampleDir.Y));
-                    float sampleU = MathF.Atan2(sampleDir.Z, sampleDir.X) / (2.0f * MathF.PI) + 0.5f;
-                    float sampleV = 1.0f - MathF.Acos(clampedY) / MathF.PI;
-
-                    int srcX = Math.Clamp((int)(sampleU * srcWidth), 0, srcWidth - 1);
-                    int srcY = Math.Clamp((int)(sampleV * srcHeight), 0, srcHeight - 1);
-                    int srcIdx = (srcY * srcWidth + srcX) * 4;
-
-                    Vector3 radiance = new(rgba32f[srcIdx], rgba32f[srcIdx + 1], rgba32f[srcIdx + 2]);
-                    // Cosine-weighted hemisphere estimator:
-                    // E[L] under p(w)=cos(theta)/pi => irradiance = pi * E[L]
-                    irradiance += radiance;
-                }
-
-                irradiance *= MathF.PI / sampleCount;
-
-                int dstIdx = (y * dstSize + x) * 4;
-                irradiancePixels[dstIdx + 0] = irradiance.X;
-                irradiancePixels[dstIdx + 1] = irradiance.Y;
-                irradiancePixels[dstIdx + 2] = irradiance.Z;
-                irradiancePixels[dstIdx + 3] = 1f;
-            }
-        });
-
-        var irradianceBytes = MemoryMarshal.AsBytes(irradiancePixels.AsSpan()).ToArray();
-        return new TextureAsset(
+        var irradianceBytes = MemoryMarshal.AsBytes(derivedMaps.Irradiance.Rgba32f.AsSpan()).ToArray();
+        var irradianceMap = new TextureAsset(
             context,
             $"{name}_irradiance",
             sourcePath,
             irradianceBytes,
-            (uint)dstSize,
-            (uint)dstSize,
+            (uint)derivedMaps.Irradiance.Width,
+            (uint)derivedMaps.Irradiance.Height,
             Format.R32G32B32A32Sfloat);
-    }
 
-    private static TextureAsset CreateRadianceMap(Context context, string name, string sourcePath, float[] rgba32f, int srcWidth, int srcHeight)
-    {
-        // For specular IBL, we use the mip chain of the original environment map
-        // The prefiltered radiance map is already available via mip sampling
-        // Here we just create a copy with proper sizing for clarity
-        const int dstSize = RadianceMapSize;
-        
-        // Resize to standard size if needed
-        var radiancePixels = new float[dstSize * dstSize * 4];
-        
-        float scaleX = srcWidth / (float)dstSize;
-        float scaleY = srcHeight / (float)dstSize;
-
-        for (int y = 0; y < dstSize; y++)
-        {
-            for (int x = 0; x < dstSize; x++)
-            {
-                int srcX = (int)MathF.Min(x * scaleX, srcWidth - 1);
-                int srcY = (int)MathF.Min(y * scaleY, srcHeight - 1);
-                int srcIdx = (srcY * srcWidth + srcX) * 4;
-                int dstIdx = (y * dstSize + x) * 4;
-                
-                radiancePixels[dstIdx + 0] = rgba32f[srcIdx + 0];
-                radiancePixels[dstIdx + 1] = rgba32f[srcIdx + 1];
-                radiancePixels[dstIdx + 2] = rgba32f[srcIdx + 2];
-                radiancePixels[dstIdx + 3] = 1f;
-            }
-        }
-
-        var radianceBytes = MemoryMarshal.AsBytes(radiancePixels.AsSpan()).ToArray();
-        return new TextureAsset(
+        var radianceBytes = MemoryMarshal.AsBytes(derivedMaps.Radiance.Rgba32f.AsSpan()).ToArray();
+        var radianceMap = new TextureAsset(
             context,
             $"{name}_radiance",
             sourcePath,
             radianceBytes,
-            (uint)dstSize,
-            (uint)dstSize,
+            (uint)derivedMaps.Radiance.Width,
+            (uint)derivedMaps.Radiance.Height,
             Format.R32G32B32A32Sfloat,
             generateMipmaps: true);
+
+        return new HdrTextureSet(environment, cdf, irradianceMap, radianceMap);
     }
 
     private static uint CalculateMipLevels(uint width, uint height)

@@ -6,7 +6,14 @@
     <RootNamespace>UniversalUmap.Rendering</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-    <UsedAvaloniaProducts></UsedAvaloniaProducts>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DisableRtx Condition="'$(DisableRtx)' == ''">false</DisableRtx>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(DisableRtx)' == 'true'">
+    <DefineConstants>$(DefineConstants);DISABLE_RTX</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
@@ -16,6 +23,16 @@
   <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('$(VULKAN_SDK)\Bin\slangc.exe')">$(VULKAN_SDK)\Bin\slangc.exe</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('$(VULKAN_SDK)/bin/slangc')">$(VULKAN_SDK)/bin/slangc</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == ''">slangc</SlangcPath>
+    <SlangBinDir>$([System.IO.Path]::GetDirectoryName(&quot;$(SlangcPath)&quot;))</SlangBinDir>
+    <SlangLibDir>$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine(&quot;$(SlangBinDir)&quot;, &quot;..&quot;, &quot;lib&quot;))))</SlangLibDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,119 +53,95 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Assets\Shaders\SharedStructs.Extras.h" />
-    <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.glsl" />
+    <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.slang" />
     <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.h" />
 
-    <!-- AO Pipeline - RTX -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/AoRaygen.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="AoRaygen"
-                  OutputSubDir="AO" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/AoClosesthit.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="AoClosesthit"
-                  OutputSubDir="AO" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/AoMiss.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="AoMiss"
-                  OutputSubDir="AO" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Common/ShadowMiss.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="ShadowMiss"
-                  OutputSubDir="Common" />
+    <!-- Minimal entry-point list; stage is declared in shader attributes -->
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Raygen.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Closesthit.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Miss.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Compute.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Raygen.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Closesthit.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Miss.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Compute.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Raygen.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Closesthit.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Miss.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Compute.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Lights/ShadowMiss.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
 
-    <!-- AO Pipeline - Compute -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/AoPipeline.glsl"
-                  Arguments="--target-env=vulkan1.3 -DUSE_COMPUTE"
-                  OutputName="AoPipeline"
-                  OutputSubDir="AO" />
-
-    <!-- DirectLighting Pipeline - RTX -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/DirectLightingRaygen.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="DirectLightingRaygen"
-                  OutputSubDir="DirectLighting" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/DirectLightingClosesthit.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="DirectLightingClosesthit"
-                  OutputSubDir="DirectLighting" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/DirectLightingMiss.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="DirectLightingMiss"
-                  OutputSubDir="DirectLighting" />
-
-    <!-- DirectLighting Pipeline - Compute -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/DirectLightingPipeline.glsl"
-                  Arguments="--target-env=vulkan1.3 -DUSE_COMPUTE"
-                  OutputName="DirectLightingPipeline"
-                  OutputSubDir="DirectLighting" />
-
-    <!-- PathTracing Pipeline - RTX -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/PathTracingRaygen.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="PathTracingRaygen"
-                  OutputSubDir="PathTracing" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/PathTracingClosesthit.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="PathTracingClosesthit"
-                  OutputSubDir="PathTracing" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/PathTracingMiss.glsl"
-                  Arguments="--target-env=vulkan1.3"
-                  OutputName="PathTracingMiss"
-                  OutputSubDir="PathTracing" />
-
-    <!-- PathTracing Pipeline - Compute -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/PathTracingPipeline.glsl"
-                  Arguments="--target-env=vulkan1.3 -DUSE_COMPUTE"
-                  OutputName="PathTracingPipeline"
-                  OutputSubDir="PathTracing" />
-
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.glsl"
-                  Arguments="-fshader-stage=comp"
-                  OutputName="Compositor"
-                  OutputSubDir="Compositing" />
-
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/FullScreenTriVS.glsl"
-                  Arguments="-fshader-stage=vert"
-                  OutputName="FullScreenTriVS"
-                  OutputSubDir="Widgets" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/SunDirectionWidgetFS.glsl"
-                  Arguments="-fshader-stage=frag"
-                  OutputName="SunDirectionWidgetFS"
-                  OutputSubDir="Widgets" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/EnvironmentRotationWidgetFS.glsl"
-                  Arguments="-fshader-stage=frag"
-                  OutputName="EnvironmentRotationWidgetFS"
-                  OutputSubDir="Widgets" />
   </ItemGroup>
 
   <Target Name="CompileShaders"
-          BeforeTargets="Build"
+          BeforeTargets="PrepareResources"
           Inputs="@(ShaderSource);@(ShaderInclude)"
-          Outputs="$(ProjectDir)Assets/Shaders/%(ShaderSource.OutputSubDir)/%(ShaderSource.OutputName).spv">
+          Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv">
 
-    <Message Text="Compiling shaders via glslc..." Importance="High" />
+    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -version'
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="SlangcVersionExitCode" />
+    </Exec>
+    <Error Condition="'$(SlangcVersionExitCode)' != '0'"
+           Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
 
-    <Exec Command='glslc %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "$(ProjectDir)Assets/Shaders/%(ShaderSource.OutputSubDir)/%(ShaderSource.OutputName).spv"'
+    <Message Text='Compiling shaders via "$(SlangcPath)"...' Importance="High" />
+
+    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile glsl_460 -entry main %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv"'
           LogStandardErrorAsError="true" />
 
+  </Target>
+
+  <Target Name="IncludeCompiledShadersAsResources"
+          DependsOnTargets="CompileShaders"
+          BeforeTargets="CoreCompile">
     <ItemGroup>
-      <EmbeddedResource Include="$(ProjectDir)Assets/Shaders/%(ShaderSource.OutputSubDir)/%(ShaderSource.OutputName).spv"
-                        Exclude="@(EmbeddedResource)" />
+      <EmbeddedResource Include="Assets\Shaders\**\*.spv"
+                        Exclude="@(EmbeddedResource)">
+        <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+      </EmbeddedResource>
     </ItemGroup>
   </Target>
 
   <Target Name="GenerateSharedStructsHeader"
           BeforeTargets="CompileShaders"
-          Inputs="$(ProjectDir)Assets\Shaders\SharedStructs.cs;$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\Program.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj"
-          Outputs="$(ProjectDir)Assets\Shaders\SharedStructs.h">
-    <Message Text="Generating SharedStructs.h from Assets\Shaders\SharedStructs.cs..." Importance="High" />
-    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj" -- "$(ProjectDir)Assets\Shaders\SharedStructs.cs" "$(ProjectDir)Assets\Shaders\SharedStructs.Extras.h" "$(ProjectDir)Assets\Shaders\SharedStructs.h"'
+          Inputs="$(ProjectDir)Assets\Shaders\SharedStructs.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\Program.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj"
+          Outputs="$(ProjectDir)Assets\Shaders\SharedStructs.slang">
+    <Message Text="Generating SharedStructs.slang from Assets\Shaders\SharedStructs.cs..." Importance="High" />
+    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj" -- "$(ProjectDir)Assets\Shaders\SharedStructs.cs" "$(ProjectDir)Assets\Shaders\SharedStructs.slang"'
           LogStandardErrorAsError="true" />
   </Target>
 
+  <Target Name="GenerateDefaultEnvironmentMaps"
+          BeforeTargets="Build"
+          Inputs="$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr;$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\Program.cs;$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
+          Outputs="$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_env.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_cdf.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_irradiance.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_radiance.bin">
+    <Message Text="Precompiling default HDR environment maps..." Importance="High" />
+    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" -- "$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr" "$(ProjectDir)Assets\Textures\kiara_1_dawn_4k"'
+          LogStandardErrorAsError="true" />
+  </Target>
+
+  <Target Name="CleanCompiledShaders" BeforeTargets="Clean">
+    <ItemGroup>
+      <CompiledSpv Include="$(ProjectDir)Assets\Shaders\**\*.spv" />
+    </ItemGroup>
+    <Message Text="Removing compiled shader binaries (*.spv)..." Importance="High" />
+    <Delete Files="@(CompiledSpv)" />
+  </Target>
+
   <ItemGroup>
-    <EmbeddedResource Include="Assets\**" />
+    <EmbeddedResource Include="Assets\**"
+                      Exclude="Assets\Source\**;@(EmbeddedResource)">
+      <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 </Project>

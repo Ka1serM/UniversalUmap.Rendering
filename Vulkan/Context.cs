@@ -299,10 +299,13 @@ public sealed class Context : IDisposable
 
                 if (api.IsDeviceExtensionPresent(physical, "VK_KHR_dynamic_rendering"))
                     deviceExtensions.Add("VK_KHR_dynamic_rendering");
+                if (api.IsDeviceExtensionPresent(physical, "VK_EXT_scalar_block_layout"))
+                    deviceExtensions.Add("VK_EXT_scalar_block_layout");
 
                 var rayTracingExtensionsPresent = rayTracingExtensions.All(x => api.IsDeviceExtensionPresent(physical, x));
                 var rayTracingFeaturesSupported = false;
                 var dynamicRenderingSupported = false;
+                var scalarBlockLayoutSupported = false;
 
                 {
                     var feature2 = new PhysicalDeviceFeatures2
@@ -313,7 +316,12 @@ public sealed class Context : IDisposable
                     {
                         SType = StructureType.PhysicalDeviceDynamicRenderingFeatures
                     };
+                    var scalarBlockLayoutFeatures = new PhysicalDeviceScalarBlockLayoutFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceScalarBlockLayoutFeatures
+                    };
                     feature2.PNext = &dynamicRenderingFeatures;
+                    dynamicRenderingFeatures.PNext = &scalarBlockLayoutFeatures;
 
                     if (rayTracingExtensionsPresent)
                     {
@@ -334,7 +342,7 @@ public sealed class Context : IDisposable
                             SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
                         };
 
-                        dynamicRenderingFeatures.PNext = &descriptorIndexingFeatures;
+                        scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
                         descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
                         accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
                         rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
@@ -352,10 +360,16 @@ public sealed class Context : IDisposable
                     }
 
                     dynamicRenderingSupported = dynamicRenderingFeatures.DynamicRendering;
+                    scalarBlockLayoutSupported = scalarBlockLayoutFeatures.ScalarBlockLayout;
                 }
 
                 if (!dynamicRenderingSupported)
                     continue;
+                if (!scalarBlockLayoutSupported)
+                {
+                    Log.Information("Skipping GPU {GpuName}: scalarBlockLayout feature is not supported.", name);
+                    continue;
+                }
 
                 if (rayTracingExtensionsPresent)
                 {
@@ -450,6 +464,11 @@ public sealed class Context : IDisposable
                         SType = StructureType.PhysicalDeviceDynamicRenderingFeatures,
                         DynamicRendering = true
                     };
+                    var scalarBlockLayoutFeatures = new PhysicalDeviceScalarBlockLayoutFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceScalarBlockLayoutFeatures,
+                        ScalarBlockLayout = true
+                    };
                     var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
                     {
                         SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
@@ -468,6 +487,7 @@ public sealed class Context : IDisposable
                     };
 
                     feature2.PNext = &dynamicRenderingFeatures;
+                    dynamicRenderingFeatures.PNext = &scalarBlockLayoutFeatures;
 
                     if (candidate.RayTracingEnabled)
                     {
@@ -479,7 +499,7 @@ public sealed class Context : IDisposable
                         rayTracingPipelineFeatures.RayTracingPipeline = true;
                         bufferDeviceAddressFeatures.BufferDeviceAddress = true;
 
-                        dynamicRenderingFeatures.PNext = &descriptorIndexingFeatures;
+                        scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
                         descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
                         accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
                         rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;

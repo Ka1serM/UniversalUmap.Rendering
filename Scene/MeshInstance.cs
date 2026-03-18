@@ -108,15 +108,17 @@ public sealed class MeshInstance
         owner.SetTlasDirty();
     }
 
-    internal ComputeInstanceGpu BuildComputeInstanceData()
+    internal InstanceGpu BuildInstanceData()
     {
         var transform = Transform;
         Matrix4x4.Invert(transform, out var inverse);
+        var normalTransform = Matrix4x4.Transpose(inverse);
 
-        return new ComputeInstanceGpu
+        return new InstanceGpu
         {
             Transform = transform,
             InverseTransform = inverse,
+            NormalTransform = normalTransform,
             MeshId = MeshAsset.MeshIndex
         };
     }
@@ -138,7 +140,8 @@ public sealed class MeshInstance
         {
             Transform = vkTransform,
             AccelerationStructureReference = MeshAsset.GetBlasAddress(),
-            InstanceCustomIndex = MeshAsset.MeshIndex,
+            // Use instance array index (set by caller) for unique identification
+            InstanceCustomIndex = 0, // Will be set by Scene.BuildRtxInstanceData
             Mask = 0xFF,
             InstanceShaderBindingTableRecordOffset = 0,
             Flags = GeometryInstanceFlagsKHR.TriangleFacingCullDisableBitKhr
@@ -146,6 +149,8 @@ public sealed class MeshInstance
 
         return instance;
     }
+
+    internal uint GetMeshIndex() => MeshAsset.MeshIndex;
 
     private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 

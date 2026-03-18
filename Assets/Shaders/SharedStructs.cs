@@ -102,11 +102,12 @@ internal struct MeshAddressesGpu
     public ulong BvhIndexAddress;
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 144)]
-internal struct ComputeInstanceGpu
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 208)]
+internal struct InstanceGpu
 {
     public Matrix4x4 Transform;
     public Matrix4x4 InverseTransform;
+    public Matrix4x4 NormalTransform;
     public uint MeshId;
     public uint Pad1;
     public uint Pad2;
@@ -193,7 +194,7 @@ internal struct CameraDataGpu
     public float BokehBias;
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 156)]
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 188)]
 internal struct SceneSettingsDataGpu
 {
     public RenderSettingsDataGpu RenderSettings;
@@ -209,7 +210,7 @@ internal static class GpuStructLayoutValidator
         ValidateType<Face>(4, (nameof(Face.MaterialIndex), 0));
         ValidateType<MaterialData>(96, (nameof(MaterialData.Albedo), 0), (nameof(MaterialData.AlbedoIndex), 12), (nameof(MaterialData.Specular), 16), (nameof(MaterialData.Metallic), 20), (nameof(MaterialData.Roughness), 24), (nameof(MaterialData.Ior), 28), (nameof(MaterialData.SpecularIndex), 32), (nameof(MaterialData.MetallicIndex), 36), (nameof(MaterialData.RoughnessIndex), 40), (nameof(MaterialData.NormalIndex), 44), (nameof(MaterialData.TransmissionColor), 48), (nameof(MaterialData.Transmission), 60), (nameof(MaterialData.Emission), 64), (nameof(MaterialData.EmissionStrength), 76), (nameof(MaterialData.EmissionIndex), 80), (nameof(MaterialData.TransmissionIndex), 84), (nameof(MaterialData.OpacityIndex), 88), (nameof(MaterialData.Opacity), 92));
         ValidateType<MeshAddressesGpu>(48, (nameof(MeshAddressesGpu.VertexAddress), 0), (nameof(MeshAddressesGpu.IndexAddress), 8), (nameof(MeshAddressesGpu.FaceAddress), 16), (nameof(MeshAddressesGpu.MaterialAddress), 24), (nameof(MeshAddressesGpu.BvhNodeAddress), 32), (nameof(MeshAddressesGpu.BvhIndexAddress), 40));
-        ValidateType<ComputeInstanceGpu>(144, (nameof(ComputeInstanceGpu.Transform), 0), (nameof(ComputeInstanceGpu.InverseTransform), 64), (nameof(ComputeInstanceGpu.MeshId), 128), (nameof(ComputeInstanceGpu.Pad1), 132), (nameof(ComputeInstanceGpu.Pad2), 136), (nameof(ComputeInstanceGpu.Pad3), 140));
+        ValidateType<InstanceGpu>(208, (nameof(InstanceGpu.Transform), 0), (nameof(InstanceGpu.InverseTransform), 64), (nameof(InstanceGpu.NormalTransform), 128), (nameof(InstanceGpu.MeshId), 192), (nameof(InstanceGpu.Pad1), 196), (nameof(InstanceGpu.Pad2), 200), (nameof(InstanceGpu.Pad3), 204));
         ValidateType<AabbGpu>(32, (nameof(AabbGpu.MinBounds), 0), (nameof(AabbGpu.Pad0), 12), (nameof(AabbGpu.MaxBounds), 16), (nameof(AabbGpu.Pad1), 28));
         ValidateType<BvhNodeGpu>(76, (nameof(BvhNodeGpu.LeftBounds), 0), (nameof(BvhNodeGpu.RightBounds), 32), (nameof(BvhNodeGpu.RightChildOrPrimIndex), 64), (nameof(BvhNodeGpu.PrimCount), 68), (nameof(BvhNodeGpu.SplitAxis), 72));
         ValidateType<PushDataGpu>(8, (nameof(PushDataGpu.Frame), 0), (nameof(PushDataGpu.IsMoving), 4));

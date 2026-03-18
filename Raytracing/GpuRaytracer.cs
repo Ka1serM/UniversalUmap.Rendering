@@ -30,6 +30,9 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     private ulong lastBoundColorImageViewHandle;
     protected uint FrameIndex;
     private bool hasLoggedFirstRender;
+    private Context.CommandBuffer? pendingResizeCompletion;
+    private bool hasDeferredResize;
+    private PixelSize deferredResizeSize;
 
     protected GpuRaytracer(Context context, Scene scene)
     {
@@ -39,6 +42,10 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
     public static GpuRaytracer Create(Context context, Scene scene)
     {
+#if DISABLE_RTX
+        Log.Information("RTX backend compile-time disabled (DISABLE_RTX); using Compute raytracer backend.");
+        return new ComputeRaytracer(context, scene);
+#else
         if (!context.RayTracingSupported)
         {
             Log.Information("Hardware ray tracing unsupported; using Compute raytracer backend.");
@@ -58,6 +65,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             Log.Information("Using Compute raytracer backend.");
             return computeRaytracer;
         }
+#endif
     }
 
     public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
@@ -70,7 +78,8 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
     public void Record(ImageResource image, Context.CommandBuffer commandBuffer)
     {
-        EnsureRenderImages(image.Size);
+        CompletePendingResizeIfReady();
+        EnsureRenderImages(image.Size, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
         UpdateOutputImageBindings();
         UpdateSceneSettingsBuffer(commandBuffer, force: false);
@@ -110,6 +119,10 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     protected abstract void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
     protected abstract DescriptorSetLayout GetDescriptorSetLayout();
+    protected virtual uint OutputImageBindingBase => 1;
+    protected virtual uint SceneSettingsBinding => 8;
+    protected virtual uint TextureArrayBinding => 9;
+    protected virtual uint RtxInstanceBufferBinding => 1; // Only used by RTX path
 
     protected void UpdateOutputImageBindings()
     {
@@ -133,7 +146,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 1,
+            DstBinding = OutputImageBindingBase + 0,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &colorInfo
@@ -142,7 +155,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 2,
+            DstBinding = OutputImageBindingBase + 1,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &albedoInfo
@@ -151,7 +164,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 3,
+            DstBinding = OutputImageBindingBase + 2,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &normalInfo
@@ -160,7 +173,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 4,
+            DstBinding = OutputImageBindingBase + 3,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &cryptoInfo
@@ -169,7 +182,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 5,
+            DstBinding = OutputImageBindingBase + 4,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &positionInfo
@@ -178,7 +191,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = descriptorSet,
-            DstBinding = 6,
+            DstBinding = OutputImageBindingBase + 5,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageImage,
             PImageInfo = &adaptiveStateInfo
@@ -205,7 +218,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         {
             SType = StructureType.WriteDescriptorSet,
             DstSet = GetDescriptorSet(),
-            DstBinding = 8,
+            DstBinding = SceneSettingsBinding,
             DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageBuffer,
             PBufferInfo = &settingsInfo
@@ -260,7 +273,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = GetDescriptorSet(),
-                DstBinding = 9,
+                DstBinding = TextureArrayBinding,
                 DescriptorCount = (uint)descriptors.Length,
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 PImageInfo = pDescriptors
@@ -272,17 +285,44 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         Log.Information("Updated bindless texture descriptors: count={TextureCount}", descriptors.Length);
     }
 
-    private void EnsureRenderImages(PixelSize size)
+    private void EnsureRenderImages(PixelSize size, Context.CommandBuffer commandBuffer)
     {
         if (outputColorImage is not null && renderImageSize == size)
             return;
 
-        outputColorImage?.Dispose();
-        albedoImage?.Dispose();
-        normalImage?.Dispose();
-        cryptoImage?.Dispose();
-        positionImage?.Dispose();
-        adaptiveStateImage?.Dispose();
+        if (pendingResizeCompletion is not null)
+        {
+            // Keep only the latest requested size while a previous resize is still in flight.
+            hasDeferredResize = true;
+            deferredResizeSize = size;
+            return;
+        }
+
+        if (hasDeferredResize)
+        {
+            size = deferredResizeSize;
+            hasDeferredResize = false;
+        }
+
+        var previousOutputColorImage = outputColorImage;
+        var previousAlbedoImage = albedoImage;
+        var previousNormalImage = normalImage;
+        var previousCryptoImage = cryptoImage;
+        var previousPositionImage = positionImage;
+        var previousAdaptiveStateImage = adaptiveStateImage;
+
+        if (previousOutputColorImage is not null)
+            Context.RetainForExecution(commandBuffer, previousOutputColorImage);
+        if (previousAlbedoImage is not null)
+            Context.RetainForExecution(commandBuffer, previousAlbedoImage);
+        if (previousNormalImage is not null)
+            Context.RetainForExecution(commandBuffer, previousNormalImage);
+        if (previousCryptoImage is not null)
+            Context.RetainForExecution(commandBuffer, previousCryptoImage);
+        if (previousPositionImage is not null)
+            Context.RetainForExecution(commandBuffer, previousPositionImage);
+        if (previousAdaptiveStateImage is not null)
+            Context.RetainForExecution(commandBuffer, previousAdaptiveStateImage);
 
         var supportedHandles = GetSupportedHandleTypes();
         outputColorImage = new ImageResource(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
@@ -294,6 +334,8 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         renderImageSize = size;
         lastBoundColorImageViewHandle = 0;
         FrameIndex = 0;
+        commandBuffer.AddExternalReference();
+        pendingResizeCompletion = commandBuffer;
         Log.Information("Recreated raytracer intermediate images: {Width}x{Height}", size.Width, size.Height);
     }
 
@@ -447,9 +489,41 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
     protected void DisposeCommonResources()
     {
+        ReleasePendingResizeTracker(waitForCompletion: true);
         DisposeRenderImages();
         sceneSettingsBuffer?.Dispose();
         sceneSettingsBuffer = null;
+    }
+
+    private void CompletePendingResizeIfReady()
+    {
+        if (pendingResizeCompletion is null)
+            return;
+
+        if (!pendingResizeCompletion.IsExecutionComplete())
+            return;
+
+        pendingResizeCompletion.ReleaseExternalReference();
+        pendingResizeCompletion = null;
+    }
+
+    private void ReleasePendingResizeTracker(bool waitForCompletion)
+    {
+        if (pendingResizeCompletion is null)
+            return;
+
+        try
+        {
+            if (waitForCompletion)
+                pendingResizeCompletion.WaitForCompletion();
+        }
+        finally
+        {
+            pendingResizeCompletion.ReleaseExternalReference();
+            pendingResizeCompletion = null;
+            hasDeferredResize = false;
+            deferredResizeSize = default;
+        }
     }
 
     public abstract void Dispose();

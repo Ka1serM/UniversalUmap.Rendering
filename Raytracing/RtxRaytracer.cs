@@ -30,6 +30,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private int queuedTlasSlotIndex = -1;
     private long lastTlasBuildTicks;
     private GpuBuffer meshBuffer = default!;
+    private GpuBuffer rtxInstanceBuffer = default!;
 
     private sealed class TlasResourceSlot : IDisposable
     {
@@ -92,20 +93,26 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             new byte[16]);
+        rtxInstanceBuffer = new GpuBuffer(
+            Context,
+            16,
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            new byte[16]);
 
-        var fullPathRaygenBytes = EmbeddedAssets.ReadByFileName("PathTracingRaygen.spv");
-        var aoRaygenBytes = EmbeddedAssets.ReadByFileName("AoRaygen.spv");
-        var directRaygenBytes = EmbeddedAssets.ReadByFileName("DirectLightingRaygen.spv");
-        var missBytes = EmbeddedAssets.ReadByFileName("PathTracingMiss.spv");
-        var aoMissBytes = EmbeddedAssets.ReadByFileName("AoMiss.spv");
-        var directMissBytes = EmbeddedAssets.ReadByFileName("DirectLightingMiss.spv");
-        var shadowMissBytes = EmbeddedAssets.ReadByFileName("ShadowMiss.spv");
-        var hitBytes = EmbeddedAssets.ReadByFileName("PathTracingClosesthit.spv");
-        var aoHitBytes = EmbeddedAssets.ReadByFileName("AoClosesthit.spv");
-        var directHitBytes = EmbeddedAssets.ReadByFileName("DirectLightingClosesthit.spv");
+        var pathRaygenBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/PathTracing/Raygen.spv");
+        var aoRaygenBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/AO/Raygen.spv");
+        var directRaygenBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/DirectLighting/Raygen.spv");
+        var missBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/PathTracing/Miss.spv");
+        var aoMissBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/AO/Miss.spv");
+        var directMissBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/DirectLighting/Miss.spv");
+        var shadowMissBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/Lights/ShadowMiss.spv");
+        var hitBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/PathTracing/Closesthit.spv");
+        var aoHitBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/AO/Closesthit.spv");
+        var directHitBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/DirectLighting/Closesthit.spv");
         using var mainName = new ByteString("main");
 
-        var fullPathRaygenModule = CreateShaderModule(fullPathRaygenBytes);
+        var fullPathRaygenModule = CreateShaderModule(pathRaygenBytes);
         var aoRaygenModule = CreateShaderModule(aoRaygenBytes);
         var directRaygenModule = CreateShaderModule(directRaygenBytes);
         var missModule = CreateShaderModule(missBytes);
@@ -116,38 +123,43 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var aoHitModule = CreateShaderModule(aoHitBytes);
         var directHitModule = CreateShaderModule(directHitBytes);
 
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[10];
+        var layoutBindings = stackalloc DescriptorSetLayoutBinding[11];
         layoutBindings[0] = new DescriptorSetLayoutBinding(
             0,
             DescriptorType.AccelerationStructureKhr,
             1,
             ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr);
-        layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[1] = new DescriptorSetLayoutBinding(
+            1,
+            DescriptorType.StorageBuffer,
+            1,
+            ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr);
         layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
         layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
-        layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ClosestHitBitKhr);
-        layoutBindings[8] = new DescriptorSetLayoutBinding(
-            8,
+        layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.StorageImage, 1, ShaderStageFlags.RaygenBitKhr);
+        layoutBindings[8] = new DescriptorSetLayoutBinding(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ClosestHitBitKhr);
+        layoutBindings[9] = new DescriptorSetLayoutBinding(
+            9,
             DescriptorType.StorageBuffer,
             1,
             ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr);
-        layoutBindings[9] = new DescriptorSetLayoutBinding(
-            9,
+        layoutBindings[10] = new DescriptorSetLayoutBinding(
+            10,
             DescriptorType.CombinedImageSampler,
             MaxTextures,
             ShaderStageFlags.RaygenBitKhr | ShaderStageFlags.ClosestHitBitKhr | ShaderStageFlags.MissBitKhr | ShaderStageFlags.FragmentBit);
-        var bindingFlags = stackalloc DescriptorBindingFlags[10];
-        bindingFlags[9] = DescriptorBindingFlags.PartiallyBoundBit |
+        var bindingFlags = stackalloc DescriptorBindingFlags[11];
+        bindingFlags[10] = DescriptorBindingFlags.PartiallyBoundBit |
                           DescriptorBindingFlags.VariableDescriptorCountBit |
                           DescriptorBindingFlags.UpdateAfterBindBit;
 
         var bindingFlagsInfo = new DescriptorSetLayoutBindingFlagsCreateInfo
         {
             SType = StructureType.DescriptorSetLayoutBindingFlagsCreateInfo,
-            BindingCount = 10,
+            BindingCount = 11,
             PBindingFlags = bindingFlags
         };
 
@@ -155,7 +167,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
             Flags = DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit,
-            BindingCount = 10,
+            BindingCount = 11,
             PBindings = layoutBindings,
             PNext = &bindingFlagsInfo
         };
@@ -263,7 +275,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     {
         var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
         var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
-        if (!meshesDirty && !tlasDirty && queuedTlasSlotIndex < 0)
+        var rtxInstancesDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas);
+        if (!meshesDirty && !tlasDirty && !rtxInstancesDirty && queuedTlasSlotIndex < 0)
             return;
 
         var meshBytesLength = 0;
@@ -286,13 +299,38 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = descriptorSet,
-                DstBinding = 7,
+                DstBinding = 8,
                 DescriptorType = DescriptorType.StorageBuffer,
                 DescriptorCount = 1,
                 PBufferInfo = &meshInfo
             };
             Context.Api.UpdateDescriptorSets(Context.Device, 1, in meshWrite, 0, null);
             Scene.ClearDirty(SceneDirtyFlags.Meshes);
+        }
+
+        if (rtxInstancesDirty)
+        {
+            var rtxInstanceBytes = Scene.BuildRtxInstanceBufferData();
+            var previousRtxInstanceBuffer = rtxInstanceBuffer;
+            rtxInstanceBuffer = new GpuBuffer(
+                Context,
+                (ulong)rtxInstanceBytes.Length,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                rtxInstanceBytes);
+            Context.RetainForExecution(commandBuffer, previousRtxInstanceBuffer);
+
+            var rtxInstanceInfo = new DescriptorBufferInfo(rtxInstanceBuffer.Handle, 0, rtxInstanceBuffer.Size);
+            var rtxInstanceWrite = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = descriptorSet,
+                DstBinding = RtxInstanceBufferBinding,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = &rtxInstanceInfo
+            };
+            Context.Api.UpdateDescriptorSets(Context.Device, 1, in rtxInstanceWrite, 0, null);
         }
 
         if (tlasDirty)
@@ -308,7 +346,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             Scene.ClearDirty(SceneDirtyFlags.Tlas);
         }
 
-        if (meshesDirty || tlasDirty)
+        if (meshesDirty || tlasDirty || rtxInstancesDirty)
         {
             Log.Debug(
                 "RTX scene resources updated: meshBytes={MeshBytes}, tlasSlot={TlasSlot}/{SlotCount}, tlasQueued={TlasQueued}.",
@@ -321,6 +359,9 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     protected override DescriptorSet GetDescriptorSet() => descriptorSet;
     protected override DescriptorSetLayout GetDescriptorSetLayout() => descriptorSetLayout;
+    protected override uint OutputImageBindingBase => 2;
+    protected override uint SceneSettingsBinding => 9;
+    protected override uint TextureArrayBinding => 10;
 
     private bool ShouldBuildTlasNow(bool force)
     {
@@ -553,6 +594,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         fullPathPipelineState.Dispose();
         directPipelineState.Dispose();
         meshBuffer.Dispose();
+        rtxInstanceBuffer?.Dispose();
         foreach (var slot in tlasSlots)
             slot.Dispose();
 

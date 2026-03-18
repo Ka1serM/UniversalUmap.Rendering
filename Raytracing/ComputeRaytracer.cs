@@ -22,9 +22,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     public ComputeRaytracer(Context context, Scene scene)
         : base(context, scene)
     {
-        var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("PathTracingPipeline.spv");
-        var aoShaderBytes = EmbeddedAssets.ReadByFileName("AoPipeline.spv");
-        var directShaderBytes = EmbeddedAssets.ReadByFileName("DirectLightingPipeline.spv");
+        var fullPathShaderBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/PathTracing/Compute.spv");
+        var aoShaderBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/AO/Compute.spv");
+        var directShaderBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/DirectLighting/Compute.spv");
         using var mainName = new ByteString("main");
 
         var fullPathModule = CreateShaderModule(fullPathShaderBytes);
@@ -139,7 +139,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
             return;
 
-        var instanceBytes = Scene.BuildComputeInstanceData();
+        var instanceBytes = Scene.BuildInstanceData();
         var meshBytes = Scene.BuildMeshAddressData();
 
         var previousInstancesBuffer = instancesBuffer;

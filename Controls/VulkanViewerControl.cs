@@ -465,7 +465,10 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 selectedInstanceId,
                 target,
                 scene.Camera.IsMoving);
-            context.SubmitCommandBuffer(commandBuffer);
+            if (raytracer is ComputeRaytracer)
+                context.SubmitAndWait(commandBuffer);
+            else
+                context.SubmitCommandBuffer(commandBuffer);
         });
     }
 
@@ -520,9 +523,8 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private void UpdateCameraRenderSizeFromLayout()
     {
-        if (scene is null)
-            return;
-
+        // Avoid taking scene locks on UI/layout thread during interactive window resize.
+        // Camera render size is already updated each frame in RenderFrame() via scene.UpdateCamera(target.Size, ...).
         var root = this.GetVisualRoot();
         if (root is null)
             return;
@@ -530,8 +532,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
         if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
             return;
-
-        scene.UpdateCameraRenderSize(pixelSize);
     }
 
     private bool IsCurrentLifecycle(long version) => running && lifecycleVersion == version;

@@ -35,7 +35,7 @@ public sealed unsafe class Compositor : IDisposable
     public Compositor(Context context)
     {
         this.context = context;
-        var shaderBytes = EmbeddedAssets.ReadByFileName("Compositor.spv");
+        var shaderBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/Compositing/Compositor.spv");
         using var mainName = new ByteString("main");
 
         ShaderModule computeModule;

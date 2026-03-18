@@ -11,12 +11,12 @@ public partial class EnvironmentSettings : ObservableObject
     [ObservableProperty] private int irradianceMapIndex = -1;
     [ObservableProperty] private int radianceMapIndex = -1;
     [ObservableProperty] private float rotation;
-    [ObservableProperty] private float visibleExposure = 1.5f;
-    [ObservableProperty] private float lightingExposure = 1.5f;
+    [ObservableProperty] private float visibleExposure = 1f;
+    [ObservableProperty] private float lightingExposure = 0f;
     [ObservableProperty] private float maxTextureLod;
     [ObservableProperty] private bool visible = true;
     [ObservableProperty] private Vector3 directionalDirection = new(0.41338775f, -0.7398497f, 0.53078514f);
-    [ObservableProperty] private float directionalIntensity = 3f;
+    [ObservableProperty] private float directionalIntensity = 6f;
 
     EnvironmentDataGpu IGpuSnapshot<EnvironmentDataGpu>.ToStruct() => ToStruct();
 

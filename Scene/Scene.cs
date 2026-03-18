@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Buffers.Binary;
+using System.IO;
 using System.Numerics;
 using Avalonia;
 using CUE4Parse.UE4.Objects.Core.Math;
@@ -291,22 +293,52 @@ public sealed class Scene : IDisposable, IScene
     public void TryLoadDefaultEnvironment()
     {
         const string hdriFileName = "kiara_1_dawn_4k.hdr";
-        var embeddedHdr = EmbeddedAssets.ReadByFileName(hdriFileName);
+        var baseName = Path.GetFileNameWithoutExtension(hdriFileName);
 
         try
         {
-            var textureSet = TextureAsset.CreateHdrWithCdf(context, hdriFileName, embeddedHdr);
-            Add(textureSet.Environment);
-            Add(textureSet.Cdf);
-            Add(textureSet.IrradianceMap);
-            Add(textureSet.RadianceMap);
-            SetEnvironment(textureSet.Environment, textureSet.Cdf, textureSet.IrradianceMap, textureSet.RadianceMap);
-            Log.Information("Loaded default environment from embedded asset '{HdrFileName}' with IBL maps.", hdriFileName);
+            var environment = CreateEnvironmentMapTexture(hdriFileName, $"{baseName}_env.bin", generateMipmaps: true);
+            var cdf = CreateEnvironmentMapTexture($"{hdriFileName}_cdf", $"{baseName}_cdf.bin");
+            var irradiance = CreateEnvironmentMapTexture($"{hdriFileName}_irradiance", $"{baseName}_irradiance.bin");
+            var radiance = CreateEnvironmentMapTexture($"{hdriFileName}_radiance", $"{baseName}_radiance.bin", generateMipmaps: true);
+
+            Add(environment);
+            Add(cdf);
+            Add(irradiance);
+            Add(radiance);
+            SetEnvironment(environment, cdf, irradiance, radiance);
+            Log.Information("Loaded precompiled default environment '{HdrFileName}'.", hdriFileName);
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to load default environment map.");
+            Log.Warning(ex, "Failed to load precompiled default environment map '{HdrFileName}'.", hdriFileName);
         }
+    }
+
+    private TextureAsset CreateEnvironmentMapTexture(string textureName, string embeddedFileName, bool generateMipmaps = false)
+    {
+        var packed = EmbeddedAssets.ReadByFileName(embeddedFileName);
+        if (packed.Length < 8)
+            throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+
+        var width = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(0, 4));
+        var height = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(4, 4));
+        if (width <= 0 || height <= 0)
+            throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+        var expectedByteLength = checked(width * height * 4 * sizeof(float));
+        if (packed.Length != 8 + expectedByteLength)
+            throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+
+        var rgba32fBytes = packed.AsSpan(8).ToArray();
+
+        return TextureAsset.CreateRgba32Float(
+            context,
+            textureName,
+            string.Empty,
+            rgba32fBytes,
+            (uint)width,
+            (uint)height,
+            generateMipmaps);
     }
 
     public bool IsDirty(SceneDirtyFlags flags) => Synchronize(() => (dirtyFlags & flags) != 0);
@@ -483,22 +515,23 @@ public sealed class Scene : IDisposable, IScene
         SetDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
     }
 
-    internal byte[] BuildComputeInstanceData()
+    internal byte[] BuildInstanceData()
     {
         if (meshInstances.Count == 0)
         {
-            var empty = new ComputeInstanceGpu
+            var empty = new InstanceGpu
             {
                 Transform = Matrix4x4.Identity,
                 InverseTransform = Matrix4x4.Identity,
+                NormalTransform = Matrix4x4.Identity,
                 MeshId = uint.MaxValue
             };
             return StructPacking.ToBytes(new[] { empty });
         }
 
-        var instances = new ComputeInstanceGpu[meshInstances.Count];
+        var instances = new InstanceGpu[meshInstances.Count];
         for (var i = 0; i < meshInstances.Count; i++)
-            instances[i] = meshInstances[i].BuildComputeInstanceData();
+            instances[i] = meshInstances[i].BuildInstanceData();
 
         return StructPacking.ToBytes(instances);
     }
@@ -529,9 +562,34 @@ public sealed class Scene : IDisposable, IScene
 
         var instances = new AccelerationStructureInstanceKHR[meshInstances.Count];
         for (var i = 0; i < meshInstances.Count; i++)
+        {
             instances[i] = meshInstances[i].BuildRtxInstanceData();
+            // Set InstanceCustomIndex to the instance array index for unique identification
+            instances[i].InstanceCustomIndex = (uint)i;
+        }
 
         return StructPacking.ToBytes(instances);
+    }
+
+    internal byte[] BuildRtxInstanceBufferData()
+    {
+        if (meshInstances.Count == 0)
+        {
+            var empty = new InstanceGpu
+            {
+                NormalTransform = Matrix4x4.Identity,
+                MeshId = uint.MaxValue
+            };
+            return StructPacking.ToBytes(new[] { empty });
+        }
+
+        var rtxInstances = new InstanceGpu[meshInstances.Count];
+        for (var i = 0; i < meshInstances.Count; i++)
+        {
+            rtxInstances[i] = meshInstances[i].BuildInstanceData();
+        }
+
+        return StructPacking.ToBytes(rtxInstances);
     }
 
     public void Dispose()

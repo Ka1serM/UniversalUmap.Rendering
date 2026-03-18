@@ -285,8 +285,8 @@ public sealed class SunDirectionControl : VulkanShaderControl
         shaderContext = context;
         shaderProgram = new VulkanRasterShaderProgram(
             context,
-            "FullScreenTriVS.spv",
-            "SunDirectionWidgetFS.spv",
+            "Assets/Shaders/Widgets/FullScreenTriVS.spv",
+            "Assets/Shaders/Widgets/SunDirectionWidgetFS.spv",
             PrimitiveTopology.TriangleList,
             ShaderStageFlags.FragmentBit,
             (uint)Marshal.SizeOf<PushConstants>(),
