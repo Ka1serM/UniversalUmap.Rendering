@@ -32,5 +32,5 @@ float4 main(float2 vUv : TEXCOORD0) : SV_Target
     float3 color = BASE_COLOR + float3(0.96 * key) + rim * float3(0.68, 0.76, 0.90);
     color = clamp(color, 0.0, 1.0);
 
-    return float4(color, alpha);
+    return float4(color * alpha, alpha);
 }

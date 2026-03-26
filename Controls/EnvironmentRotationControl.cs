@@ -8,6 +8,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Scenes;
@@ -17,9 +18,10 @@ namespace UniversalUmap.Rendering.Controls;
 
 public sealed class EnvironmentRotationControl : VulkanShaderControl
 {
-    private const double WidgetSize = 67d;
-    private const double RightInset = 15d + WidgetSize + 10d;
-    private const double BottomInset = 15d;
+    private const double CornerInset = 15d;
+    private const double WidgetGap = 10d;
+    private const double WidgetSize = 48d;
+    private const double RightInset = CornerInset + WidgetSize + WidgetGap;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PushConstants
@@ -33,6 +35,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     private DescriptorPool descriptorPool;
     private DescriptorSetLayout descriptorSetLayout;
     private DescriptorSet descriptorSet;
+    private TextureAsset? fallbackTexture;
     private int boundTextureIndex = int.MinValue;
 
     private bool suppressUiEvents;
@@ -55,7 +58,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Right;
         VerticalAlignment = VerticalAlignment.Bottom;
-        Margin = new Thickness(0, 0, RightInset, BottomInset);
+        Margin = new Thickness(0, 0, RightInset, CornerInset);
         Width = WidgetSize;
         Height = WidgetSize;
 
@@ -97,6 +100,8 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         }
         descriptorSet = default;
         boundTextureIndex = int.MinValue;
+        fallbackTexture?.Dispose();
+        fallbackTexture = null;
         shaderContext = null;
     }
 
@@ -202,13 +207,13 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             InvalidateGpuFrame();
             if (!suppressUiEvents && Source is { } source)
             {
-                    var scene = source.Scene;
-                    if (scene is not null)
-                    {
-                        scene.Synchronize(() => scene.Environment.Rotation = rotationDegrees);
-                    }
+                var scene = source.Scene;
+                if (scene is not null)
+                {
+                    scene.Synchronize(() => scene.Environment.Rotation = rotationDegrees);
                 }
             }
+        }
 
         PointerCaptureCoordinator.TryWrapAround(this, p);
         e.Handled = true;
@@ -266,7 +271,9 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
 
         shaderProgram?.Dispose();
         shaderContext = context;
+        Log.Debug("Creating EnvironmentRotationControl shader program.");
         EnsureDescriptorResources(context);
+        EnsureFallbackTexture(context);
         shaderProgram = new VulkanRasterShaderProgram(
             context,
             "Assets/Shaders/Widgets/FullScreenTriVS.spv",
@@ -330,7 +337,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         if (scene.TryGetTextureAt(environmentTextureIndex, out var texture) && texture is not null)
             imageInfo = texture.GetDescriptorImageInfo();
         else
-            imageInfo = default;
+            imageInfo = fallbackTexture?.GetDescriptorImageInfo() ?? default;
 
         var write = new WriteDescriptorSet
         {
@@ -343,6 +350,20 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         };
         shaderContext.Api.UpdateDescriptorSets(shaderContext.Device, 1, in write, 0, null);
         boundTextureIndex = environmentTextureIndex;
+    }
+
+    private void EnsureFallbackTexture(Context context)
+    {
+        if (fallbackTexture is not null)
+            return;
+
+        fallbackTexture = TextureAsset.CreateRgba8(
+            context,
+            "EnvironmentWidgetFallback",
+            string.Empty,
+            new byte[] { 96, 132, 184, 255 },
+            1,
+            1);
     }
 
     private void SubscribeToSource(VulkanViewerControl? source)

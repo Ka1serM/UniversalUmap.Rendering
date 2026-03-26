@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "zq2zXqxbO2M=",
+  "success": true,
+  "projectFilePath": "/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/SlangGenerator/SlangGenerator.csproj",
+  "expectedPackageFiles": [
+    "/var/home/marcel/.containers/dev/.nuget/packages/microsoft.codeanalysis.analyzers/3.11.0/microsoft.codeanalysis.analyzers.3.11.0.nupkg.sha512",
+    "/var/home/marcel/.containers/dev/.nuget/packages/microsoft.codeanalysis.common/4.14.0/microsoft.codeanalysis.common.4.14.0.nupkg.sha512",
+    "/var/home/marcel/.containers/dev/.nuget/packages/microsoft.codeanalysis.csharp/4.14.0/microsoft.codeanalysis.csharp.4.14.0.nupkg.sha512"
+  ],
+  "logs": []
+}

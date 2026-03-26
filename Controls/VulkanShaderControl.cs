@@ -142,6 +142,7 @@ public abstract class VulkanShaderControl : ContentControl
 
             surface = new VulkanSurface(context, interop, drawingSurface);
             initialized = true;
+            Log.Debug("{ControlType} initialized Vulkan shader control resources.", GetType().Name);
             InvalidateGpuFrame();
         }
         catch (Exception ex)
@@ -234,17 +235,19 @@ public abstract class VulkanShaderControl : ContentControl
                 {
                     var waitCommandBuffer = context.CreateCommandBuffer();
                     context.BeginCommandBuffer(waitCommandBuffer);
-                    context.SubmitCommandBuffer(
+                    Log.Debug("{ControlType} waiting for surface availability.", GetType().Name);
+                    context.SubmitAndWait(
                         waitCommandBuffer,
                         [lease.ImageAvailableSemaphore],
                         [PipelineStageFlags.ColorAttachmentOutputBit]);
                 }
 
+                Log.Debug("{ControlType} drawing widget frame {Width}x{Height}.", GetType().Name, pixelSize.Width, pixelSize.Height);
                 OnRasterDraw(context, lease.Image);
                 var commandBuffer = context.CreateCommandBuffer();
                 context.BeginCommandBuffer(commandBuffer);
                 lease.Image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
-                context.SubmitCommandBuffer(commandBuffer, signalSemaphores: [lease.RenderFinishedSemaphore]);
+                context.SubmitAndWait(commandBuffer, signalSemaphores: [lease.RenderFinishedSemaphore]);
                 surface.CompleteRender(lease, commandBuffer);
             }
             finally

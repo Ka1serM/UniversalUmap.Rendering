@@ -135,16 +135,16 @@ float3 offsetRayOrigin(float3 worldPosition, float3 geometricNormal, float3 outD
 }
 
 float3 sampleMaterialShadingNormal(
-    MaterialData material,
+    int normalTextureIndex,
     float2 interpolatedUV,
     float3 shadingNormal,
     float3 interpolatedTangent,
     float interpolatedTangentSign)
 {
-    if (material.NormalIndex == -1)
+    if (normalTextureIndex == -1)
         return shadingNormal;
 
-    float3 packedNormal = textureSamplers[material.NormalIndex].Sample(interpolatedUV).xyz;
+    float3 packedNormal = textureSamplers[normalTextureIndex].Sample(interpolatedUV).xyz;
     return applyNormalMap(shadingNormal, interpolatedTangent, interpolatedTangentSign, packedNormal);
 }
 

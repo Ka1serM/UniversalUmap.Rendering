@@ -18,7 +18,22 @@ int effectivePrimarySampleCount()
 
 bool useShaderPixelSize()
 {
-    return isInteractiveFrame() && pushConstants.PixelSizePercent > 100;
+    return pushConstants.PixelSizePercent > 100;
+}
+
+int ceilDivInt(int numerator, int denominator)
+{
+    return (numerator + denominator - 1) / max(denominator, 1);
+}
+
+int partitionStart(int partitionIndex, int fullSize, int partitionCount)
+{
+    return ceilDivInt(partitionIndex * fullSize, partitionCount);
+}
+
+int partitionEndExclusive(int partitionIndex, int fullSize, int partitionCount)
+{
+    return ceilDivInt((partitionIndex + 1) * fullSize, partitionCount);
 }
 
 int2 effectiveShadingScreenSize(int2 fullScreenSize)
@@ -27,8 +42,8 @@ int2 effectiveShadingScreenSize(int2 fullScreenSize)
         return fullScreenSize;
 
     int percent = max(pushConstants.PixelSizePercent, 100);
-    int width = max(1, int(ceil(float(fullScreenSize.x) * 100.0 / float(percent))));
-    int height = max(1, int(ceil(float(fullScreenSize.y) * 100.0 / float(percent))));
+    int width = max(1, ceilDivInt(fullScreenSize.x * 100, percent));
+    int height = max(1, ceilDivInt(fullScreenSize.y * 100, percent));
     return int2(width, height);
 }
 
@@ -37,22 +52,22 @@ int2 mapOutputPixelToShadingPixel(int2 outputPixel, int2 fullScreenSize, int2 sh
     if (all(shadingScreenSize == fullScreenSize))
         return outputPixel;
 
-    int x = int(floor(float(outputPixel.x) * float(shadingScreenSize.x) / float(max(fullScreenSize.x, 1))));
-    int y = int(floor(float(outputPixel.y) * float(shadingScreenSize.y) / float(max(fullScreenSize.y, 1))));
+    int x = (outputPixel.x * shadingScreenSize.x) / max(fullScreenSize.x, 1);
+    int y = (outputPixel.y * shadingScreenSize.y) / max(fullScreenSize.y, 1);
     return clamp(int2(x, y), int2(0), shadingScreenSize - 1);
 }
 
 int2 shadingPixelStart(int2 shadingPixel, int2 fullScreenSize, int2 shadingScreenSize)
 {
-    int x = int(ceil(float(shadingPixel.x) * float(fullScreenSize.x) / float(max(shadingScreenSize.x, 1))));
-    int y = int(ceil(float(shadingPixel.y) * float(fullScreenSize.y) / float(max(shadingScreenSize.y, 1))));
+    int x = partitionStart(shadingPixel.x, fullScreenSize.x, shadingScreenSize.x);
+    int y = partitionStart(shadingPixel.y, fullScreenSize.y, shadingScreenSize.y);
     return clamp(int2(x, y), int2(0), fullScreenSize - 1);
 }
 
 int2 shadingPixelEndExclusive(int2 shadingPixel, int2 fullScreenSize, int2 shadingScreenSize)
 {
-    int x = int(ceil(float(shadingPixel.x + 1) * float(fullScreenSize.x) / float(max(shadingScreenSize.x, 1))));
-    int y = int(ceil(float(shadingPixel.y + 1) * float(fullScreenSize.y) / float(max(shadingScreenSize.y, 1))));
+    int x = partitionEndExclusive(shadingPixel.x, fullScreenSize.x, shadingScreenSize.x);
+    int y = partitionEndExclusive(shadingPixel.y, fullScreenSize.y, shadingScreenSize.y);
     return clamp(int2(x, y), int2(1), fullScreenSize);
 }
 

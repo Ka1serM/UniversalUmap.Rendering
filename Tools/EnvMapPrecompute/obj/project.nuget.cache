@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "ZllgIqGT36M=",
+  "success": true,
+  "projectFilePath": "/run/host/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/EnvMapPrecompute.csproj",
+  "expectedPackageFiles": [
+    "/var/home/marcel/.containers/dev/.nuget/packages/stbimagesharp/2.30.15/stbimagesharp.2.30.15.nupkg.sha512"
+  ],
+  "logs": []
+}

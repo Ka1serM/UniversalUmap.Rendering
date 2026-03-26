@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using Avalonia;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -18,6 +19,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
     private const float SpeedBoostMultiplier = 10f;
     private const float DataEpsilon = 0.0001f;
     private const float WheelDollyScale = 0.8f;
+    private const double DirectInteractionHoldSeconds = 0.15d;
 
     private readonly Input input;
     private CameraDataGpu data = new();
@@ -26,6 +28,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
     private Quaternion rotation = Quaternion.Identity;
     private PixelSize lastRenderSize = new(1, 1);
     private double lastInputLogSeconds;
+    private long directInteractionUntilTicks;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HorizontalFovDegrees))]
@@ -88,6 +91,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         offset = Vector3.Transform(offset, rotationDelta);
         position = ArcballPivot + offset;
         rotation = Quaternion.Normalize(yawQuat * pitchQuat * rotation);
+        MarkDirectInteraction();
         RebuildData();
     }
 
@@ -101,6 +105,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var distance = Math.Max(1f, Vector3.Distance(position, ArcballPivot));
         var sensitivity = 0.0015f * distance;
         position += right * (-deltaX * sensitivity) + up * (deltaY * sensitivity);
+        MarkDirectInteraction();
         RebuildData();
     }
 
@@ -112,18 +117,29 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var forward = Vector3.Normalize(Vector3.Transform(LocalForward, rotation));
         var distance = Math.Max(1f, Vector3.Distance(position, ArcballPivot));
         position += forward * (amount * Math.Max(0.25f, distance * 0.05f));
+        MarkDirectInteraction();
         RebuildData();
     }
 
     public void SetPosition(Vector3 value)
     {
+        if (Vector3.DistanceSquared(position, value) <= DataEpsilon * DataEpsilon)
+            return;
+
         position = value;
+        MarkDirectInteraction();
         RebuildData();
     }
 
     public void SetRotation(Quaternion value)
     {
-        rotation = Quaternion.Normalize(value);
+        var normalizedValue = Quaternion.Normalize(value);
+        var delta = Quaternion.Dot(rotation, normalizedValue);
+        if (MathF.Abs(MathF.Abs(delta) - 1f) <= DataEpsilon)
+            return;
+
+        rotation = normalizedValue;
+        MarkDirectInteraction();
         RebuildData();
     }
 
@@ -167,6 +183,9 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
                 position.Y,
                 position.Z);
         }
+
+        if (!moving && Stopwatch.GetTimestamp() <= directInteractionUntilTicks)
+            moving = true;
 
         IsMoving = moving ? 1 : 0;
         UpdateData(renderSize);
@@ -270,6 +289,12 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
     }
 
     private static float DegreesToRadians(float degrees) => degrees * (MathF.PI / 180f);
+
+    private void MarkDirectInteraction()
+    {
+        directInteractionUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * DirectInteractionHoldSeconds);
+        IsMoving = 1;
+    }
 
     partial void OnFocalLengthMmChanged(float value)
     {

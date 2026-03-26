@@ -18,9 +18,9 @@ namespace UniversalUmap.Rendering.Controls;
 public sealed class SunDirectionControl : VulkanShaderControl
 {
     private const double RotateGizmoSize = 134d;
-    private const double RotateGizmoRightInset = 15d;
-    private const double BottomInset = 15d;
-    private const double SunWidgetSize = RotateGizmoSize * 0.5d;
+    private const double CornerInset = 15d;
+    private const double SunWidgetScale = 0.72d;
+    private const double SunWidgetSize = (RotateGizmoSize * 0.5d) * SunWidgetScale;
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
     private static readonly Vector3 LocalRight = Vector3.UnitX;
     private static readonly Vector3 LocalSunDirection = Vector3.UnitY;
@@ -55,7 +55,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Right;
         VerticalAlignment = VerticalAlignment.Bottom;
-        Margin = new Thickness(0, 0, RotateGizmoRightInset, BottomInset);
+        Margin = new Thickness(0, 0, CornerInset, CornerInset);
         Width = SunWidgetSize;
         Height = SunWidgetSize;
 
@@ -286,6 +286,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
 
         shaderProgram?.Dispose();
         shaderContext = context;
+        Log.Debug("Creating SunDirectionControl shader program.");
         shaderProgram = new VulkanRasterShaderProgram(
             context,
             "Assets/Shaders/Widgets/FullScreenTriVS.spv",

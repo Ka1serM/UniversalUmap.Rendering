@@ -1,4 +1,5 @@
 using System;
+using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Vulkan;
@@ -31,6 +32,12 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         this.pushConstantStages = pushConstantStages;
         hasVertexInput = !vertexBindings.IsEmpty || !vertexAttributes.IsEmpty;
         this.externalDescriptorSet = externalDescriptorSet;
+        Log.Debug(
+            "Creating VulkanRasterShaderProgram: VS={VertexShader} FS={FragmentShader} VertexInput={HasVertexInput} ExternalSet={HasExternalSet}",
+            vertexShaderSpvAsset,
+            fragmentShaderSpvAsset,
+            hasVertexInput,
+            externalDescriptorSet.Handle != default);
 
         var vertBytes = EmbeddedAssets.ReadByFileName(vertexShaderSpvAsset);
         var fragBytes = EmbeddedAssets.ReadByFileName(fragmentShaderSpvAsset);
@@ -169,7 +176,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 PDynamicStates = dynamicStates
             };
 
-            var colorFormat = Format.B8G8R8A8Unorm;
+            var colorFormat = Format.R8G8B8A8Unorm;
             var renderingInfo = new PipelineRenderingCreateInfo
             {
                 SType = StructureType.PipelineRenderingCreateInfo,
@@ -212,6 +219,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
     {
         var commandBuffer = context.CreateCommandBuffer();
         context.BeginCommandBuffer(commandBuffer);
+        Log.Debug("Raster shader draw: target={Width}x{Height} vertexCount={VertexCount}", target.Size.Width, target.Size.Height, vertexCount);
         BeginRenderPass(commandBuffer, target);
 
         if (hasVertexInput && vertexBuffer is not null)
@@ -234,7 +242,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 
         context.Api.CmdDraw(commandBuffer.InternalHandle, vertexCount, 1, firstVertex, 0);
         EndRenderPass(commandBuffer, target);
-        context.SubmitCommandBuffer(commandBuffer);
+        context.SubmitAndWait(commandBuffer);
     }
 
     public void DrawIndexed<TPushConstants>(
@@ -248,6 +256,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
     {
         var commandBuffer = context.CreateCommandBuffer();
         context.BeginCommandBuffer(commandBuffer);
+        Log.Debug("Raster shader indexed draw: target={Width}x{Height} indexCount={IndexCount}", target.Size.Width, target.Size.Height, indexCount);
         BeginRenderPass(commandBuffer, target);
 
         var vb = vertexBuffer.Handle;
@@ -268,7 +277,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 
         context.Api.CmdDrawIndexed(commandBuffer.InternalHandle, indexCount, 1, 0, 0, 0);
         EndRenderPass(commandBuffer, target);
-        context.SubmitCommandBuffer(commandBuffer);
+        context.SubmitAndWait(commandBuffer);
     }
 
     private void BeginRenderPass(Context.CommandBuffer commandBuffer, ImageResource target)

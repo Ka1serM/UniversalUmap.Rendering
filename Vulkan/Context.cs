@@ -334,7 +334,7 @@ public sealed class Context : IDisposable
                     "VK_EXT_descriptor_indexing",
                     "VK_KHR_deferred_host_operations",
                     "VK_KHR_acceleration_structure",
-                    "VK_KHR_ray_tracing_pipeline",
+                    "VK_KHR_ray_query",
                     "VK_KHR_spirv_1_4",
                     "VK_KHR_shader_float_controls"
                 };
@@ -400,9 +400,9 @@ public sealed class Context : IDisposable
                         {
                             SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
                         };
-                        var rayTracingPipelineFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
+                        var rayQueryFeatures = new PhysicalDeviceRayQueryFeaturesKHR
                         {
-                            SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr
+                            SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
                         };
                         var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
                         {
@@ -411,14 +411,14 @@ public sealed class Context : IDisposable
 
                         scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
                         descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
-                        accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
-                        rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
+                        accelerationStructureFeatures.PNext = &rayQueryFeatures;
+                        rayQueryFeatures.PNext = &bufferDeviceAddressFeatures;
                         api.GetPhysicalDeviceFeatures2(physical, &feature2);
 
                         rayTracingFeaturesSupported =
                             descriptorIndexingFeatures.RuntimeDescriptorArray &&
                             accelerationStructureFeatures.AccelerationStructure &&
-                            rayTracingPipelineFeatures.RayTracingPipeline &&
+                            rayQueryFeatures.RayQuery &&
                             bufferDeviceAddressFeatures.BufferDeviceAddress;
                     }
                     else
@@ -544,9 +544,9 @@ public sealed class Context : IDisposable
                     {
                         SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
                     };
-                    var rayTracingPipelineFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
+                    var rayQueryFeatures = new PhysicalDeviceRayQueryFeaturesKHR
                     {
-                        SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr
+                        SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
                     };
                     var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
                     {
@@ -563,13 +563,13 @@ public sealed class Context : IDisposable
                         descriptorIndexingFeatures.DescriptorBindingPartiallyBound = true;
 
                         accelerationStructureFeatures.AccelerationStructure = true;
-                        rayTracingPipelineFeatures.RayTracingPipeline = true;
+                        rayQueryFeatures.RayQuery = true;
                         bufferDeviceAddressFeatures.BufferDeviceAddress = true;
 
                         scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
                         descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
-                        accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
-                        rayTracingPipelineFeatures.PNext = &bufferDeviceAddressFeatures;
+                        accelerationStructureFeatures.PNext = &rayQueryFeatures;
+                        rayQueryFeatures.PNext = &bufferDeviceAddressFeatures;
                     }
 
                     deviceInfo.PNext = &feature2;
@@ -587,7 +587,7 @@ public sealed class Context : IDisposable
                     var descriptorPoolInfo = new DescriptorPoolCreateInfo
                     {
                         SType = StructureType.DescriptorPoolCreateInfo,
-                        Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit,
+                        Flags = DescriptorPoolCreateFlags.UpdateAfterBindBit | DescriptorPoolCreateFlags.FreeDescriptorSetBit,
                         MaxSets = 10,
                         PoolSizeCount = 5,
                         PPoolSizes = poolSizes

@@ -403,10 +403,10 @@ public sealed class Scene : IDisposable, IScene
 
         try
         {
-            var environment = CreateEnvironmentMapTexture(hdriFileName, $"{baseName}_env.bin", generateMipmaps: true);
-            var cdf = CreateEnvironmentMapTexture($"{hdriFileName}_cdf", $"{baseName}_cdf.bin");
-            var irradiance = CreateEnvironmentMapTexture($"{hdriFileName}_irradiance", $"{baseName}_irradiance.bin");
-            var radiance = CreateEnvironmentMapTexture($"{hdriFileName}_radiance", $"{baseName}_radiance.bin", generateMipmaps: true);
+            var environment = CreateEnvironmentMapTexture(hdriFileName, $"Assets/Precomputed/{baseName}_env.bin", generateMipmaps: true);
+            var cdf = CreateEnvironmentMapTexture($"{hdriFileName}_cdf", $"Assets/Precomputed/{baseName}_cdf.bin");
+            var irradiance = CreateEnvironmentMapTexture($"{hdriFileName}_irradiance", $"Assets/Precomputed/{baseName}_irradiance.bin");
+            var radiance = CreateEnvironmentMapTexture($"{hdriFileName}_radiance", $"Assets/Precomputed/{baseName}_radiance.bin", generateMipmaps: true);
 
             Add(environment);
             Add(cdf);

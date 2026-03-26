@@ -2,7 +2,6 @@
 #define PBR_MATERIAL_SLANG
 
 #include "../Bindings.slang"
-#include "IMaterial.slang"
 
 float3 sampleMaterialAlbedo(MaterialData material, float2 uv)
 {
@@ -76,16 +75,20 @@ void sampleMaterialPbrInputs(
     roughness = clamp(sampleMaterialRoughness(material, uv), 0.02, 1.0);
 }
 
-struct PbrMaterial : IMaterial
+void samplePbrMaterial(
+    in MaterialData material,
+    in float2 uv,
+    out float3 albedo,
+    out float3 emission,
+    out float metallic,
+    out float specular,
+    out float roughness,
+    out float opacity,
+    out float transmission)
 {
-    MaterialSample sample(MaterialData material, float2 uv)
-    {
-        MaterialSample result;
-        sampleMaterialPbrInputs(material, uv, result.albedo, result.emission, result.metallic, result.specular, result.roughness);
-        result.opacity = sampleMaterialOpacity(material, uv);
-        result.transmission = sampleMaterialTransmission(material, uv);
-        return result;
-    }
-};
+    sampleMaterialPbrInputs(material, uv, albedo, emission, metallic, specular, roughness);
+    opacity = sampleMaterialOpacity(material, uv);
+    transmission = sampleMaterialTransmission(material, uv);
+}
 
 #endif // PBR_MATERIAL_SLANG

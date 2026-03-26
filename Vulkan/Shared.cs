@@ -137,6 +137,14 @@ internal struct DrawIndirectCommandGpu
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct DispatchIndirectCommandGpu
+{
+    public uint GroupCountX;
+    public uint GroupCountY;
+    public uint GroupCountZ;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct InstanceGpu
 {
     public Matrix4x4 Transform;

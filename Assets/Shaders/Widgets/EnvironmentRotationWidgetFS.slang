@@ -53,5 +53,5 @@ float4 main(float2 vUv : TEXCOORD0) : SV_Target
     float3 shade = lerp(edgeAtten, centerLift, inverseFresnel);
     float3 color = env * shade;
     color = clamp(color, 0.0, 1.0);
-    return float4(color, alpha);
+    return float4(color * alpha, alpha);
 }

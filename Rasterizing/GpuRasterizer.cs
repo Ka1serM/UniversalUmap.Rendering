@@ -182,7 +182,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
             RunShadowOverlay(commandBuffer, renderSize);
 
         hasHistory = true;
-        scene.ClearDirty(SceneDirtyFlags.Accumulation);
+        scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }
 
     public bool QueryPixelUInt(ImageResource image, int pixelX, int pixelY, out uint value)

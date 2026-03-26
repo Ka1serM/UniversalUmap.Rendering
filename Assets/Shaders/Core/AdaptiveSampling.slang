@@ -8,16 +8,24 @@
 #include "Accumulation.slang"
 #include "RenderPolicy.slang"
 
+struct AdaptiveSamplingGateContext {
+    bool adaptiveSamplingEnabled;
+    bool wasConverged;
+};
+
+struct AdaptiveSamplingFrameContext {
+    float exposureScale;
+    bool adaptiveSamplingEnabled;
+};
+
 struct AdaptiveSamplingContext {
     float4 prevColorData;
     float4 prevAdaptiveData;
     float exposureScale;
-    bool hasHistory;
     bool adaptiveSamplingEnabled;
     int adaptiveMinSamples;
     float adaptiveTargetError;
     float previousTotalSamples;
-    bool wasConverged;
 };
 
 struct AdaptiveSamplingFrameState {
@@ -26,28 +34,48 @@ struct AdaptiveSamplingFrameState {
     int samplesTaken;
 };
 
+AdaptiveSamplingGateContext loadAdaptiveSamplingGateContext(int2 pixelCoord)
+{
+    AdaptiveSamplingGateContext context;
+    context.adaptiveSamplingEnabled =
+        (sceneSettings.RenderSettings.AdaptiveSamplingEnabled != 0) &&
+        (pushConstants.IsMoving == 0);
+    context.wasConverged = false;
+    if (!context.adaptiveSamplingEnabled || pushConstants.Frame <= 0)
+        return context;
+
+    float4 previousAdaptiveData = outputAdaptiveState[pixelCoord];
+    float previousTotalSamples = previousAdaptiveData.z;
+    float adaptiveMinSamples = float(max(1, sceneSettings.RenderSettings.AdaptiveMinSamples));
+    context.wasConverged =
+        previousTotalSamples >= adaptiveMinSamples &&
+        previousAdaptiveData.w > 0.5;
+    return context;
+}
+
+AdaptiveSamplingFrameContext loadAdaptiveSamplingFrameContext()
+{
+    AdaptiveSamplingFrameContext context;
+    context.exposureScale = exp2(sceneSettings.RenderSettings.Exposure);
+    context.adaptiveSamplingEnabled =
+        (sceneSettings.RenderSettings.AdaptiveSamplingEnabled != 0) &&
+        (pushConstants.IsMoving == 0);
+    return context;
+}
+
 AdaptiveSamplingContext loadAdaptiveSamplingContext(int2 pixelCoord)
 {
     AdaptiveSamplingContext context;
-    context.hasHistory = (pushConstants.Frame > 0) && (pushConstants.IsMoving == 0);
-    context.prevColorData = context.hasHistory ? outputColor[pixelCoord] : float4(0.0);
-    context.prevAdaptiveData = context.hasHistory ? outputAdaptiveState[pixelCoord] : float4(0.0);
+    bool hasHistory = (pushConstants.Frame > 0) && (pushConstants.IsMoving == 0);
+    context.prevColorData = hasHistory ? outputColor[pixelCoord] : float4(0.0);
+    context.prevAdaptiveData = hasHistory ? outputAdaptiveState[pixelCoord] : float4(0.0);
     context.exposureScale = exp2(sceneSettings.RenderSettings.Exposure);
-    // Temporarily disable adaptive sampling in the main lighting shaders while we
-    // investigate the post-load performance regression.
-    context.adaptiveSamplingEnabled = false;
+    context.adaptiveSamplingEnabled =
+        (sceneSettings.RenderSettings.AdaptiveSamplingEnabled != 0) &&
+        (pushConstants.IsMoving == 0);
     context.adaptiveMinSamples = max(1, sceneSettings.RenderSettings.AdaptiveMinSamples);
     context.adaptiveTargetError = max(sceneSettings.RenderSettings.AdaptiveTargetError, 0.0);
-    context.previousTotalSamples = context.hasHistory ? context.prevAdaptiveData.z : 0.0;
-    context.wasConverged = false;
-    if (context.hasHistory && context.adaptiveSamplingEnabled && context.previousTotalSamples >= float(context.adaptiveMinSamples)) {
-        float historyVariance = context.previousTotalSamples > 1.0
-            ? context.prevAdaptiveData.y / max(context.previousTotalSamples - 1.0, 1.0)
-            : 0.0;
-        float historyStandardError = sqrt(max(historyVariance, 0.0) / max(context.previousTotalSamples, 1.0));
-        float historyRelativeError = historyStandardError / max(abs(context.prevAdaptiveData.x), EPSILON);
-        context.wasConverged = historyRelativeError <= context.adaptiveTargetError;
-    }
+    context.previousTotalSamples = hasHistory ? context.prevAdaptiveData.z : 0.0;
     return context;
 }
 
@@ -60,13 +88,13 @@ AdaptiveSamplingFrameState createAdaptiveSamplingFrameState()
     return state;
 }
 
-bool shouldSkipAdaptiveSampling(AdaptiveSamplingContext context)
+bool shouldSkipAdaptiveSampling(AdaptiveSamplingGateContext context)
 {
     return context.adaptiveSamplingEnabled && context.wasConverged;
 }
 
 void updateAdaptiveSamplingState(
-    in AdaptiveSamplingContext context,
+    in AdaptiveSamplingFrameContext context,
     in float3 sampleColor,
     inout AdaptiveSamplingFrameState state)
 {
@@ -116,20 +144,6 @@ float computeAdaptiveRelativeError(float metricMean, float metricM2, float total
     float variance = totalSamples > 1.0 ? metricM2 / max(totalSamples - 1.0, 1.0) : 0.0;
     float standardError = sqrt(max(variance, 0.0) / max(totalSamples, 1.0));
     return standardError / max(abs(metricMean), EPSILON);
-}
-
-bool shouldTerminateAdaptiveSampling(
-    in AdaptiveSamplingContext context,
-    in AdaptiveSamplingFrameState state)
-{
-    if (!context.adaptiveSamplingEnabled || state.samplesTaken < context.adaptiveMinSamples)
-        return false;
-
-    float totalSamples = context.previousTotalSamples + float(state.samplesTaken);
-    float combinedMetricMean = combineAdaptiveMean(context.prevAdaptiveData.x, context.previousTotalSamples, state.metricMean, state.samplesTaken);
-    float combinedMetricM2 = combineAdaptiveM2(context.prevAdaptiveData.x, context.prevAdaptiveData.y, context.previousTotalSamples, state.metricMean, state.metricM2, state.samplesTaken);
-    float relativeError = computeAdaptiveRelativeError(combinedMetricMean, combinedMetricM2, totalSamples);
-    return totalSamples >= float(context.adaptiveMinSamples) && relativeError <= context.adaptiveTargetError;
 }
 
 void finalizeAdaptiveSampling(

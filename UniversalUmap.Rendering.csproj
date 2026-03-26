@@ -59,63 +59,109 @@
     <PackageReference Include="StbImageSharp" Version="2.30.15" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <CUE4ParseOutput>$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\bin\$(Configuration)\net8.0\CUE4Parse.dll</CUE4ParseOutput>
+    <CUE4ParseConversionOutput>$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\bin\$(Configuration)\net8.0\CUE4Parse-Conversion.dll</CUE4ParseConversionOutput>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
-    <ProjectReference Include="..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
+    <Reference Include="CUE4Parse">
+      <HintPath>$(CUE4ParseOutput)</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="CUE4Parse-Conversion">
+      <HintPath>$(CUE4ParseConversionOutput)</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
+
+  <Target Name="BuildLocalProjectDependencies"
+          BeforeTargets="ResolveReferences">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration)"
+             RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir"
+             BuildInParallel="false" />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration)"
+             RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir"
+             BuildInParallel="false" />
+  </Target>
 
   <ItemGroup>
     <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.slang" />
     <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.h" />
 
-    <!-- Minimal entry-point list; stage is declared in shader attributes -->
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Raygen.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Closesthit.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Miss.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/AO/*Compute.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Raygen.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Closesthit.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Miss.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/DirectLighting/*Compute.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Raygen.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Closesthit.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Miss.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/PathTracing/*Compute.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Lights/ShadowMiss.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/CullReset.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/*VS.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/*FS.slang">
-      <Arguments>-DUSE_COMPUTE</Arguments>
-    </ShaderSource>
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang" />
-    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
+    <AoComputeShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DINTEGRATOR_AO</Arguments>
+      <VariantPrefix>Ao</VariantPrefix>
+      <VariantSuffix>Compute</VariantSuffix>
+    </AoComputeShader>
+    <DirectComputeShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DINTEGRATOR_DIRECT_LIGHTING</Arguments>
+      <VariantPrefix>Direct</VariantPrefix>
+      <VariantSuffix>Compute</VariantSuffix>
+    </DirectComputeShader>
+    <PathComputeShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DINTEGRATOR_PATH_TRACING</Arguments>
+      <VariantPrefix>Path</VariantPrefix>
+      <VariantSuffix>Compute</VariantSuffix>
+    </PathComputeShader>
 
+    <AoRtxShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DUSE_RTX -DUSE_RAY_QUERY -DINTEGRATOR_AO</Arguments>
+      <VariantPrefix>Ao</VariantPrefix>
+      <VariantSuffix>Rtx</VariantSuffix>
+      <Profile>glsl_460+spvRayQueryKHR</Profile>
+    </AoRtxShader>
+    <DirectRtxShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DUSE_RTX -DUSE_RAY_QUERY -DINTEGRATOR_DIRECT_LIGHTING</Arguments>
+      <VariantPrefix>Direct</VariantPrefix>
+      <VariantSuffix>Rtx</VariantSuffix>
+      <Profile>glsl_460+spvRayQueryKHR</Profile>
+    </DirectRtxShader>
+    <PathRtxShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
+      <Arguments>-DUSE_RTX -DUSE_RAY_QUERY -DINTEGRATOR_PATH_TRACING</Arguments>
+      <VariantPrefix>Path</VariantPrefix>
+      <VariantSuffix>Rtx</VariantSuffix>
+      <Profile>glsl_460+spvRayQueryKHR</Profile>
+    </PathRtxShader>
+
+    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
+    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/CullReset.slang;$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang;$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang;$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang" />
+    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/*VS.slang;$(ProjectDir)Assets/Shaders/Raster/*FS.slang" />
+    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang;$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
+
+    <EnvironmentPrecompile Include="$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr">
+      <OutputPrefix>$(ProjectDir)Assets\Precomputed\kiara_1_dawn_4k</OutputPrefix>
+    </EnvironmentPrecompile>
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ShaderSource Include="@(AoComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+    <ShaderSource Include="@(DirectComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+    <ShaderSource Include="@(PathComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+
+    <ShaderSource Include="@(AoRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+    <ShaderSource Include="@(DirectRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+    <ShaderSource Include="@(PathRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+
+    <ShaderSource Include="@(ShaderVariant)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
+
+    <ShaderSource Update="@(ShaderSource)">
+      <StageName Condition="'%(StageName)' == ''">$([System.String]::Copy('%(Filename)').Replace('Compute', ''))</StageName>
+      <OutputName Condition="'%(OutputName)' == '' and '%(VariantPrefix)' != ''">%(VariantPrefix)%(StageName)%(VariantSuffix)</OutputName>
+      <OutputName Condition="'%(OutputName)' == ''">%(Filename)</OutputName>
+      <Profile Condition="'%(Profile)' == ''">glsl_460</Profile>
+    </ShaderSource>
   </ItemGroup>
 
   <Target Name="CompileShaders"
           BeforeTargets="PrepareResources"
           Inputs="@(ShaderSource);@(ShaderInclude)"
-          Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv">
+          Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv">
 
     <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -version'
           IgnoreExitCode="true">
@@ -129,18 +175,27 @@
              Text='Extra shader compiler args: $(ShaderCompileExtraArgs)'
              Importance="High" />
 
-    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile glsl_460 -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv"'
+    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv"'
           LogStandardErrorAsError="true" />
 
   </Target>
 
+  <Target Name="GeneratePrecompiledEnvironmentMaps"
+          BeforeTargets="PrepareResources"
+          Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
+          Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin')">
+    <MakeDir Directories="@(EnvironmentPrecompile -> '$([System.IO.Path]::GetDirectoryName(&quot;%(OutputPrefix)&quot;))')" />
+    <Message Text="Generating precompiled environment maps..." Importance="High" />
+    <Exec Command='dotnet run --project "$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" -- "%(EnvironmentPrecompile.Identity)" "%(EnvironmentPrecompile.OutputPrefix)"' />
+  </Target>
+
   <Target Name="IncludeCompiledShadersAsResources"
-          DependsOnTargets="CompileShaders"
+          DependsOnTargets="CompileShaders;GeneratePrecompiledEnvironmentMaps"
           BeforeTargets="CoreCompile">
     <ItemGroup>
       <EmbeddedResource Include="Assets\Shaders\**\*.spv"
                         Exclude="@(EmbeddedResource)">
-        <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+        <LogicalName>$([System.String]::Copy('Assets\Shaders\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
   </Target>
@@ -148,15 +203,18 @@
   <Target Name="CleanCompiledShaders" BeforeTargets="Clean">
     <ItemGroup>
       <CompiledSpv Include="$(ProjectDir)Assets\Shaders\**\*.spv" />
+      <CompiledEnvironment Include="$(ProjectDir)Assets\Precomputed\**\*.bin" />
     </ItemGroup>
     <Message Text="Removing compiled shader binaries (*.spv)..." Importance="High" />
     <Delete Files="@(CompiledSpv)" />
+    <Message Text="Removing precompiled environment maps (*.bin)..." Importance="High" />
+    <Delete Files="@(CompiledEnvironment)" />
   </Target>
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\**"
                       Exclude="Assets\Source\**;@(EmbeddedResource)">
-      <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+      <LogicalName>$([System.String]::Copy('Assets\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

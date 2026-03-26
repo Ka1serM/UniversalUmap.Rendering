@@ -91,6 +91,12 @@ internal sealed class VulkanSurface : IAsyncDisposable
         lock (sync)
         {
             var state = GetOrCreateCurrentState(size);
+            if (state is null)
+            {
+                lease = null!;
+                return false;
+            }
+
             var slot = GetAcquirableSlot(state);
             if (slot is null)
             {
@@ -131,16 +137,22 @@ internal sealed class VulkanSurface : IAsyncDisposable
         };
     }
 
-    private SurfaceState GetOrCreateCurrentState(PixelSize size)
+    private SurfaceState? GetOrCreateCurrentState(PixelSize size)
     {
         if (currentState is null)
+        {
+            if (!pendingDisposeTask.IsCompleted)
+                return null;
+
             return currentState = CreateState(size);
+        }
 
         if (currentState.Size == size)
             return currentState;
 
         RetireState(currentState);
-        return currentState = CreateState(size);
+        currentState = null;
+        return null;
     }
 
     public void CompleteRender(in RenderLease lease, Context.CommandBuffer commandBuffer)

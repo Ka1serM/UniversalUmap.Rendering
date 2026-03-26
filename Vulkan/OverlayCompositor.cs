@@ -70,13 +70,6 @@ public sealed unsafe class Compositor : IDisposable
         };
         context.Api.CreateDescriptorSetLayout(context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
 
-        var allocInfo = new DescriptorSetAllocateInfo
-        {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = context.DescriptorPool,
-            DescriptorSetCount = 1,
-            PSetLayouts = &descriptorSetLayoutLocal
-        };
         var pipelineLayoutInfo = new PipelineLayoutCreateInfo
         {
             SType = StructureType.PipelineLayoutCreateInfo,
@@ -192,7 +185,7 @@ public sealed unsafe class Compositor : IDisposable
 
         if (inputsChanged)
         {
-            descriptorSetsByOutputViewHandle.Clear();
+            ResetDescriptorCache();
             lastColorInputViewHandle = colorInputImage.ViewHandle;
             lastAlbedoInputViewHandle = albedoInputImage.ViewHandle;
             lastNormalInputViewHandle = normalInputImage.ViewHandle;
@@ -303,8 +296,27 @@ public sealed unsafe class Compositor : IDisposable
         }
     }
 
+    private void ResetDescriptorCache()
+    {
+        if (descriptorSetsByOutputViewHandle.Count == 0)
+            return;
+
+        context.WaitForSubmittedCommandBuffers();
+        var descriptorSets = descriptorSetsByOutputViewHandle.Values.ToArray();
+        fixed (DescriptorSet* pDescriptorSets = descriptorSets)
+        {
+            context.Api.FreeDescriptorSets(
+                context.Device,
+                context.DescriptorPool,
+                (uint)descriptorSets.Length,
+                pDescriptorSets).ThrowOnError();
+        }
+        descriptorSetsByOutputViewHandle.Clear();
+    }
+
     public void Dispose()
     {
+        ResetDescriptorCache();
         if (pipeline.Handle != default)
             context.Api.DestroyPipeline(context.Device, pipeline, default);
         if (pipelineLayout.Handle != default)

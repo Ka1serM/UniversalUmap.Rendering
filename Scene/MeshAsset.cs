@@ -87,17 +87,19 @@ public sealed class MeshAsset : IDisposable
             materialArray = [new MaterialData()];
 
         var usage = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr;
-        var memory = MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit;
 
         var vertexBytes = StructPacking.ToBytes<Vertex>(vertexArray);
         var indexBytes = StructPacking.ToBytes<uint>(indexArray);
         var faceBytes = StructPacking.ToBytes<Face>(faceArray);
         var materialBytes = StructPacking.ToBytes<MaterialData>(materialArray);
 
-        var vertexBuffer = new GpuBuffer(context, (ulong)vertexBytes.Length, usage, memory, vertexBytes);
-        var indexBuffer = new GpuBuffer(context, (ulong)indexBytes.Length, usage, memory, indexBytes);
-        var faceBuffer = new GpuBuffer(context, (ulong)faceBytes.Length, usage, memory, faceBytes);
-        var materialBuffer = new GpuBuffer(context, (ulong)materialBytes.Length, usage, memory, materialBytes);
+        var uploadCommandBuffer = context.CreateCommandBuffer();
+        context.BeginCommandBuffer(uploadCommandBuffer);
+
+        var vertexBuffer = UploadDeviceLocalBuffer(context, uploadCommandBuffer, vertexBytes, usage);
+        var indexBuffer = UploadDeviceLocalBuffer(context, uploadCommandBuffer, indexBytes, usage);
+        var faceBuffer = UploadDeviceLocalBuffer(context, uploadCommandBuffer, faceBytes, usage);
+        var materialBuffer = UploadDeviceLocalBuffer(context, uploadCommandBuffer, materialBytes, usage);
 
         this.context = context;
         Name = name;
@@ -114,19 +116,19 @@ public sealed class MeshAsset : IDisposable
         {
             var bvhNodeBytes = StructPacking.ToBytes<BvhNodeGpu>(bvhNodes);
             var bvhIndexBytes = StructPacking.ToBytes<uint>(bvhIndices);
-            bvhNodesBuffer = new GpuBuffer(
+            bvhNodesBuffer = UploadDeviceLocalBuffer(
                 context,
-                (ulong)bvhNodeBytes.Length,
-                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-                bvhNodeBytes);
-            bvhIndicesBuffer = new GpuBuffer(
+                uploadCommandBuffer,
+                bvhNodeBytes,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
+            bvhIndicesBuffer = UploadDeviceLocalBuffer(
                 context,
-                (ulong)bvhIndexBytes.Length,
-                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-                bvhIndexBytes);
+                uploadCommandBuffer,
+                bvhIndexBytes,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
         }
+
+        context.SubmitAndWait(uploadCommandBuffer);
 
         // RTX path uses per-mesh BLAS.
         if (context.RayTracingSupported &&
@@ -522,6 +524,33 @@ public sealed class MeshAsset : IDisposable
         }
 
         return true;
+    }
+
+    private static unsafe GpuBuffer UploadDeviceLocalBuffer(
+        Context context,
+        Context.CommandBuffer commandBuffer,
+        ReadOnlySpan<byte> data,
+        BufferUsageFlags usage)
+    {
+        var destinationBuffer = new GpuBuffer(
+            context,
+            (ulong)data.Length,
+            usage | BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.DeviceLocalBit);
+        var stagingBuffer = new GpuBuffer(
+            context,
+            (ulong)data.Length,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+            data);
+
+        var copy = new BufferCopy
+        {
+            Size = (ulong)data.Length
+        };
+        context.Api.CmdCopyBuffer(commandBuffer.InternalHandle, stagingBuffer.Handle, destinationBuffer.Handle, 1, in copy);
+        context.RetainForExecution(commandBuffer, stagingBuffer);
+        return destinationBuffer;
     }
 
     private static bool TryCreateFromConvertedLod(

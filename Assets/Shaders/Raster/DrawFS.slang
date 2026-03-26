@@ -66,26 +66,27 @@ FsOutput main(VsOutput input)
     Face face = reinterpret<FaceBuffer*>(mesh.FaceAddress)->data[input.TriangleIndex];
     MaterialData material = reinterpret<MaterialBuffer*>(mesh.MaterialAddress)->data[face.MaterialIndex];
 
-    PbrMaterial materialModel;
-    MaterialSample materialSample = materialModel.sample(material, input.UV);
-    if (materialSample.opacity < 0.5)
+    float3 albedo;
+    float3 emission;
+    float metallic;
+    float specular;
+    float roughness;
+    float opacity;
+    float transmission;
+    samplePbrMaterial(material, input.UV, albedo, emission, metallic, specular, roughness, opacity, transmission);
+    transmission = transmission;
+    if (opacity < 0.5)
         discard;
 
     float3 viewDir = fastNormalize(sceneSettings.RasterCamera.Position - input.WorldPosition);
     float3 geometricFacingNormal = computeFacingGeometricNormal(normalize(input.WorldNormal), viewDir);
     float3 shadingNormal = sampleMaterialShadingNormal(
-        material,
+        material.NormalIndex,
         input.UV,
         normalize(input.WorldNormal),
         normalize(input.WorldTangent),
         input.TangentSign);
     float3 facingNormal = computeFacingShadingNormal(shadingNormal, viewDir, geometricFacingNormal);
-
-    float3 albedo = materialSample.albedo;
-    float3 emission = materialSample.emission;
-    float metallic = materialSample.metallic;
-    float specular = materialSample.specular;
-    float roughness = clamp(materialSample.roughness, 0.02, 1.0);
 
     float3 directSun = float3(0.0);
     if (hasDirectionalLight(sceneSettings.Environment))
@@ -121,7 +122,7 @@ FsOutput main(VsOutput input)
 
     float3 finalColor = emission + directSun + diffuseAmbient + specularAmbient;
 
-    output.Color = float4(finalColor, materialSample.opacity);
+    output.Color = float4(finalColor, opacity);
     output.Albedo = float4(albedo, 1.0);
     output.Normal = float4(facingNormal * 0.5 + 0.5, 0.0);
     output.Crypto = input.InstanceId;

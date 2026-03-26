@@ -87,6 +87,13 @@ struct DrawIndirectCommandGpu
     uint FirstInstance;
 };
 
+struct DispatchIndirectCommandGpu
+{
+    uint GroupCountX;
+    uint GroupCountY;
+    uint GroupCountZ;
+};
+
 struct InstanceGpu
 {
     float4x4 Transform;

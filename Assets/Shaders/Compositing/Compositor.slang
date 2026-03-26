@@ -60,6 +60,70 @@ int2 mapOutputPixelToInputPixel(int2 outputPixel, int2 outputSize, int2 inputSiz
     return clamp(int2(x, y), int2(0, 0), max(inputSize - 1, int2(0, 0)));
 }
 
+float2 mapOutputPixelToInputUv(int2 outputPixel, int2 outputSize, int2 inputSize)
+{
+    float2 outputExtent = float2(max(outputSize.x, 1), max(outputSize.y, 1));
+    float2 inputExtent = float2(max(inputSize.x, 1), max(inputSize.y, 1));
+    return ((float2(outputPixel) + 0.5) * inputExtent / outputExtent) - 0.5;
+}
+
+void computeBilinearFootprint(
+    int2 outputPixel,
+    int2 outputSize,
+    int2 inputSize,
+    out int2 p00,
+    out int2 p10,
+    out int2 p01,
+    out int2 p11,
+    out float2 frac)
+{
+    float2 uv = mapOutputPixelToInputUv(outputPixel, outputSize, inputSize);
+    int2 basePixel = int2(floor(uv));
+    frac = saturate(uv - float2(basePixel));
+
+    int2 minPixel = int2(0, 0);
+    int2 maxPixel = max(inputSize - 1, int2(0, 0));
+    p00 = clamp(basePixel, minPixel, maxPixel);
+    p10 = clamp(basePixel + int2(1, 0), minPixel, maxPixel);
+    p01 = clamp(basePixel + int2(0, 1), minPixel, maxPixel);
+    p11 = clamp(basePixel + int2(1, 1), minPixel, maxPixel);
+}
+
+float4 sampleBilinearRgba32f(RWTexture2D<float4> image, int2 outputPixel, int2 outputSize, int2 inputSize)
+{
+    int2 p00, p10, p01, p11;
+    float2 frac;
+    computeBilinearFootprint(outputPixel, outputSize, inputSize, p00, p10, p01, p11, frac);
+
+    float4 top = lerp(image[p00], image[p10], frac.x);
+    float4 bottom = lerp(image[p01], image[p11], frac.x);
+    return lerp(top, bottom, frac.y);
+}
+
+float4 sampleBilinearRgba8(RWTexture2D<float4> image, int2 outputPixel, int2 outputSize, int2 inputSize)
+{
+    int2 p00, p10, p01, p11;
+    float2 frac;
+    computeBilinearFootprint(outputPixel, outputSize, inputSize, p00, p10, p01, p11, frac);
+
+    float4 top = lerp(image[p00], image[p10], frac.x);
+    float4 bottom = lerp(image[p01], image[p11], frac.x);
+    return lerp(top, bottom, frac.y);
+}
+
+float3 sampleBilinearNormal(int2 outputPixel, int2 outputSize, int2 inputSize)
+{
+    int2 p00, p10, p01, p11;
+    float2 frac;
+    computeBilinearFootprint(outputPixel, outputSize, inputSize, p00, p10, p01, p11, frac);
+
+    float3 top = lerp(inputNormalImage[p00].rgb, inputNormalImage[p10].rgb, frac.x);
+    float3 bottom = lerp(inputNormalImage[p01].rgb, inputNormalImage[p11].rgb, frac.x);
+    float3 normal = lerp(top, bottom, frac.y);
+    float lengthSq = dot(normal, normal);
+    return lengthSq > 1e-6 ? normalize(normal) : float3(0.0, 0.0, 1.0);
+}
+
 bool isSelectedHit(int2 outputPixel, int2 outputSize, int2 inputSize) {
     if (outputPixel.x < 0 || outputPixel.y < 0 || outputPixel.x >= outputSize.x || outputPixel.y >= outputSize.y)
         return false;
@@ -86,7 +150,16 @@ float3 adaptiveHeatmap(float progress)
 
 float3 visualizeAdaptiveThreshold(int2 pixel)
 {
-    float4 adaptiveState = inputAdaptiveImage[pixel];
+    uint inputWidth;
+    uint inputHeight;
+    inputAdaptiveImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
+    uint outputWidth;
+    uint outputHeight;
+    outputImage.GetDimensions(outputWidth, outputHeight);
+    int2 outputSize = int2(outputWidth, outputHeight);
+    int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
+    float4 adaptiveState = inputAdaptiveImage[inputPixel];
     float meanMetric = adaptiveState.x;
     float metricM2 = adaptiveState.y;
     float totalSamples = adaptiveState.z;
@@ -110,12 +183,28 @@ float3 visualizeAdaptiveThreshold(int2 pixel)
 
 float3 visualizeNormals(int2 pixel)
 {
-    return clamp(inputNormalImage[pixel].rgb, 0.0, 1.0);
+    uint inputWidth;
+    uint inputHeight;
+    inputNormalImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
+    uint outputWidth;
+    uint outputHeight;
+    outputImage.GetDimensions(outputWidth, outputHeight);
+    int2 outputSize = int2(outputWidth, outputHeight);
+    return clamp(sampleBilinearNormal(pixel, outputSize, inputSize), 0.0, 1.0);
 }
 
 float3 visualizeAlbedo(int2 pixel)
 {
-    return clamp(inputAlbedoImage[pixel].rgb, 0.0, 1.0);
+    uint inputWidth;
+    uint inputHeight;
+    inputAlbedoImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
+    uint outputWidth;
+    uint outputHeight;
+    outputImage.GetDimensions(outputWidth, outputHeight);
+    int2 outputSize = int2(outputWidth, outputHeight);
+    return clamp(sampleBilinearRgba8(inputAlbedoImage, pixel, outputSize, inputSize).rgb, 0.0, 1.0);
 }
 
 float3 visualizePosition(int2 pixel, int2 outputSize)
@@ -163,9 +252,9 @@ float3 visualizeCryptoId(int2 pixel, int2 outputSize)
 float3 visualizeBuffer(int2 pixel, int2 outputSize, int2 inputSize, float4 hdrImage)
 {
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_ALBEDO)
-        return visualizeAlbedo(mapOutputPixelToInputPixel(pixel, outputSize, inputSize));
+        return visualizeAlbedo(pixel);
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_NORMALS)
-        return visualizeNormals(mapOutputPixelToInputPixel(pixel, outputSize, inputSize));
+        return visualizeNormals(pixel);
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_POSITION)
         return visualizePosition(pixel, outputSize);
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_CRYPTO_ID)
@@ -206,12 +295,14 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (pixel.x >= outputSize.x || pixel.y >= outputSize.y)
         return;
 
-    int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
-    float4 hdrImage = inputColorImage[inputPixel];
+    float4 hdrImage = sampleBilinearRgba32f(inputColorImage, pixel, outputSize, inputSize);
     float3 color = visualizeBuffer(pixel, outputSize, inputSize, hdrImage);
+    float alpha = pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_FINAL_COLOR
+        ? saturate(hdrImage.a)
+        : 1.0;
 
     if (pc.selectedInstanceId == InvalidInstance) {
-        outputImage[pixel] = float4(color, hdrImage.a);
+        outputImage[pixel] = float4(color, alpha);
         return;
     }
 
@@ -224,5 +315,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         color = lerp(color, outlineColor, outlineStrength);
     }
 
-    outputImage[pixel] = float4(color, hdrImage.a);
+    outputImage[pixel] = float4(color, alpha);
 }

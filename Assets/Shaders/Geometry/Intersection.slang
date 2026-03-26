@@ -1,6 +1,5 @@
-// Intersection utilities for compute-based ray tracing
-// When COMPUTE is defined, uses software BVH traversal
-// When COMPUTE is not defined, uses hardware RTX via TraceRay
+// Intersection utilities for the shared wavefront raytracers.
+// The default path uses software BVH traversal; USE_RTX enables ray-query backed tracing.
 #ifndef INTERSECTION_SLANG
 #define INTERSECTION_SLANG
 
@@ -24,7 +23,7 @@ struct HitInfo
     float3 barycentrics;
 };
 
-#ifdef USE_COMPUTE
+#ifndef USE_RTX
     #define BVH_STACK_DEPTH 2048
 
     bool intersectTriangle(float3 rayOrigin, float3 rayDirection, float3 v0, float3 v1, float3 v2, inout float t, out float3 bary, float tMin) {
@@ -181,31 +180,30 @@ struct HitInfo
         }
         return bestHit;
     }
-#endif // COMPUTE
+#endif // !USE_RTX
 
 // Common shadow ray function - works for both Compute and RTX
 bool traceShadowRay(float3 rayOrigin, float3 rayDirection, float tMin, float tMax) {
-#ifdef USE_COMPUTE
-    HitInfo shadowHit = traceScene(rayOrigin, rayDirection, tMin, tMax);
-    return shadowHit.instanceIndex != InvalidInstance;
-#else
-    uint shadowPayload = 1u;
-    const uint shadowFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-        | RAY_FLAG_FORCE_OPAQUE
-        | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+#ifdef USE_RAY_QUERY
     RayDesc shadowRay;
     shadowRay.Origin = rayOrigin;
     shadowRay.Direction = rayDirection;
     shadowRay.TMin = tMin;
     shadowRay.TMax = tMax;
-    TraceRay(topLevelAS, shadowFlags, 0xFF, 0, 0, SHADOW_MISS_INDEX, shadowRay, shadowPayload);
-    return shadowPayload != 0u;
+
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE> rayQuery;
+    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE, 0xFF, shadowRay);
+    while (rayQuery.Proceed()) { }
+    return rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+#else
+    HitInfo shadowHit = traceScene(rayOrigin, rayDirection, tMin, tMax);
+    return shadowHit.instanceIndex != InvalidInstance;
 #endif
 }
 
 // Common reflection ray function - works for both Compute and RTX
 bool traceReflectionRay(float3 rayOrigin, float3 rayDirection, float roughness, EnvironmentDataGpu environmentData, out float3 hitColor) {
-#ifdef USE_COMPUTE
+#ifndef USE_RTX
     HitInfo hit = traceScene(rayOrigin, rayDirection, 0.001, 1000.0);
 
     if (hit.instanceIndex == InvalidInstance) {
@@ -235,8 +233,7 @@ bool traceReflectionRay(float3 rayOrigin, float3 rayDirection, float roughness, 
     hitColor = emission + albedo * 0.5;
     return true;
 #else
-    // RTX path - this is handled via separate ray payload in the actual RTX pipeline
-    // For DirectLighting, the reflection miss shader handles this
+    // RTX path falls back to the environment sample here; ray-query shaders do not use a separate payload path.
     hitColor = sampleEnvironmentMapColorLod(rayDirection, environmentData, environmentData.LightingExposureScale, roughness * max(environmentData.MaxTextureLod, 0.0));
     return false;
 #endif

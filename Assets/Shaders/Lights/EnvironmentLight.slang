@@ -4,7 +4,6 @@
 #include "../Bindings.slang"
 #include "../Core/Core.slang"
 #include "../Bxdfs/Brdf.slang"
-#include "../Core/Payload.slang"
 #include "ILight.slang"
 
 float2 directionToEnvironmentUv(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
@@ -15,6 +14,8 @@ float2 directionToEnvironmentUv(in float3 worldRayDirection, in EnvironmentDataG
     float2 uv;
     uv.x = atan2(rotatedDir.z, rotatedDir.x) / (2.0 * PI) + 0.5;
     uv.y = 1.0 - acos(clamp(rotatedDir.y, -1.0, 1.0)) / PI;
+    uv.x = frac(uv.x);
+    uv.y = saturate(uv.y);
     return uv;
 }
 
@@ -23,7 +24,7 @@ float3 sampleEnvironmentMapColor(in float3 worldRayDirection, in EnvironmentData
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * exposureStops;
+    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, 0.0).rgb * exposureStops;
 }
 
 float3 sampleEnvironmentMapColorLod(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops, in float lod) {
@@ -63,7 +64,7 @@ float3 evaluateEnvironmentRadiance(in float3 worldRayDirection, in EnvironmentDa
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * environmentData.LightingExposureScale;
+    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, 0.0).rgb * environmentData.LightingExposureScale;
 }
 
 float3 evaluateEnvironmentVisibleRadiance(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
@@ -71,40 +72,7 @@ float3 evaluateEnvironmentVisibleRadiance(in float3 worldRayDirection, in Enviro
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * environmentData.VisibleExposureScale;
-}
-
-void shadeMiss(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout Payload payload) {
-    float3 envColor = payload.Depth == 0
-        ? evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData)
-        : evaluateEnvironmentRadiance(worldRayDirection, environmentData);
-
-    if (payload.Depth > 0 && payload.LastBsdfPdf > 0.0) {
-        float neeLightPdf = evaluateNeeLightPdfForDirection(worldRayDirection, environmentData);
-        float wBsdf = powerHeuristic(payload.LastBsdfPdf, neeLightPdf);
-        envColor *= wBsdf;
-    }
-
-    payload.Attenuation = float3(1.0);
-    payload.Emission    = envColor;
-    payload.Albedo      = envColor;
-    payload.Normal      = float3(0.0);
-
-    if ((payload.Depth == 0 && environmentData.Visible == 0) || (payload.Depth == 0 && renderSettings.TransparentBackground != 0))
-        payload.Flags |= uint(BounceType.ENV_TRANSPARENT);
-
-    payload.Flags |= uint(BounceType.RAY_TERMINATED);
-}
-
-void shadeMiss(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout AoPayload payload) {
-    payload.Emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
-    payload.Albedo = payload.Emission;
-    payload.Normal = float3(0.0);
-
-    if (environmentData.Visible == 0 || renderSettings.TransparentBackground != 0)
-        payload.Flags |= uint(BounceType.ENV_TRANSPARENT);
-
-    payload.Flags |= uint(BounceType.RAY_TERMINATED);
+    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, 0.0).rgb * environmentData.VisibleExposureScale;
 }
 
 int binarySearchMarginalCdf(int cdfTextureIndex, int height, float xi)
@@ -218,8 +186,8 @@ struct EnvironmentLight : ILight
         uint height;
         textureSamplers[cdfTex].GetDimensions(width, height);
         float2 texel = float2(1.0 / max(float(width), 1.0), 1.0 / max(float(height), 1.0));
-        float rowPdf = textureSamplers[cdfTex].Sample(float2(uv.x, 0.5 * texel.y)).a;
-        float conditionalPdf = textureSamplers[cdfTex].Sample(float2(uv.x, uv.y)).r;
+        float rowPdf = textureSamplers[cdfTex].SampleLevel(float2(uv.x, 0.5 * texel.y), 0.0).a;
+        float conditionalPdf = textureSamplers[cdfTex].SampleLevel(float2(uv.x, uv.y), 0.0).r;
         float sinTheta = max(sin(PI * uv.y), EPSILON);
         return max(rowPdf * conditionalPdf / (2.0 * PI * PI * sinTheta), 0.0);
     }
