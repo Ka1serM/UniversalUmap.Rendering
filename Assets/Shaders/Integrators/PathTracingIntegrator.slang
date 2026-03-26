@@ -6,7 +6,7 @@
 #include "../Geometry/Intersection.slang"
 #include "../Geometry/SurfaceData.slang"
 #include "../Core/RenderPolicy.slang"
-#include "../Core/AdaptiveSampling.slang"
+#include "../Core/Accumulation.slang"
 #include "../Core/Payload.slang"
 #include "../DirectLighting/DirectLighting.slang"
 #include "../Bxdfs/Brdf.slang"
@@ -19,10 +19,10 @@
 
 void handleDielectricBSDF(float3 viewDir, float3 shadingNormal, float roughness, float ior, float3 transmissionColor, inout Payload payload)
 {
-    payload.flags |= uint(BounceType.BOUNCE_TRANSMIT);
+    payload.Flags |= uint(BounceType.BOUNCE_TRANSMIT);
 
     float3 shadingFacingNormal = dot(shadingNormal, viewDir) < 0.0 ? -shadingNormal : shadingNormal;
-    float3 halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingFacingNormal, roughness, payload.rngState);
+    float3 halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingFacingNormal, roughness, payload.RngState);
     float VdotH = max(dot(viewDir, halfVector), 0.0);
     float3 incident = fastNormalize(-viewDir);
     float etaI = 1.0;
@@ -37,20 +37,20 @@ void handleDielectricBSDF(float3 viewDir, float3 shadingNormal, float roughness,
     float3 refractedDir = refract(incident, halfVector, etaI / etaT);
     bool cannotRefract = dot(refractedDir, refractedDir) < EPSILON;
 
-    if (cannotRefract || rand(payload.rngState) < reflectProbability) {
+    if (cannotRefract || rand(payload.RngState) < reflectProbability) {
         float3 reflectedDir = reflect(-viewDir, halfVector);
         float3 brdf = evaluateSpecularBRDF(shadingFacingNormal, viewDir, reflectedDir, float3(reflectProbability), roughness, halfVector);
         float pdf = max(pdfSpecular(viewDir, shadingFacingNormal, halfVector, roughness), EPSILON);
 
-        payload.attenuation = (brdf * max(dot(shadingFacingNormal, reflectedDir), 0.0)) / max(pdf * reflectProbability, EPSILON);
-        payload.nextDirection = reflectedDir;
-        payload.lastBsdfPdf = pdf;
-        payload.lastNeeLightPdf = max(dot(shadingFacingNormal, reflectedDir), 0.0) > 0.0 ? (0.5 / PI) : 0.0;
+        payload.Attenuation = (brdf * max(dot(shadingFacingNormal, reflectedDir), 0.0)) / max(pdf * reflectProbability, EPSILON);
+        payload.NextDirection = reflectedDir;
+        payload.LastBsdfPdf = pdf;
+        payload.LastNeeLightPdf = max(dot(shadingFacingNormal, reflectedDir), 0.0) > 0.0 ? (0.5 / PI) : 0.0;
     } else {
-        payload.attenuation = transmissionColor / max(1.0 - reflectProbability, EPSILON);
-        payload.nextDirection = refractedDir;
-        payload.lastBsdfPdf = 0.0;
-        payload.lastNeeLightPdf = 0.0;
+        payload.Attenuation = transmissionColor / max(1.0 - reflectProbability, EPSILON);
+        payload.NextDirection = refractedDir;
+        payload.LastBsdfPdf = 0.0;
+        payload.LastNeeLightPdf = 0.0;
     }
 }
 
@@ -69,42 +69,42 @@ void handleOpaqueBSDF(
     float swSpecular = computeSpecularSamplingWeight(viewDir, shadingNormal, albedo, F0, metallic, roughness);
 
     float3 halfVector;
-    bool sampledSpecular = rand(payload.rngState) < swSpecular;
+    bool sampledSpecular = rand(payload.RngState) < swSpecular;
     if (sampledSpecular) {
-        halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingNormal, roughness, payload.rngState);
-        payload.nextDirection = reflect(-viewDir, halfVector);
-        for (int i = 0; i < 2 && dot(geometricNormal, payload.nextDirection) <= 0.0; ++i) {
-            halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingNormal, roughness, payload.rngState);
-            payload.nextDirection = reflect(-viewDir, halfVector);
+        halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingNormal, roughness, payload.RngState);
+        payload.NextDirection = reflect(-viewDir, halfVector);
+        for (int i = 0; i < 2 && dot(geometricNormal, payload.NextDirection) <= 0.0; ++i) {
+            halfVector = sampleVisibleHalfVectorGGX(viewDir, shadingNormal, roughness, payload.RngState);
+            payload.NextDirection = reflect(-viewDir, halfVector);
         }
     } else {
-        payload.nextDirection = sampleDiffuse(shadingNormal, payload.rngState);
-        halfVector = fastNormalize(viewDir + payload.nextDirection);
+        payload.NextDirection = sampleDiffuse(shadingNormal, payload.RngState);
+        halfVector = fastNormalize(viewDir + payload.NextDirection);
     }
 
-    if (dot(geometricNormal, payload.nextDirection) <= 0.0) {
-        payload.nextDirection = sampleDiffuse(geometricNormal, payload.rngState);
-        halfVector = fastNormalize(viewDir + payload.nextDirection);
+    if (dot(geometricNormal, payload.NextDirection) <= 0.0) {
+        payload.NextDirection = sampleDiffuse(geometricNormal, payload.RngState);
+        halfVector = fastNormalize(viewDir + payload.NextDirection);
         sampledSpecular = false;
     }
 
     float VdotH = max(dot(viewDir, halfVector), 0.0);
-    float NdotL = max(dot(shadingNormal, payload.nextDirection), 0.0);
+    float NdotL = max(dot(shadingNormal, payload.NextDirection), 0.0);
     float NdotV = max(dot(shadingNormal, viewDir), 0.0);
-    float VdotL = dot(viewDir, payload.nextDirection);
+    float VdotL = dot(viewDir, payload.NextDirection);
     float3 F = fresnelSchlick(F0, VdotH);
     float3 diffuseBRDF = (float3(1.0) - F) * evaluateDiffuseBRDF(albedo, metallic, roughness, NdotL, NdotV, VdotL);
-    float3 specularBRDF = evaluateSpecularBRDF(shadingNormal, viewDir, payload.nextDirection, F, roughness, halfVector);
+    float3 specularBRDF = evaluateSpecularBRDF(shadingNormal, viewDir, payload.NextDirection, F, roughness, halfVector);
     float3 combinedBRDF = diffuseBRDF + specularBRDF;
 
     float specPdf = sampledSpecular ? pdfSpecular(viewDir, shadingNormal, halfVector, roughness) : 0.0;
-    float diffPdf = pdfDiffuse(shadingNormal, payload.nextDirection);
+    float diffPdf = pdfDiffuse(shadingNormal, payload.NextDirection);
     float combinedPdf = max(swSpecular * specPdf + (1.0 - swSpecular) * diffPdf, EPSILON);
 
-    payload.attenuation = combinedBRDF * NdotL / combinedPdf;
-    payload.lastBsdfPdf = max(combinedPdf, EPSILON);
-    payload.lastNeeLightPdf = max(dot(geometricNormal, payload.nextDirection), 0.0) > 0.0 ? (0.5 / PI) : 0.0;
-    payload.flags |= sampledSpecular ? uint(BounceType.BOUNCE_SPECULAR) : uint(BounceType.BOUNCE_DIFFUSE);
+    payload.Attenuation = combinedBRDF * NdotL / combinedPdf;
+    payload.LastBsdfPdf = max(combinedPdf, EPSILON);
+    payload.LastNeeLightPdf = max(dot(geometricNormal, payload.NextDirection), 0.0) > 0.0 ? (0.5 / PI) : 0.0;
+    payload.Flags |= sampledSpecular ? uint(BounceType.BOUNCE_SPECULAR) : uint(BounceType.BOUNCE_DIFFUSE);
 }
 
 struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
@@ -114,31 +114,31 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
     void traceRayCompute(float3 rayOrigin, float3 rayDirection, float tMin, float tMax, inout Payload payload)
     {
         HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
-        if (hit.instanceIndex == INVALID_INSTANCE) {
+        if (hit.instanceIndex == InvalidInstance) {
             shadeMiss(rayDirection, payload);
-            payload.objectIndex = INVALID_INSTANCE;
+            payload.ObjectIndex = InvalidInstance;
             return;
         }
 
         SurfaceData surface = loadComputeSurfaceData(hit.instanceIndex, hit.primitiveIndex, hit.barycentrics);
         shadeClosestHit(
-            surface.worldPosition,
-            surface.worldShadowPosition,
-            surface.shadingNormal,
-            surface.geometricNormal,
-            surface.tangent,
-            surface.tangentSign,
-            surface.uv,
+            surface.WorldPosition,
+            surface.WorldShadowPosition,
+            surface.ShadingNormal,
+            surface.GeometricNormal,
+            surface.Tangent,
+            surface.TangentSign,
+            surface.UV,
             rayDirection,
-            surface.material,
+            surface.Material,
             payload);
-        payload.objectIndex = hit.instanceIndex;
+        payload.ObjectIndex = hit.instanceIndex;
     }
 #endif
 
     void shadeMiss(float3 worldRayDirection, inout Payload payload)
     {
-        shadeMiss(worldRayDirection, sceneSettings.environment, sceneSettings.renderSettings, payload);
+        shadeMiss(worldRayDirection, sceneSettings.Environment, sceneSettings.RenderSettings, payload);
     }
 
     void shadeClosestHit(
@@ -153,9 +153,9 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
         MaterialData material,
         inout Payload payload)
     {
-        payload.position = worldPosition;
-        payload.lastBsdfPdf = 0.0;
-        payload.lastNeeLightPdf = 0.0;
+        payload.Position = worldPosition;
+        payload.LastBsdfPdf = 0.0;
+        payload.LastNeeLightPdf = 0.0;
 
         float3 viewDir = fastNormalize(-worldRayDirection);
         float3 geometricFacingNormal = computeFacingGeometricNormal(geometricNormal, viewDir);
@@ -164,12 +164,12 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
         MaterialSample materialSample = materialModel.sample(material, interpolatedUV);
         float opacity = materialSample.opacity;
 
-        if (rand(payload.rngState) > opacity) {
-            payload.flags |= uint(BounceType.RAY_TRANSPARENT);
-            payload.nextDirection = worldRayDirection;
-            payload.position = worldPosition + worldRayDirection * computeRayOriginBias(worldPosition);
-            payload.attenuation = float3(1.0);
-            payload.emission = float3(0.0);
+        if (rand(payload.RngState) > opacity) {
+            payload.Flags |= uint(BounceType.RAY_TRANSPARENT);
+            payload.NextDirection = worldRayDirection;
+            payload.Position = worldPosition + worldRayDirection * computeRayOriginBias(worldPosition);
+            payload.Attenuation = float3(1.0);
+            payload.Emission = float3(0.0);
             return;
         }
 
@@ -185,27 +185,27 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
         float metallic = materialSample.metallic;
         float specular = materialSample.specular;
         float roughness = materialSample.roughness;
-        roughness = regularizeSecondaryRoughness(roughness, payload.depth);
+        roughness = regularizeSecondaryRoughness(roughness, payload.Depth);
 
         float transmission = materialSample.transmission;
 
         float3 shadingFacingNormal = computeFacingShadingNormal(shadingNormalTextured, viewDir, geometricFacingNormal);
         float3 facingNormal = shadingFacingNormal;
-        payload.albedo = albedo;
-        payload.normal = facingNormal * 0.5 + 0.5;
-        payload.emission = emission;
+        payload.Albedo = albedo;
+        payload.Normal = facingNormal * 0.5 + 0.5;
+        payload.Emission = emission;
 
         float transmissionProbability = clamp(transmission, 0.0, 1.0);
         float opaqueProbability = max(1.0 - transmissionProbability, EPSILON);
-        if (rand(payload.rngState) < transmissionProbability) {
-            handleDielectricBSDF(viewDir, facingNormal, roughness, material.ior, material.transmissionColor, payload);
-            payload.attenuation /= max(transmissionProbability, EPSILON);
+        if (rand(payload.RngState) < transmissionProbability) {
+            handleDielectricBSDF(viewDir, facingNormal, roughness, material.Ior, material.TransmissionColor, payload);
+            payload.Attenuation /= max(transmissionProbability, EPSILON);
         } else {
             float dielectricF0 = dielectricF0FromSpecular(specular);
             float3 F0 = lerp(float3(dielectricF0), albedo, metallic);
             float swSpecular = computeSpecularSamplingWeight(viewDir, facingNormal, albedo, F0, metallic, roughness);
 
-            payload.emission += estimateDirectLighting(
+            payload.Emission += estimateDirectLighting(
                 worldPosition,
                 shadowPosition,
                 facingNormal,
@@ -216,15 +216,15 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
                 metallic,
                 roughness,
                 swSpecular,
-                sceneSettings.environment,
-                payload.rngState
+                sceneSettings.Environment,
+                payload.RngState
             );
             handleOpaqueBSDF(viewDir, facingNormal, geometricFacingNormal, albedo, metallic, specular, roughness, payload);
-            payload.attenuation /= opaqueProbability;
+            payload.Attenuation /= opaqueProbability;
         }
 
-        payload.nextDirection = fastNormalize(payload.nextDirection);
-        payload.position = offsetRayOrigin(worldPosition, geometricFacingNormal, payload.nextDirection);
+        payload.NextDirection = fastNormalize(payload.NextDirection);
+        payload.Position = offsetRayOrigin(worldPosition, geometricFacingNormal, payload.NextDirection);
     }
 
     void primaryRayGen(int2 pixelCoord, int2 screenSize)
@@ -232,42 +232,42 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
         if (pixelCoord.x >= screenSize.x || pixelCoord.y >= screenSize.y)
             return;
 
-        const int2 pickPixelCoord = int2(pixelCoord.x, (screenSize.y - 1) - pixelCoord.y);
+        int2 shadingScreenSize = effectiveShadingScreenSize(screenSize);
+        int2 shadingPixelCoord = mapOutputPixelToShadingPixel(pixelCoord, screenSize, shadingScreenSize);
+        int2 blockStart = shadingPixelStart(shadingPixelCoord, screenSize, shadingScreenSize);
+        int2 blockEnd = shadingPixelEndExclusive(shadingPixelCoord, screenSize, shadingScreenSize);
+        int2 blockCenterPixel = clamp((blockStart + (blockEnd - int2(1))) / 2, int2(0), screenSize - 1);
+        if (!isShadingLeaderPixel(pixelCoord, screenSize, shadingScreenSize))
+            return;
 
         Payload payload;
 
-        uint2 seed = pcg2d(uint2(pixelCoord) ^ uint2(pushConstants.frame * 16777619));
+        uint2 seed = pcg2d(uint2(blockCenterPixel) ^ uint2(pushConstants.Frame * 16777619));
         uint rngState = seed.x;
-        AdaptiveSamplingContext adaptiveContext = loadAdaptiveSamplingContext(pixelCoord);
-        float3 temporalReference = pushConstants.frame > 0
-            ? adaptiveContext.prevColorData.rgb / max(adaptiveContext.exposureScale, EPSILON)
-            : float3(0.0);
-        int russianRouletteStartBounce = effectiveRussianRouletteStartBounce();
-        int maxBounces = effectiveMaxBounceCount();
-        int sampleCount = effectivePrimarySampleCount();
-        bool adaptiveEnabled = adaptiveContext.adaptiveSamplingEnabled;
+        float exposureScale = loadExposureScale();
+        bool interactivePreview = useInteractivePathTracingPreview();
+        int russianRouletteStartBounce = interactivePreview ? 1 : effectiveRussianRouletteStartBounce();
+        int maxBounces = interactivePreview ? min(effectiveMaxBounceCount(), 2) : effectiveMaxBounceCount();
+        int sampleCount = interactivePreview ? 1 : effectivePrimarySampleCount();
         bool useThinLens = !isInteractiveFrame();
-        bool canReuseStablePrimary = isInteractiveFrame() || (sceneSettings.camera.aperture <= 0.0);
+        bool canReuseStablePrimary = isInteractiveFrame() || (pushConstants.Camera.Aperture <= 0.0);
         Payload stablePrimaryPayload;
 
-        if (shouldSkipAdaptiveSampling(adaptiveContext))
-            return;
-
         float3 accumulatedColor = float3(0.0);
+        int samplesTaken = 0;
         bool hitAnything = false;
         float3 stableAlbedo = float3(0.0);
         float3 stableNormal = float3(0.0);
-        AdaptiveSamplingFrameState adaptiveFrameState = createAdaptiveSamplingFrameState();
 
         for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
             if (sampleIndex == 0) {
                 HaltonSampler stableSampler;
                 SamplerState stableSamplerState;
-                stableSampler.startPixel(pixelCoord, pushConstants.frame + sampleIndex, stableSamplerState);
+                stableSampler.startPixel(blockCenterPixel, pushConstants.Frame + sampleIndex, stableSamplerState);
                 float3 stableRayOrigin, stableRayDirection;
                 PerspectiveCamera<HaltonSampler> stableCamera;
                 stableCamera.generateRay(
-                    pixelCoord,
+                    blockCenterPixel,
                     screenSize,
                     stableSamplerState,
                     stableSampler,
@@ -290,19 +290,14 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
                 stablePrimaryPayload = payload;
 #endif
 
-                outputCrypto[pickPixelCoord] = stablePrimaryPayload.objectIndex;
-                if (stablePrimaryPayload.objectIndex != INVALID_INSTANCE)
-                    outputPosition[pickPixelCoord] = float4(stablePrimaryPayload.position, 1.0);
-                else
-                    outputPosition[pickPixelCoord] = float4(0);
-                bool stablePrimaryVisible = ((stablePrimaryPayload.flags & uint(BounceType.ENV_TRANSPARENT)) == 0u);
-                stableAlbedo = stablePrimaryVisible ? stablePrimaryPayload.albedo : float3(0.0);
-                stableNormal = stablePrimaryVisible ? stablePrimaryPayload.normal : float3(0.0);
+                bool stablePrimaryVisible = ((stablePrimaryPayload.Flags & uint(BounceType.ENV_TRANSPARENT)) == 0u);
+                stableAlbedo = stablePrimaryVisible ? stablePrimaryPayload.Albedo : float3(0.0);
+                stableNormal = stablePrimaryVisible ? stablePrimaryPayload.Normal : float3(0.0);
             }
 
             HaltonSampler sampler;
             SamplerState samplerState;
-            sampler.startPixel(pixelCoord, pushConstants.frame + sampleIndex, samplerState);
+            sampler.startPixel(blockCenterPixel, pushConstants.Frame + sampleIndex, samplerState);
             bool deterministicSample = (sampleIndex == 0);
             bool reuseStablePrimaryForSample = deterministicSample && canReuseStablePrimary;
 
@@ -311,7 +306,7 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
                 if (useThinLens) {
                     ThinLensCamera<HaltonSampler> sceneCamera;
                     sceneCamera.generateRay(
-                        pixelCoord,
+                        blockCenterPixel,
                         screenSize,
                         samplerState,
                         sampler,
@@ -321,7 +316,7 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
                 } else {
                     PerspectiveCamera<HaltonSampler> sceneCamera;
                     sceneCamera.generateRay(
-                        pixelCoord,
+                        blockCenterPixel,
                         screenSize,
                         samplerState,
                         sampler,
@@ -357,53 +352,53 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
 #endif
                 }
 
-                rayOrigin = payload.position;
-                rngState = payload.rngState;
+                rayOrigin = payload.Position;
+                rngState = payload.RngState;
 
-                if ((payload.flags & uint(BounceType.BOUNCE_DIFFUSE)) != 0u)
+                if ((payload.Flags & uint(BounceType.BOUNCE_DIFFUSE)) != 0u)
                     diffuseCount++;
-                if ((payload.flags & uint(BounceType.BOUNCE_SPECULAR)) != 0u)
+                if ((payload.Flags & uint(BounceType.BOUNCE_SPECULAR)) != 0u)
                     specularCount++;
-                if ((payload.flags & uint(BounceType.BOUNCE_TRANSMIT)) != 0u)
+                if ((payload.Flags & uint(BounceType.BOUNCE_TRANSMIT)) != 0u)
                     transmissionCount++;
 
-                if (diffuseCount > sceneSettings.renderSettings.diffuseBounces ||
-                    specularCount > sceneSettings.renderSettings.specularBounces ||
-                    transmissionCount > sceneSettings.renderSettings.transmissionBounces)
-                    payload.flags |= uint(BounceType.RAY_TERMINATED);
+                if (diffuseCount > sceneSettings.RenderSettings.DiffuseBounces ||
+                    specularCount > sceneSettings.RenderSettings.SpecularBounces ||
+                    transmissionCount > sceneSettings.RenderSettings.TransmissionBounces)
+                    payload.Flags |= uint(BounceType.RAY_TERMINATED);
 
                 if (bounce == 0) {
-                    if ((payload.flags & BounceType.RAY_TRANSPARENT) != 0u) {
-                        if ((payload.flags & BounceType.RAY_TERMINATED) == 0u)
+                    if ((payload.Flags & BounceType.RAY_TRANSPARENT) != 0u) {
+                        if ((payload.Flags & BounceType.RAY_TERMINATED) == 0u)
                             --bounce;
                         continue;
                     }
 
-                    hitAnything = ((payload.flags & BounceType.ENV_TRANSPARENT) == 0u);
+                    hitAnything = ((payload.Flags & BounceType.ENV_TRANSPARENT) == 0u);
                 }
 
-                sampleRadiance += throughput * payload.emission;
-                throughput *= payload.attenuation;
-                rayDirection = payload.nextDirection;
+                sampleRadiance += throughput * payload.Emission;
+                throughput *= payload.Attenuation;
+                rayDirection = payload.NextDirection;
 
                 float russianRouletteSurvivalProbability = computeRussianRouletteSurvivalProbability(
                     throughput,
                     bounce,
                     russianRouletteStartBounce);
                 if (russianRouletteSurvivalProbability < 1.0) {
-                    if (rand(payload.rngState) > russianRouletteSurvivalProbability)
-                        payload.flags |= uint(BounceType.RAY_TERMINATED);
+                    if (rand(payload.RngState) > russianRouletteSurvivalProbability)
+                        payload.Flags |= uint(BounceType.RAY_TERMINATED);
                     else
                         throughput /= russianRouletteSurvivalProbability;
                 }
 
-                if ((payload.flags & BounceType.RAY_TERMINATED) != 0u)
+                if ((payload.Flags & BounceType.RAY_TERMINATED) != 0u)
                     break;
             }
 
-            float3 runningReference = temporalReference;
-            if (sampleIndex > 0)
-                runningReference = max(runningReference, accumulatedColor / float(sampleIndex));
+            float3 runningReference = float3(0.0);
+            if (!interactivePreview && samplesTaken > 0)
+                runningReference = accumulatedColor / float(samplesTaken);
 
             int bounceCount = diffuseCount + specularCount + transmissionCount;
             float3 filteredRadiance = suppressFireflies(
@@ -414,23 +409,36 @@ struct PathTracingIntegrator<TMaterial> : IIntegrator<Payload>
                 specularCount,
                 transmissionCount);
             accumulatedColor += filteredRadiance;
-            updateAdaptiveSamplingState(adaptiveContext, filteredRadiance, adaptiveFrameState);
-            if (adaptiveEnabled && shouldTerminateAdaptiveSampling(adaptiveContext, adaptiveFrameState))
-                break;
+            samplesTaken++;
         }
-
-        float newAlpha = float(hitAnything);
-        float4 finalColorData;
-        float4 finalAdaptiveData;
-        finalizeAdaptiveSampling(adaptiveContext, adaptiveFrameState, accumulatedColor, newAlpha, finalColorData, finalAdaptiveData);
 
         float3 finalAlbedo = stableAlbedo;
         float3 finalNormal = stableNormal;
+        float newAlpha = float(hitAnything);
+        float sampleWeight = float(max(samplesTaken, 1));
 
-        outputColor[pixelCoord] = finalColorData;
-        outputAlbedo[pixelCoord] = float4(finalAlbedo, 1.0);
-        outputNormal[pixelCoord] = float4(finalNormal, 0.0);
-        outputAdaptiveState[pixelCoord] = finalAdaptiveData;
+        for (int y = blockStart.y; y < blockEnd.y; ++y) {
+            for (int x = blockStart.x; x < blockEnd.x; ++x) {
+                int2 outputPixel = int2(x, y);
+                int2 pickPixelCoord = int2(outputPixel.x, (screenSize.y - 1) - outputPixel.y);
+                float historySamples = loadHistorySamples(outputPixel);
+
+                outputCrypto[pickPixelCoord] = stablePrimaryPayload.ObjectIndex;
+                if (stablePrimaryPayload.ObjectIndex != InvalidInstance)
+                    outputPosition[pickPixelCoord] = float4(stablePrimaryPayload.Position, 1.0);
+                else
+                    outputPosition[pickPixelCoord] = float4(0);
+
+                storeAccumulatedFrame(
+                    outputPixel,
+                    historySamples,
+                    (accumulatedColor / sampleWeight) * exposureScale,
+                    newAlpha,
+                    sampleWeight);
+                outputAlbedo[outputPixel] = float4(finalAlbedo, 1.0);
+                outputNormal[outputPixel] = float4(finalNormal, 0.0);
+            }
+        }
     }
 };
 

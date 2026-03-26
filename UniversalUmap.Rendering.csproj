@@ -6,7 +6,14 @@
     <RootNamespace>UniversalUmap.Rendering</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!-- Exclude generated SharedStructs.cs - types are defined in Vulkan/Shared.cs -->
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Assets\Shaders\SharedStructs.cs" />
+    <Compile Remove="Tools\**\*.cs" />
+  </ItemGroup>
 
   <PropertyGroup>
     <DisableRtx Condition="'$(DisableRtx)' == ''">false</DisableRtx>
@@ -33,6 +40,11 @@
     <SlangcPath Condition="'$(SlangcPath)' == ''">slangc</SlangcPath>
     <SlangBinDir>$([System.IO.Path]::GetDirectoryName(&quot;$(SlangcPath)&quot;))</SlangBinDir>
     <SlangLibDir>$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine(&quot;$(SlangBinDir)&quot;, &quot;..&quot;, &quot;lib&quot;))))</SlangLibDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ShaderCompileExtraArgs></ShaderCompileExtraArgs>
+    <ShaderCompileExtraArgs Condition="'$(UVUMAP_VULKAN_DEBUG)' != '' or '$(UVUMAP_SHADER_PRINTF)' != ''">-g3</ShaderCompileExtraArgs>
   </PropertyGroup>
 
   <ItemGroup>
@@ -77,6 +89,24 @@
     </ShaderSource>
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Lights/ShadowMiss.slang" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/CullReset.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/*VS.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
+    <ShaderSource Include="$(ProjectDir)Assets/Shaders/Raster/*FS.slang">
+      <Arguments>-DUSE_COMPUTE</Arguments>
+    </ShaderSource>
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang" />
     <ShaderSource Include="$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
 
@@ -95,8 +125,11 @@
            Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
 
     <Message Text='Compiling shaders via "$(SlangcPath)"...' Importance="High" />
+    <Message Condition="'$(ShaderCompileExtraArgs)' != ''"
+             Text='Extra shader compiler args: $(ShaderCompileExtraArgs)'
+             Importance="High" />
 
-    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile glsl_460 -entry main %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv"'
+    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile glsl_460 -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.Filename).spv"'
           LogStandardErrorAsError="true" />
 
   </Target>
@@ -110,24 +143,6 @@
         <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
-  </Target>
-
-  <Target Name="GenerateSharedStructsHeader"
-          BeforeTargets="CompileShaders"
-          Inputs="$(ProjectDir)Assets\Shaders\SharedStructs.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\Program.cs;$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj"
-          Outputs="$(ProjectDir)Assets\Shaders\SharedStructs.slang">
-    <Message Text="Generating SharedStructs.slang from Assets\Shaders\SharedStructs.cs..." Importance="High" />
-    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\SharedStructsHeaderGen\SharedStructsHeaderGen.csproj" -- "$(ProjectDir)Assets\Shaders\SharedStructs.cs" "$(ProjectDir)Assets\Shaders\SharedStructs.slang"'
-          LogStandardErrorAsError="true" />
-  </Target>
-
-  <Target Name="GenerateDefaultEnvironmentMaps"
-          BeforeTargets="Build"
-          Inputs="$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr;$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\Program.cs;$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
-          Outputs="$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_env.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_cdf.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_irradiance.bin;$(ProjectDir)Assets\Textures\kiara_1_dawn_4k_radiance.bin">
-    <Message Text="Precompiling default HDR environment maps..." Importance="High" />
-    <Exec Command='dotnet run --project "$(MSBuildProjectDirectory)\..\Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" -- "$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr" "$(ProjectDir)Assets\Textures\kiara_1_dawn_4k"'
-          LogStandardErrorAsError="true" />
   </Target>
 
   <Target Name="CleanCompiledShaders" BeforeTargets="Clean">
@@ -144,4 +159,12 @@
       <LogicalName>$([System.String]::Copy('UniversalUmap.Rendering.Assets.%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <Target Name="GenerateSharedSlang"
+          BeforeTargets="CompileShaders"
+          Inputs="$(ProjectDir)Vulkan\Shared.cs;$(ProjectDir)Tools\SlangGenerator\Program.cs;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj"
+          Outputs="$(ProjectDir)Assets\Shaders\Shared.slang">
+    <Message Text="Generating Shared.slang from Vulkan/Shared.cs..." Importance="High" />
+    <Exec Command='dotnet run --project "$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj" -- "$(ProjectDir)Vulkan\Shared.cs" "$(ProjectDir)Assets\Shaders\Shared.slang"' />
+  </Target>
 </Project>

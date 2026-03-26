@@ -1,7 +1,7 @@
 #ifndef IMATERIAL_SLANG
 #define IMATERIAL_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 struct MaterialSample
 {

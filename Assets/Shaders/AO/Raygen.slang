@@ -1,6 +1,6 @@
 // AO RTX ray generation entry point.
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 

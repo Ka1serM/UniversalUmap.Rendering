@@ -1,4 +1,4 @@
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;

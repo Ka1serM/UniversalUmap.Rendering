@@ -1,7 +1,7 @@
 #ifndef IINTEGRATOR_SLANG
 #define IINTEGRATOR_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 interface IIntegrator<TPayload>
 {

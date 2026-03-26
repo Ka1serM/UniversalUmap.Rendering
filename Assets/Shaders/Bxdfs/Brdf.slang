@@ -2,7 +2,7 @@
 #ifndef BRDF_SLANG
 #define BRDF_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 #include "../Core/Core.slang"
 

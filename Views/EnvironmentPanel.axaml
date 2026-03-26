@@ -2,9 +2,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
-             mc:Ignorable="d"
-             x:Class="UniversalUmap.Rendering.Views.MapsEnvironmentPanel"
-             x:DataType="viewModels:MapsEnvironmentPanelViewModel">
+             x:Class="UniversalUmap.Rendering.Views.EnvironmentPanel"
+             x:DataType="viewModels:EnvironmentPanelViewModel">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
         <StackPanel HorizontalAlignment="Stretch">
             <StackPanel Spacing="3">

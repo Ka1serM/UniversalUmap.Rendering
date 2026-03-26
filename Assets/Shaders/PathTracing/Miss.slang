@@ -1,7 +1,7 @@
 #ifndef PATHTRACING_MISS_SLANG
 #define PATHTRACING_MISS_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 #include "..//Materials/PbrMaterial.slang"

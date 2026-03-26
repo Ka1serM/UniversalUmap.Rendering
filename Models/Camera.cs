@@ -1,7 +1,6 @@
 using System;
 using System.Numerics;
 using Avalonia;
-using Avalonia.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Serilog;
 using UniversalUmap.Rendering.Core;
@@ -22,6 +21,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
 
     private readonly Input input;
     private CameraDataGpu data = new();
+    private Matrix4x4 worldToClip = Matrix4x4.Identity;
     private Vector3 position = new(0f, 0f, -2f);
     private Quaternion rotation = Quaternion.Identity;
     private PixelSize lastRenderSize = new(1, 1);
@@ -62,6 +62,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
     public Quaternion Rotation => rotation;
     public int IsMoving { get; private set; }
     internal CameraDataGpu Data => data;
+    internal Matrix4x4 WorldToClip => worldToClip;
     internal event Action? Changed;
 
     CameraDataGpu IGpuSnapshot<CameraDataGpu>.ToStruct() => ToStruct();
@@ -130,13 +131,14 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
     {
         lastRenderSize = renderSize;
 
-        var wheelDelta = input.ConsumeWheelDelta();
-        var mouseDelta = input.ConsumeMouseDelta();
-        var leftMouseDown = input.LeftMouseDown;
-        var rightMouseDown = input.RightMouseDown;
+        var frameInput = input.ConsumeFrameSnapshot();
+        var wheelDelta = frameInput.WheelDelta;
+        var mouseDelta = frameInput.MouseDelta;
+        var leftMouseDown = frameInput.LeftMouseDown;
+        var rightMouseDown = frameInput.RightMouseDown;
         var dragActive = leftMouseDown || rightMouseDown;
-        var hasMovementKeys = input.IsKeyDown(Key.W) || input.IsKeyDown(Key.A) || input.IsKeyDown(Key.S) ||
-                              input.IsKeyDown(Key.D) || input.IsKeyDown(Key.Q) || input.IsKeyDown(Key.E);
+        var hasMovementKeys = frameInput.MoveForward || frameInput.MoveLeft || frameInput.MoveBackward ||
+                              frameInput.MoveRight || frameInput.MoveDown || frameInput.MoveUp;
         var moving = false;
 
         if (Math.Abs(wheelDelta) > 0.0001f)
@@ -146,7 +148,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         }
 
         if (dragActive)
-            moving |= UpdateFly(mouseDelta, deltaTimeSeconds);
+            moving |= UpdateFly(mouseDelta, deltaTimeSeconds, frameInput);
 
         if ((Math.Abs(wheelDelta) > 0.0001f || mouseDelta.LengthSquared() > 0.0001f || hasMovementKeys || dragActive) &&
             (System.Environment.TickCount64 / 1000.0 - lastInputLogSeconds) > 0.25)
@@ -197,19 +199,29 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var height = Math.Max(1, renderSize.Height);
         var aspectRatio = (float)width / height;
         var direction = Vector3.Normalize(Vector3.Transform(LocalForward, rotation));
-        var right = Vector3.Normalize(Vector3.Transform(LocalRight, rotation));
         var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
-        var sensorHeightMm = FixedSensorWidthMm / aspectRatio;
+        var right = Vector3.Normalize(Vector3.Cross(direction, up));
+
+        // Calculate half-FOV tangents for proper perspective projection
+        // tan(halfFov) = (sensorDimension/2) / (focalLength/2) = sensorDimension / focalLength
+        var halfSensorWidthMm = FixedSensorWidthMm * 0.5f;
+        var halfSensorHeightMm = halfSensorWidthMm / aspectRatio;
+        var halfFocalLengthMm = FocalLengthMm * 0.5f;
+        var tanHalfHorizontalFov = halfSensorWidthMm / halfFocalLengthMm;
+        var tanHalfVerticalFov = halfSensorHeightMm / halfFocalLengthMm;
+
         var next = data;
 
         next.Position = position;
-        next.Aperture = Aperture > 0f ? (FocalLengthMm / Aperture) * 0.5f * 0.001f : 0f;
         next.Direction = direction;
-        next.FocusDistance = FocusDistance;
-        next.Horizontal = right * (FixedSensorWidthMm * 0.001f);
+        // Store basis vectors scaled by tan(half-FOV); shader multiplies by focalLength for image plane offset
+        next.Horizontal = right * tanHalfHorizontalFov;
+        next.Vertical = up * tanHalfVerticalFov;
         next.FocalLength = FocalLengthMm * 0.001f;
-        next.Vertical = up * (sensorHeightMm * 0.001f);
+        next.FocusDistance = FocusDistance;
+        next.Aperture = Aperture > 0f ? (FocalLengthMm / Aperture) * 0.5f * 0.001f : 0f;
         next.BokehBias = BokehBias;
+        worldToClip = BuildWorldToClipMatrix(position, direction, up, width, height, FocalLengthMm);
 
         if (IsDataEquivalent(data, next))
             return;
@@ -218,7 +230,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         Changed?.Invoke();
     }
 
-    private bool UpdateFly(Vector2 mouseDeltaPixels, float deltaTimeSeconds)
+    private bool UpdateFly(Vector2 mouseDeltaPixels, float deltaTimeSeconds, Input.FrameSnapshot frameInput)
     {
         var positionBefore = position;
         var rotationBefore = rotation;
@@ -234,24 +246,24 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         }
 
         var speed = deltaTimeSeconds * MoveSpeed;
-        if (input.IsKeyDown(Key.LeftShift) || input.IsKeyDown(Key.RightShift))
+        if (frameInput.Boost)
             speed *= SpeedBoostMultiplier;
 
         var forward = Vector3.Normalize(Vector3.Transform(LocalForward, rotation));
         var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
         var right = Vector3.Normalize(Vector3.Cross(forward, up));
 
-        if (input.IsKeyDown(Key.W))
+        if (frameInput.MoveForward)
             position += forward * speed;
-        if (input.IsKeyDown(Key.S))
+        if (frameInput.MoveBackward)
             position -= forward * speed;
-        if (input.IsKeyDown(Key.A))
+        if (frameInput.MoveLeft)
             position -= right * speed;
-        if (input.IsKeyDown(Key.D))
+        if (frameInput.MoveRight)
             position += right * speed;
-        if (input.IsKeyDown(Key.E))
+        if (frameInput.MoveUp)
             position += up * speed;
-        if (input.IsKeyDown(Key.Q))
+        if (frameInput.MoveDown)
             position -= up * speed;
 
         return position != positionBefore || rotation != rotationBefore;
@@ -302,4 +314,19 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         setValue(this, clamped);
         return true;
     }
+
+    private static Matrix4x4 BuildWorldToClipMatrix(Vector3 cameraPosition, Vector3 direction, Vector3 up, int width, int height, float focalLengthMm)
+    {
+        var aspectRatio = Math.Max(1f, (float)width / Math.Max(1, height));
+        var halfSensorWidthMm = FixedSensorWidthMm * 0.5f;
+        var halfSensorHeightMm = halfSensorWidthMm / aspectRatio;
+        var halfFocalLengthMm = Math.Max(0.0005f, focalLengthMm * 0.5f);
+        var verticalFov = 2f * MathF.Atan(halfSensorHeightMm / halfFocalLengthMm);
+
+        var target = cameraPosition + direction;
+        var view = Matrix4x4.CreateLookAt(cameraPosition, target, up);
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(verticalFov, aspectRatio, 0.01f, 10_000f);
+        return view * projection;
+    }
+
 }

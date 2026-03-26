@@ -6,6 +6,7 @@ public partial class RenderSettings : ObservableObject
 {
     [ObservableProperty] private int samplesPerPixel = 1;
     [ObservableProperty] private int pathDepth = 4;
+    [ObservableProperty] private bool applyPixelSizeOnlyWhileMoving;
     [ObservableProperty] private bool adaptiveSamplingEnabled = true;
     [ObservableProperty] private int adaptiveMinSamples = 4;
     [ObservableProperty] private float adaptiveTargetError = 0.03f;
@@ -13,7 +14,9 @@ public partial class RenderSettings : ObservableObject
     [ObservableProperty] private BufferVisualizationMode bufferVisualization = BufferVisualizationMode.FinalColor;
     [ObservableProperty] private float exposure = 0f;
     [ObservableProperty] private bool transparentBackground;
-    [ObservableProperty] private RenderMode renderMode = RenderMode.PathTracing;
+    [ObservableProperty] private RenderMode renderMode = RenderMode.AmbientOcclusion;
+    [ObservableProperty] private RenderPixelSize pixelSize = RenderPixelSize.X1;
+    [ObservableProperty] private bool aoSampleAlbedo = true;
 
     RenderSettingsDataGpu IGpuSnapshot<RenderSettingsDataGpu>.ToStruct() => ToStruct();
 
@@ -37,7 +40,8 @@ public partial class RenderSettings : ObservableObject
             RussianRouletteStartBounce = clampedRussianRouletteStartBounce,
             Exposure = Exposure,
             TransparentBackground = TransparentBackground ? 1 : 0,
-            RenderMode = (int)RenderMode
+            RenderMode = (int)RenderMode,
+            AoSampleAlbedo = AoSampleAlbedo ? 1 : 0
         };
     }
 }

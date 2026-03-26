@@ -1,7 +1,7 @@
 #ifndef DIRECTLIGHTING_PIPELINE_SLANG
 #define DIRECTLIGHTING_PIPELINE_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 

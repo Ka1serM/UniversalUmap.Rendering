@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Text;
 using Avalonia.Platform;
 using Avalonia.Rendering.Composition;
 using Serilog;
@@ -15,10 +17,20 @@ public sealed class Context : IDisposable
 {
     private static readonly object SharedSync = new();
     private static Context? shared;
+    private static readonly bool VulkanDebugEnabled = GetEnvironmentFlag("UVUMAP_VULKAN_DEBUG");
+    private static readonly PfnDebugUtilsMessengerCallbackEXT DebugMessengerCallbackDelegate = CreateDebugMessengerCallbackDelegate();
     private readonly List<CommandBuffer> usedCommandBuffers = [];
     private readonly object sync = new();
-    private CommandPool commandPool;
+    private readonly ConcurrentDictionary<int, ThreadCommandPool> threadCommandPools = new();
     private DescriptorPool descriptorPool;
+    private ExtDebugUtils? debugUtils;
+    private DebugUtilsMessengerEXT debugMessenger;
+
+    internal sealed class ThreadCommandPool
+    {
+        public required int ThreadId { get; init; }
+        public required CommandPool Handle { get; init; }
+    }
 
     public Vk Api { get; private set; }
     public Instance Instance { get; private set; }
@@ -183,9 +195,12 @@ public sealed class Context : IDisposable
             "VK_KHR_external_semaphore_capabilities"
         };
 
-        var validationEnabled = IsValidationEnabledInThisBuild();
+        var validationEnabled = IsValidationEnabled();
+        var shaderPrintfRequested = GetEnvironmentFlag("UVUMAP_SHADER_PRINTF");
         var availableLayers = EnumerateInstanceLayers(api);
+        var availableInstanceExtensions = EnumerateInstanceExtensions(api);
         var enabledLayers = new List<string>();
+        var enabledValidationFeatures = new List<ValidationFeatureEnableEXT>();
         if (validationEnabled && availableLayers.Contains("VK_LAYER_KHRONOS_validation"))
         {
             enabledLayers.Add("VK_LAYER_KHRONOS_validation");
@@ -198,12 +213,37 @@ public sealed class Context : IDisposable
                 Log.Warning("Available Vulkan instance layers: {Layers}", string.Join(", ", availableLayers.OrderBy(x => x, StringComparer.Ordinal)));
         }
 
-        if (api.TryGetInstanceExtension(default(Instance), out ExtDebugUtils _) &&
-            (validationEnabled || System.Environment.GetEnvironmentVariable("UVUMAP_ENABLE_DEBUG_UTILS") == "1"))
+        var debugUtilsRequested = validationEnabled || GetEnvironmentFlag("UVUMAP_ENABLE_DEBUG_UTILS") || VulkanDebugEnabled;
+        var validationFeaturesRequested = validationEnabled && shaderPrintfRequested;
+        if (validationFeaturesRequested && availableInstanceExtensions.Contains("VK_EXT_validation_features"))
+        {
+            instanceExtensions.Add("VK_EXT_validation_features");
+            enabledValidationFeatures.Add(ValidationFeatureEnableEXT.DebugPrintfExt);
+        }
+        else if (validationFeaturesRequested)
+        {
+            Log.Warning("Shader printf requested, but VK_EXT_validation_features is not available.");
+        }
+
+        if (api.TryGetInstanceExtension(default(Instance), out ExtDebugUtils _) && debugUtilsRequested)
             instanceExtensions.Add("VK_EXT_debug_utils");
+        else if (debugUtilsRequested)
+            Log.Warning("Vulkan debug utils requested, but VK_EXT_debug_utils is not available.");
+
+        Log.Information(
+            "Vulkan startup config: validationRequested={ValidationRequested}, shaderPrintfRequested={ShaderPrintfRequested}, debugUtilsRequested={DebugUtilsRequested}, vkLayerPath={LayerPath}",
+            validationEnabled,
+            shaderPrintfRequested,
+            debugUtilsRequested,
+            System.Environment.GetEnvironmentVariable("VK_LAYER_PATH") ?? "<unset>");
+        Log.Information("Requested Vulkan instance extensions: {Extensions}", string.Join(", ", instanceExtensions.OrderBy(x => x, StringComparer.Ordinal)));
+        Log.Information(
+            "Requested Vulkan instance layers: {Layers}",
+            enabledLayers.Count == 0 ? "<none>" : string.Join(", ", enabledLayers.OrderBy(x => x, StringComparer.Ordinal)));
 
         using var pInstanceExtensions = new ByteStringList(instanceExtensions);
         using var pLayers = new ByteStringList(enabledLayers);
+        var validationFeatureArray = enabledValidationFeatures.Count == 0 ? null : enabledValidationFeatures.ToArray();
         var instanceInfo = new InstanceCreateInfo
         {
             SType = StructureType.InstanceCreateInfo,
@@ -213,14 +253,41 @@ public sealed class Context : IDisposable
             EnabledLayerCount = pLayers.UCount,
             PpEnabledLayerNames = pLayers
         };
+        Instance vkInstance = default;
 
-        api.CreateInstance(in instanceInfo, default, out var vkInstance).ThrowOnError();
+        fixed (ValidationFeatureEnableEXT* pValidationFeatures = validationFeatureArray)
+        {
+            ValidationFeaturesEXT validationFeatures = default;
+            if (validationFeatureArray is { Length: > 0 })
+            {
+                validationFeatures = new ValidationFeaturesEXT
+                {
+                    SType = StructureType.ValidationFeaturesExt,
+                    EnabledValidationFeatureCount = (uint)validationFeatureArray.Length,
+                    PEnabledValidationFeatures = pValidationFeatures
+                };
+                instanceInfo.PNext = &validationFeatures;
+            }
+
+            api.CreateInstance(in instanceInfo, default, out vkInstance).ThrowOnError();
+        }
+
+        Log.Information(
+            "Vulkan instance created. ValidationLoaded={ValidationLoaded}, ShaderPrintfValidation={ShaderPrintfValidation}, DebugUtilsExtensionRequested={DebugUtilsExtensionRequested}",
+            enabledLayers.Contains("VK_LAYER_KHRONOS_validation"),
+            validationFeatureArray is { Length: > 0 },
+            instanceExtensions.Contains("VK_EXT_debug_utils"));
         Device createdDevice = default;
-        CommandPool createdCommandPool = default;
         var success = false;
 
         try
         {
+            if (debugUtilsRequested && api.TryGetInstanceExtension(vkInstance, out ExtDebugUtils createdDebugUtils))
+            {
+                debugUtils = createdDebugUtils;
+                CreateDebugMessenger(vkInstance, createdDebugUtils);
+            }
+
             uint physicalCount = 0;
             api.EnumeratePhysicalDevices(vkInstance, ref physicalCount, default).ThrowOnError();
             var devices = stackalloc PhysicalDevice[(int)physicalCount];
@@ -510,14 +577,6 @@ public sealed class Context : IDisposable
                     api.CreateDevice(candidate.PhysicalDevice, in deviceInfo, default, out createdDevice).ThrowOnError();
                     api.GetDeviceQueue(createdDevice, candidate.QueueFamilyIndex, 0, out var queue);
 
-                    var commandPoolCreateInfo = new CommandPoolCreateInfo
-                    {
-                        SType = StructureType.CommandPoolCreateInfo,
-                        Flags = CommandPoolCreateFlags.ResetCommandBufferBit,
-                        QueueFamilyIndex = candidate.QueueFamilyIndex
-                    };
-                    api.CreateCommandPool(createdDevice, in commandPoolCreateInfo, default, out createdCommandPool).ThrowOnError();
-                    
                     // Create a global descriptor pool large enough for all raytracing and compositing needs
                     var poolSizes = stackalloc DescriptorPoolSize[5];
                     poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 10);
@@ -544,24 +603,20 @@ public sealed class Context : IDisposable
                     Device = createdDevice;
                     Queue = queue;
                     QueueFamilyIndex = candidate.QueueFamilyIndex;
-                    commandPool = createdCommandPool;
                     descriptorPool = createdDescriptorPool;
                     RayTracingSupported = candidate.RayTracingEnabled;
                     DeviceName = candidate.Name;
                     Log.Information(
-                        "Picked GPU: {GpuName} {RayTracingStatus}",
+                        "Picked GPU: {GpuName} {RayTracingStatus} QueueFamily={QueueFamily} Extensions=[{Extensions}]",
                         candidate.Name,
-                        candidate.RayTracingEnabled ? "(Ray Tracing Enabled)" : "(Ray Tracing Not Supported)");
+                        candidate.RayTracingEnabled ? "(Ray Tracing Enabled)" : "(Ray Tracing Not Supported)",
+                        candidate.QueueFamilyIndex,
+                        string.Join(", ", candidate.DeviceExtensions.OrderBy(x => x, StringComparer.Ordinal)));
                     return;
                 }
                 catch (Exception ex)
                 {
                     lastCreateFailure = ex;
-                    if (createdCommandPool.Handle != default)
-                    {
-                        api.DestroyCommandPool(createdDevice, createdCommandPool, default);
-                        createdCommandPool = default;
-                    }
                     if (createdDevice.Handle != default)
                     {
                         api.DestroyDevice(createdDevice, default);
@@ -576,8 +631,6 @@ public sealed class Context : IDisposable
         {
             if (!success)
             {
-                if (createdCommandPool.Handle != default)
-                    api.DestroyCommandPool(createdDevice, createdCommandPool, default);
                 if (createdDevice.Handle != default)
                     api.DestroyDevice(createdDevice, default);
                 api.DestroyInstance(vkInstance, default);
@@ -635,13 +688,106 @@ public sealed class Context : IDisposable
         return Vk.GetApi();
     }
 
-    private static bool IsValidationEnabledInThisBuild()
+    private static bool IsValidationEnabled()
     {
+        if (GetEnvironmentFlag("UVUMAP_VULKAN_VALIDATION") || VulkanDebugEnabled)
+            return true;
+
 #if RELEASE
         return false;
 #else
         return true;
 #endif
+    }
+
+    private static bool GetEnvironmentFlag(string name)
+    {
+        var value = System.Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return value is "1" or "true" or "TRUE" or "True" or "yes" or "YES" or "Yes" or "on" or "ON" or "On";
+    }
+
+    private static unsafe PfnDebugUtilsMessengerCallbackEXT CreateDebugMessengerCallbackDelegate()
+        => new(new DebugUtilsMessengerCallbackFunctionEXT(DebugMessengerCallback));
+
+    private unsafe void CreateDebugMessenger(Instance instance, ExtDebugUtils extDebugUtils)
+    {
+        var createInfo = new DebugUtilsMessengerCreateInfoEXT
+        {
+            SType = StructureType.DebugUtilsMessengerCreateInfoExt,
+            MessageSeverity =
+                DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt |
+                DebugUtilsMessageSeverityFlagsEXT.WarningBitExt |
+                DebugUtilsMessageSeverityFlagsEXT.InfoBitExt |
+                DebugUtilsMessageSeverityFlagsEXT.VerboseBitExt,
+            MessageType =
+                DebugUtilsMessageTypeFlagsEXT.GeneralBitExt |
+                DebugUtilsMessageTypeFlagsEXT.ValidationBitExt |
+                DebugUtilsMessageTypeFlagsEXT.PerformanceBitExt,
+            PfnUserCallback = DebugMessengerCallbackDelegate
+        };
+
+        extDebugUtils.CreateDebugUtilsMessenger(instance, in createInfo, default, out debugMessenger).ThrowOnError();
+        Log.Information("Vulkan debug messenger enabled.");
+    }
+
+    private static unsafe uint DebugMessengerCallback(
+        DebugUtilsMessageSeverityFlagsEXT messageSeverity,
+        DebugUtilsMessageTypeFlagsEXT messageTypes,
+        DebugUtilsMessengerCallbackDataEXT* callbackData,
+        void* userData)
+    {
+        var message = callbackData is null || callbackData->PMessage is null
+            ? "<no message>"
+            : Marshal.PtrToStringAnsi((nint)callbackData->PMessage) ?? "<no message>";
+        var messageIdName = callbackData is null || callbackData->PMessageIdName is null
+            ? "Unknown"
+            : Marshal.PtrToStringAnsi((nint)callbackData->PMessageIdName) ?? "Unknown";
+        var messageIdNumber = callbackData is null ? 0 : callbackData->MessageIdNumber;
+        var objectSummary = callbackData is null ? string.Empty : BuildDebugObjectSummary(callbackData);
+        var formatted = $"[{messageTypes}] {messageIdName} ({messageIdNumber}): {message}{objectSummary}";
+
+        if ((messageSeverity & DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt) != 0)
+            Log.Error("Vulkan validation: {Message}", formatted);
+        else if ((messageSeverity & DebugUtilsMessageSeverityFlagsEXT.WarningBitExt) != 0)
+            Log.Warning("Vulkan validation: {Message}", formatted);
+        else
+            Log.Information("Vulkan validation: {Message}", formatted);
+
+        return Vk.False;
+    }
+
+    private static unsafe string BuildDebugObjectSummary(DebugUtilsMessengerCallbackDataEXT* callbackData)
+    {
+        if (callbackData->ObjectCount == 0 || callbackData->PObjects is null)
+            return string.Empty;
+
+        var builder = new StringBuilder();
+        builder.Append(" | Objects: ");
+        var count = Math.Min((int)callbackData->ObjectCount, 4);
+        for (var i = 0; i < count; i++)
+        {
+            var debugObject = callbackData->PObjects[i];
+            if (i > 0)
+                builder.Append(", ");
+
+            var name = debugObject.PObjectName is null
+                ? "<unnamed>"
+                : Marshal.PtrToStringAnsi((nint)debugObject.PObjectName) ?? "<unnamed>";
+            builder.Append(debugObject.ObjectType);
+            builder.Append('#');
+            builder.Append(debugObject.ObjectHandle);
+            builder.Append('(');
+            builder.Append(name);
+            builder.Append(')');
+        }
+
+        if (callbackData->ObjectCount > (uint)count)
+            builder.Append(", ...");
+
+        return builder.ToString();
     }
 
     private static unsafe HashSet<string> EnumerateInstanceLayers(Vk api)
@@ -664,6 +810,30 @@ public sealed class Context : IDisposable
             if (!string.IsNullOrWhiteSpace(name))
                 result.Add(name);
         }
+        return result;
+    }
+
+    private static unsafe HashSet<string> EnumerateInstanceExtensions(Vk api)
+    {
+        uint extensionCount = 0;
+        api.EnumerateInstanceExtensionProperties((byte*)null, ref extensionCount, null).ThrowOnError();
+        if (extensionCount == 0)
+            return new HashSet<string>(StringComparer.Ordinal);
+
+        var extensions = new ExtensionProperties[extensionCount];
+        fixed (ExtensionProperties* pExtensions = extensions)
+            api.EnumerateInstanceExtensionProperties((byte*)null, ref extensionCount, pExtensions).ThrowOnError();
+
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < extensionCount; i++)
+        {
+            string? name;
+            fixed (byte* pExtensionName = extensions[i].ExtensionName)
+                name = Marshal.PtrToStringAnsi((IntPtr)pExtensionName);
+            if (!string.IsNullOrWhiteSpace(name))
+                result.Add(name);
+        }
+
         return result;
     }
 
@@ -715,9 +885,13 @@ public sealed class Context : IDisposable
         {
             if (descriptorPool.Handle != default)
                 Api.DestroyDescriptorPool(Device, descriptorPool, default);
-            Api.DestroyCommandPool(Device, commandPool, default);
         }
+        foreach (var threadCommandPool in threadCommandPools.Values)
+            Api.DestroyCommandPool(Device, threadCommandPool.Handle, default);
+        threadCommandPools.Clear();
         Api.DestroyDevice(Device, default);
+        if (debugUtils is not null && debugMessenger.Handle != default && Instance.Handle != default)
+            debugUtils.DestroyDebugUtilsMessenger(Instance, debugMessenger, default);
         Api.DestroyInstance(Instance, default);
 
         lock (SharedSync)
@@ -757,27 +931,50 @@ public sealed class Context : IDisposable
         }
     }
 
-    private unsafe Silk.NET.Vulkan.CommandBuffer AllocateCommandBuffer()
+    private unsafe Silk.NET.Vulkan.CommandBuffer AllocateCommandBuffer(ThreadCommandPool threadCommandPool)
     {
         var allocateInfo = new CommandBufferAllocateInfo
         {
             SType = StructureType.CommandBufferAllocateInfo,
-            CommandPool = commandPool,
+            CommandPool = threadCommandPool.Handle,
             CommandBufferCount = 1,
             Level = CommandBufferLevel.Primary
         };
 
-        lock (sync)
-        {
-            Api.AllocateCommandBuffers(Device, in allocateInfo, out Silk.NET.Vulkan.CommandBuffer commandBuffer);
-            return commandBuffer;
-        }
+        Api.AllocateCommandBuffers(Device, in allocateInfo, out Silk.NET.Vulkan.CommandBuffer commandBuffer);
+        return commandBuffer;
     }
 
     private void MoveToUsed(CommandBuffer commandBuffer)
     {
         lock (sync)
             usedCommandBuffers.Add(commandBuffer);
+    }
+
+    private ThreadCommandPool GetOrCreateThreadCommandPool()
+    {
+        var threadId = Environment.CurrentManagedThreadId;
+        return threadCommandPools.GetOrAdd(threadId, static (id, owner) => owner.CreateThreadCommandPool(id), this);
+    }
+
+    private unsafe ThreadCommandPool CreateThreadCommandPool(int threadId)
+    {
+        var commandPoolCreateInfo = new CommandPoolCreateInfo
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            Flags = CommandPoolCreateFlags.ResetCommandBufferBit,
+            QueueFamilyIndex = QueueFamilyIndex
+        };
+
+        lock (sync)
+        {
+            Api.CreateCommandPool(Device, in commandPoolCreateInfo, default, out var commandPool).ThrowOnError();
+            return new ThreadCommandPool
+            {
+                ThreadId = threadId,
+                Handle = commandPool
+            };
+        }
     }
 
     private unsafe void SubmitCommandBufferInternal(
@@ -820,7 +1017,8 @@ public sealed class Context : IDisposable
         internal unsafe CommandBuffer(Context owner)
         {
             Context = owner;
-            InternalHandle = owner.AllocateCommandBuffer();
+            OriginCommandPool = owner.GetOrCreateThreadCommandPool();
+            InternalHandle = owner.AllocateCommandBuffer(OriginCommandPool);
 
             var fenceInfo = new FenceCreateInfo
             {
@@ -833,6 +1031,7 @@ public sealed class Context : IDisposable
         }
 
         internal Context Context { get; }
+        internal ThreadCommandPool OriginCommandPool { get; }
         public Silk.NET.Vulkan.CommandBuffer InternalHandle { get; }
         internal Fence Fence { get; }
         internal bool IsExternallyTracked => externalReferenceCount > 0;
@@ -913,7 +1112,7 @@ public sealed class Context : IDisposable
 
                 var commandBuffer = InternalHandle;
                 lock (Context.sync)
-                    Context.Api.FreeCommandBuffers(Context.Device, Context.commandPool, 1, in commandBuffer);
+                    Context.Api.FreeCommandBuffers(Context.Device, OriginCommandPool.Handle, 1, in commandBuffer);
             }
         }
 

@@ -69,7 +69,7 @@
     <Border x:Name="Shell">
         <Border x:Name="ShellContent"
                 ClipToBounds="True">
-            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
                 <Button x:Name="AoButton"
                         Grid.Column="0"
                         Classes="modeSegment"
@@ -143,6 +143,34 @@
                                   Opacity="0.75" />
                         </Canvas>
                     </Viewbox>
+                </Button>
+
+                <Border Grid.Column="5" Classes="segmentDivider" />
+
+                <Button x:Name="RasterButton"
+                        Grid.Column="6"
+                        Classes="modeSegment"
+                        Click="RasterButton_OnClick"
+                        ToolTip.Tip="Rasterized">
+                    <TextBlock Text="R"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Button>
+
+                <Border Grid.Column="7" Classes="segmentDivider" />
+
+                <Button x:Name="RasterShadowsButton"
+                        Grid.Column="8"
+                        Classes="modeSegment"
+                        Click="RasterShadowsButton_OnClick"
+                        ToolTip.Tip="Rasterized + RT Shadows">
+                    <TextBlock Text="RS"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
                 </Button>
             </Grid>
         </Border>

@@ -4,7 +4,7 @@
 #ifndef INTERSECTION_SLANG
 #define INTERSECTION_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 #include "../Core/Core.slang"
 #include "../Lights/EnvironmentLight.slang"
@@ -64,8 +64,8 @@ struct HitInfo
     bool intersectAABB(float3 rayOrigin, float3 invDir, AabbGpu box, out float tmin, out float tmax) {
         const float EPSILON = 1e-6;
 
-        float3 t0s = (box.minBounds - rayOrigin) * invDir;
-        float3 t1s = (box.maxBounds - rayOrigin) * invDir;
+        float3 t0s = (box.MinBounds - rayOrigin) * invDir;
+        float3 t1s = (box.MaxBounds - rayOrigin) * invDir;
 
         float3 tsmaller = min(t0s, t1s);
         float3 tbigger  = max(t0s, t1s);
@@ -79,10 +79,10 @@ struct HitInfo
     void traverseBVH(float3 rayOrigin, float3 rayDirection, MeshAddressesGpu mesh, inout HitInfo hit, float tMin) {
         float3 invDir = 1.0 / rayDirection;
 
-        BVHNodeBuffer* bvh = reinterpret<BVHNodeBuffer*>(mesh.bvhNodeAddress);
-        BVHIndexBuffer* bvhIndices = reinterpret<BVHIndexBuffer*>(mesh.bvhIndexAddress);
-        VertexBuffer* vertices = reinterpret<VertexBuffer*>(mesh.vertexAddress);
-        IndexBuffer* indices = reinterpret<IndexBuffer*>(mesh.indexAddress);
+        BVHNodeBuffer* bvh = reinterpret<BVHNodeBuffer*>(mesh.BvhNodeAddress);
+        BVHIndexBuffer* bvhIndices = reinterpret<BVHIndexBuffer*>(mesh.BvhIndexAddress);
+        VertexBuffer* vertices = reinterpret<VertexBuffer*>(mesh.VertexAddress);
+        IndexBuffer* indices = reinterpret<IndexBuffer*>(mesh.IndexAddress);
 
         uint stack[BVH_STACK_DEPTH];
         uint stackPtr = 0;
@@ -92,17 +92,17 @@ struct HitInfo
             uint nodeIndex = stack[--stackPtr];
             BvhNodeGpu node = bvh->data[nodeIndex];
 
-            if (node.primCount > 0) {
-                for (uint i = 0; i < node.primCount; ++i) {
-                    uint primIdx = bvhIndices->data[node.rightChildOrPrimIndex + i];
+            if (node.PrimCount > 0) {
+                for (uint i = 0; i < node.PrimCount; ++i) {
+                    uint primIdx = bvhIndices->data[node.RightChildOrPrimIndex + i];
 
                     uint i0 = indices->data[3 * primIdx + 0];
                     uint i1 = indices->data[3 * primIdx + 1];
                     uint i2 = indices->data[3 * primIdx + 2];
 
-                    float3 v0 = vertices->data[i0].position;
-                    float3 v1 = vertices->data[i1].position;
-                    float3 v2 = vertices->data[i2].position;
+                    float3 v0 = vertices->data[i0].Position;
+                    float3 v1 = vertices->data[i1].Position;
+                    float3 v2 = vertices->data[i2].Position;
 
                     float3 currentBary;
                     if (intersectTriangle(rayOrigin, rayDirection, v0, v1, v2, hit.t, currentBary, tMin)) {
@@ -114,8 +114,8 @@ struct HitInfo
             }
 
             float tmin_left, tmax_left, tmin_right, tmax_right;
-            bool hit_left = intersectAABB(rayOrigin, invDir, node.leftBounds, tmin_left, tmax_left);
-            bool hit_right = intersectAABB(rayOrigin, invDir, node.rightBounds, tmin_right, tmax_right);
+            bool hit_left = intersectAABB(rayOrigin, invDir, node.LeftBounds, tmin_left, tmax_left);
+            bool hit_right = intersectAABB(rayOrigin, invDir, node.RightBounds, tmin_right, tmax_right);
 
             hit_left = hit_left && tmin_left < hit.t && tmax_left > tMin;
             hit_right = hit_right && tmin_right < hit.t && tmax_right > tMin;
@@ -123,7 +123,7 @@ struct HitInfo
             if (!hit_left && !hit_right) continue;
 
             uint leftChildIndex = nodeIndex + 1;
-            uint rightChildIndex = node.rightChildOrPrimIndex;
+            uint rightChildIndex = node.RightChildOrPrimIndex;
 
             if (hit_left && hit_right) {
                 if (tmin_left < tmin_right) {
@@ -144,8 +144,8 @@ struct HitInfo
     HitInfo traceScene(float3 rayOrigin, float3 rayDirection, float tMin, float tMax) {
         HitInfo bestHit;
         bestHit.t = tMax;
-        bestHit.instanceIndex = INVALID_INSTANCE;
-        bestHit.primitiveIndex = INVALID_INSTANCE;
+        bestHit.instanceIndex = InvalidInstance;
+        bestHit.primitiveIndex = InvalidInstance;
 
         uint instanceCount = 0;
         uint instanceStride = 0;
@@ -153,22 +153,22 @@ struct HitInfo
         for (uint i = 0; i < instanceCount; ++i) {
             InstanceGpu inst = instances[i];
 
-            if (inst.meshId == 0xFFFFFFFF)
+            if (inst.MeshId == 0xFFFFFFFF)
                 continue;
 
-            float3 localOrigin = mul(float4(rayOrigin, 1.0), inst.inverseTransform).xyz;
-            float3 localDir = mul(float4(rayDirection, 0.0), inst.inverseTransform).xyz;
+            float3 localOrigin = mul(float4(rayOrigin, 1.0), inst.InverseTransform).xyz;
+            float3 localDir = mul(float4(rayDirection, 0.0), inst.InverseTransform).xyz;
 
             HitInfo localHit;
             localHit.t = bestHit.t;
-            localHit.primitiveIndex = INVALID_INSTANCE;
+            localHit.primitiveIndex = InvalidInstance;
 
-            MeshAddressesGpu mesh = meshes[inst.meshId];
+            MeshAddressesGpu mesh = meshes[inst.MeshId];
             traverseBVH(localOrigin, localDir, mesh, localHit, tMin);
 
-            if (localHit.primitiveIndex != INVALID_INSTANCE) {
+            if (localHit.primitiveIndex != InvalidInstance) {
                 float3 localPos = localOrigin + localDir * localHit.t;
-                float3 worldPos = mul(float4(localPos, 1.0), inst.transform).xyz;
+                float3 worldPos = mul(float4(localPos, 1.0), inst.Transform).xyz;
                 float worldT = length(worldPos - rayOrigin);
 
                 if (worldT >= tMin && worldT < bestHit.t) {
@@ -187,7 +187,7 @@ struct HitInfo
 bool traceShadowRay(float3 rayOrigin, float3 rayDirection, float tMin, float tMax) {
 #ifdef USE_COMPUTE
     HitInfo shadowHit = traceScene(rayOrigin, rayDirection, tMin, tMax);
-    return shadowHit.instanceIndex != INVALID_INSTANCE;
+    return shadowHit.instanceIndex != InvalidInstance;
 #else
     uint shadowPayload = 1u;
     const uint shadowFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
@@ -208,36 +208,36 @@ bool traceReflectionRay(float3 rayOrigin, float3 rayDirection, float roughness, 
 #ifdef USE_COMPUTE
     HitInfo hit = traceScene(rayOrigin, rayDirection, 0.001, 1000.0);
 
-    if (hit.instanceIndex == INVALID_INSTANCE) {
-        hitColor = sampleEnvironmentMapColorLod(rayDirection, environmentData, environmentData.lightingExposureScale, roughness * max(environmentData.maxTextureLod, 0.0));
+    if (hit.instanceIndex == InvalidInstance) {
+        hitColor = sampleEnvironmentMapColorLod(rayDirection, environmentData, environmentData.LightingExposureScale, roughness * max(environmentData.MaxTextureLod, 0.0));
         return false;
     }
 
     const InstanceGpu inst = instances[hit.instanceIndex];
-    const MeshAddressesGpu mesh = meshes[inst.meshId];
-    const Face face = reinterpret<FaceBuffer*>(mesh.faceAddress)->data[hit.primitiveIndex];
-    const MaterialData material = reinterpret<MaterialBuffer*>(mesh.materialAddress)->data[face.materialIndex];
+    const MeshAddressesGpu mesh = meshes[inst.MeshId];
+    const Face face = reinterpret<FaceBuffer*>(mesh.FaceAddress)->data[hit.primitiveIndex];
+    const MaterialData material = reinterpret<MaterialBuffer*>(mesh.MaterialAddress)->data[face.MaterialIndex];
 
-    const Vertex v0 = reinterpret<VertexBuffer*>(mesh.vertexAddress)->data[reinterpret<IndexBuffer*>(mesh.indexAddress)->data[3 * hit.primitiveIndex + 0]];
-    const Vertex v1 = reinterpret<VertexBuffer*>(mesh.vertexAddress)->data[reinterpret<IndexBuffer*>(mesh.indexAddress)->data[3 * hit.primitiveIndex + 1]];
-    const Vertex v2 = reinterpret<VertexBuffer*>(mesh.vertexAddress)->data[reinterpret<IndexBuffer*>(mesh.indexAddress)->data[3 * hit.primitiveIndex + 2]];
+    const Vertex v0 = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[3 * hit.primitiveIndex + 0]];
+    const Vertex v1 = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[3 * hit.primitiveIndex + 1]];
+    const Vertex v2 = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[3 * hit.primitiveIndex + 2]];
 
-    float2 uv = interpolateBarycentric(hit.barycentrics, v0.uv, v1.uv, v2.uv);
+    float2 uv = interpolateBarycentric(hit.barycentrics, v0.UV, v1.UV, v2.UV);
 
-    float3 albedo = material.albedo;
-    if (material.albedoIndex != -1)
-        albedo *= textureSamplers[material.albedoIndex].Sample(uv).rgb;
+    float3 albedo = material.Albedo;
+    if (material.AlbedoIndex != -1)
+        albedo *= textureSamplers[material.AlbedoIndex].Sample(uv).rgb;
 
-    float3 emission = material.emission * material.emissionStrength;
-    if (material.emissionIndex != -1)
-        emission *= textureSamplers[material.emissionIndex].Sample(uv).rgb;
+    float3 emission = material.Emission * material.EmissionStrength;
+    if (material.EmissionIndex != -1)
+        emission *= textureSamplers[material.EmissionIndex].Sample(uv).rgb;
 
     hitColor = emission + albedo * 0.5;
     return true;
 #else
     // RTX path - this is handled via separate ray payload in the actual RTX pipeline
     // For DirectLighting, the reflection miss shader handles this
-    hitColor = sampleEnvironmentMapColorLod(rayDirection, environmentData, environmentData.lightingExposureScale, roughness * max(environmentData.maxTextureLod, 0.0));
+    hitColor = sampleEnvironmentMapColorLod(rayDirection, environmentData, environmentData.LightingExposureScale, roughness * max(environmentData.MaxTextureLod, 0.0));
     return false;
 #endif
 }

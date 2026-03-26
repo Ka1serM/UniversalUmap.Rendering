@@ -68,7 +68,8 @@ public sealed class SunDirectionControl : VulkanShaderControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         UnsubscribeFromSource(subscribedSource);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         hasDirectionFromSource = false;
         base.OnDetachedFromVisualTree(e);
     }
@@ -177,7 +178,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
         if (!inDisk)
             return;
 
-        var began = BeginCapture(e.Pointer, p);
+        var began = PointerCaptureCoordinator.TryBegin(this, e.Pointer, p);
         Log.Information("SunDirectionWidget capture begin result={Began} Pos={Pos}", began, p);
         if (began)
             e.Handled = true;
@@ -185,17 +186,17 @@ public sealed class SunDirectionControl : VulkanShaderControl
 
     private void OnPointerMovedRouted(object? sender, PointerEventArgs e)
     {
-        if (!IsCaptureActive)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
-        if (TryConsumeCaptureWarpMove())
+        if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
         }
 
         var p = e.GetPosition(this);
-        var delta = GetCaptureDelta(p);
+        var delta = PointerCaptureCoordinator.GetDelta(this, p);
         var yaw = (float)(-delta.X * 0.01);
         var pitch = (float)(-delta.Y * 0.01);
         if (Math.Abs(yaw) > float.Epsilon || Math.Abs(pitch) > float.Epsilon)
@@ -224,30 +225,32 @@ public sealed class SunDirectionControl : VulkanShaderControl
             }
         }
 
-        TryWrapCapture(p);
+        PointerCaptureCoordinator.TryWrapAround(this, p);
         e.Handled = true;
     }
 
     private void OnPointerReleasedRouted(object? sender, PointerReleasedEventArgs e)
     {
-        if (!IsCaptureActive)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
         Log.Information("SunDirectionWidget capture end (release).");
-        EndCapture(e.Pointer);
+        PointerCaptureCoordinator.End(this, e.Pointer);
         e.Handled = true;
     }
 
     protected override void OnLostFocus(Avalonia.Interactivity.RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
     }
 
     private void OnPointerCaptureLostRouted(object? sender, PointerCaptureLostEventArgs e)
     {
         Log.Information("SunDirectionWidget pointer capture lost.");
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
     }
 
     private bool IsPointInsideDisk(Point p)

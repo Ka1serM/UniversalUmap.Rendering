@@ -106,8 +106,8 @@ public sealed unsafe class TextureAsset : IDisposable
                 AccessFlags.ShaderReadBit);
         }
         context.RetainForExecution(commandBuffer, staging);
-        context.SubmitAndWait(commandBuffer);
-        Log.Information("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
+        context.SubmitCommandBuffer(commandBuffer);
+        Log.Debug("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
     }
 
     internal DescriptorImageInfo GetDescriptorImageInfo()

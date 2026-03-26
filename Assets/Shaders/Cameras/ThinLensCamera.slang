@@ -45,7 +45,7 @@ struct ThinLensCamera<TSampler> : ICamera<TSampler>
         out float3 rayOrigin,
         out float3 rayDirection)
     {
-        CameraDataGpu camera = sceneSettings.camera;
+        CameraDataGpu camera = pushConstants.Camera;
         PerspectiveCamera<TSampler> perspectiveCamera;
         perspectiveCamera.generatePerspectiveRay(
             pixelCoord,
@@ -56,13 +56,15 @@ struct ThinLensCamera<TSampler> : ICamera<TSampler>
             rayOrigin,
             rayDirection);
 
-        if (camera.aperture > 0.0) {
+        if (camera.Aperture > 0.0) {
             float2 lensSampleRaw = sampler.get2D(samplerState);
-            float2 lensSample = thinLensRoundBokeh(lensSampleRaw.x, lensSampleRaw.y, camera.bokehBias) * camera.aperture;
-            float3 lensU = normalize(camera.horizontal);
-            float3 lensV = normalize(camera.vertical);
-            float3 rayOriginDOF = camera.position + lensU * lensSample.x + lensV * lensSample.y;
-            float3 focusPoint = rayOrigin + rayDirection * camera.focusDistance;
+            float2 lensSample = thinLensRoundBokeh(lensSampleRaw.x, lensSampleRaw.y, camera.BokehBias) * camera.Aperture;
+            // Horizontal and Vertical now store unit basis vectors (scaled by tan(half-FOV))
+            // We need to normalize them to get the pure direction for lens sampling
+            float3 lensU = normalize(camera.Horizontal);
+            float3 lensV = normalize(camera.Vertical);
+            float3 rayOriginDOF = camera.Position + lensU * lensSample.x + lensV * lensSample.y;
+            float3 focusPoint = rayOrigin + rayDirection * camera.FocusDistance;
 
             rayOrigin = rayOriginDOF;
             rayDirection = normalize(focusPoint - rayOriginDOF);

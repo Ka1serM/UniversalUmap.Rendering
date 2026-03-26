@@ -11,12 +11,16 @@ using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Raytracing;
 
-internal abstract unsafe class GpuRaytracer : IDisposable
+internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 {
     protected const uint MaxTextures = 10_000;
+    public int ShaderPixelSizePercent { get; set; } = 100;
 
     protected readonly Context Context;
     protected readonly Scene Scene;
+    protected RenderMode CachedRenderMode;
+    private bool hasLoggedCurrentRenderMode;
+    private bool settingsDirty;
 
     private ImageResource? outputColorImage;
     private ImageResource? albedoImage;
@@ -34,10 +38,27 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     private bool hasDeferredResize;
     private PixelSize deferredResizeSize;
 
+    private SceneSettingsDataGpu lastUploadedSettings;
+
     protected GpuRaytracer(Context context, Scene scene)
     {
         Context = context;
         Scene = scene;
+        CachedRenderMode = scene.RenderSettings.RenderMode;
+        settingsDirty = true;
+
+        scene.RenderSettings.PropertyChanged += (s, e) =>
+        {
+            if (e.PropertyName == nameof(RenderSettings.RenderMode))
+            {
+                CachedRenderMode = scene.RenderSettings.RenderMode;
+                hasLoggedCurrentRenderMode = false;
+                Log.Information("Render mode changed to {RenderMode}.", CachedRenderMode);
+            }
+            settingsDirty = true;
+        };
+        scene.Camera.Changed += () => settingsDirty = true;
+        scene.Environment.PropertyChanged += (s, e) => settingsDirty = true;
     }
 
     public static GpuRaytracer Create(Context context, Scene scene)
@@ -75,14 +96,15 @@ internal abstract unsafe class GpuRaytracer : IDisposable
     public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
     public ImageResource OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raytracer adaptive-state image is not initialized");
     public PixelSize RenderImageSize => renderImageSize;
+    public bool PickBuffersFlippedY => true;
 
-    public void Record(ImageResource image, Context.CommandBuffer commandBuffer)
+    public void Record(PixelSize renderSize, ImageResource image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
     {
         CompletePendingResizeIfReady();
-        EnsureRenderImages(image.Size, commandBuffer);
+        EnsureRenderImages(renderSize, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
         UpdateOutputImageBindings();
-        UpdateSceneSettingsBuffer(commandBuffer, force: false);
+        UpdateSceneSettingsBuffer(commandBuffer, renderData, force: false);
         UpdateTextureBindings();
 
         if (Scene.IsDirty(SceneDirtyFlags.Accumulation))
@@ -91,15 +113,19 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         if (!hasLoggedFirstRender || FrameIndex < 3)
         {
             Log.Debug(
-                "{RaytracerType} frame={Frame} size={Width}x{Height} envTex={EnvironmentTextureIndex} sceneVersion={SceneVersion} renderMode={RenderMode}",
+                "{RaytracerType} frame={Frame} size={Width}x{Height} envTex={EnvironmentTextureIndex}",
                 GetType().Name,
                 FrameIndex,
-                image.Size.Width,
-                image.Size.Height,
-                Scene.Environment.TextureIndex,
-                Scene.Version,
-                Scene.RenderMode);
+                renderSize.Width,
+                renderSize.Height,
+                renderData.EnvironmentTextureIndex);
             hasLoggedFirstRender = true;
+        }
+
+        if (!hasLoggedCurrentRenderMode)
+        {
+            Log.Information("Raytracer using {RenderMode} mode.", CachedRenderMode);
+            hasLoggedCurrentRenderMode = true;
         }
 
         outputColorImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
@@ -109,7 +135,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         positionImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         adaptiveStateImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
 
-        ExecuteRaytracing(commandBuffer.InternalHandle, outputColorImage, CreatePushConstants(FrameIndex));
+        ExecuteRaytracing(commandBuffer.InternalHandle, outputColorImage, CreatePushConstants(FrameIndex, renderData));
 
         FrameIndex++;
         Scene.ClearDirty(SceneDirtyFlags.Accumulation);
@@ -199,7 +225,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
         Context.Api.UpdateDescriptorSets(Context.Device, 6, writes, 0, null);
         lastBoundColorImageViewHandle = outputColorImage.ViewHandle;
-        Log.Information("Updated output image bindings (color/albedo/normal/crypto/position/adaptive-state).");
+        Log.Debug("Updated output image bindings (color/albedo/normal/crypto/position/adaptive-state).");
     }
 
     private bool UpdateSceneSettingsBinding()
@@ -227,24 +253,25 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         return true;
     }
 
-    private void UpdateSceneSettingsBuffer(Context.CommandBuffer commandBuffer, bool force)
+    private void UpdateSceneSettingsBuffer(Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData, bool force)
     {
         var created = UpdateSceneSettingsBinding();
         if (sceneSettingsBuffer is null)
             throw new InvalidOperationException("Scene settings buffer is not initialized.");
 
-        if (!force && !created && !Scene.IsDirty(SceneDirtyFlags.Settings))
+        if (!force && !created && !settingsDirty)
             return;
 
         var settings = new SceneSettingsDataGpu
         {
-            RenderSettings = Scene.RenderSettings.ToStruct(),
-            Camera = Scene.Camera.ToStruct(),
-            Environment = Scene.Environment.ToStruct()
+            RenderSettings = renderData.RenderSettings,
+            Environment = renderData.Environment,
+            RasterCamera = Scene.CaptureRasterCameraData()
         };
 
         sceneSettingsBuffer.Upload(StructPacking.ToBytes(new[] { settings }));
-        Scene.ClearDirty(SceneDirtyFlags.Settings);
+        lastUploadedSettings = settings;
+        settingsDirty = false;
     }
 
     private void UpdateTextureBindings()
@@ -282,7 +309,7 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         }
 
         Scene.ClearDirty(SceneDirtyFlags.Textures);
-        Log.Information("Updated bindless texture descriptors: count={TextureCount}", descriptors.Length);
+        Log.Debug("Updated bindless texture descriptors: count={TextureCount}", descriptors.Length);
     }
 
     private void EnsureRenderImages(PixelSize size, Context.CommandBuffer commandBuffer)
@@ -363,6 +390,9 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         if (image is null)
             return false;
 
+        if (image.CurrentLayout == (uint)ImageLayout.Undefined)
+            return false;
+
         var maxX = renderImageSize.Width - 1;
         var maxY = renderImageSize.Height - 1;
         if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
@@ -378,6 +408,9 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         if (image is null)
             return false;
 
+        if (image.CurrentLayout == (uint)ImageLayout.Undefined)
+            return false;
+
         var maxX = renderImageSize.Width - 1;
         var maxY = renderImageSize.Height - 1;
         if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
@@ -387,12 +420,14 @@ internal abstract unsafe class GpuRaytracer : IDisposable
         return true;
     }
 
-    protected PushDataGpu CreatePushConstants(uint frame)
+    protected PushDataGpu CreatePushConstants(uint frame, Scene.RenderDataGpu renderData)
     {
         return new PushDataGpu
         {
             Frame = (int)frame,
-            IsMoving = Scene.Camera.IsMoving
+            IsMoving = renderData.IsMoving,
+            PixelSizePercent = ShaderPixelSizePercent,
+            Camera = renderData.Camera
         };
     }
 
@@ -455,6 +490,10 @@ internal abstract unsafe class GpuRaytracer : IDisposable
 
     private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer stagingBuffer, int pixelX, int pixelY)
     {
+        // Picking is latency-sensitive but infrequent. Drain older submissions first so
+        // the readback runs against a fully produced image instead of racing startup or resize work.
+        Context.WaitForSubmittedCommandBuffers();
+
         var commandBuffer = Context.CreateCommandBuffer();
         Context.BeginCommandBuffer(commandBuffer);
 

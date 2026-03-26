@@ -2,9 +2,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
-             mc:Ignorable="d"
-             x:Class="UniversalUmap.Rendering.Views.MapsCameraPanel"
-             x:DataType="viewModels:MapsCameraPanelViewModel">
+             x:Class="UniversalUmap.Rendering.Views.CameraPanel"
+             x:DataType="viewModels:CameraPanelViewModel">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel HorizontalAlignment="Stretch" Spacing="12">
             <StackPanel Spacing="3">

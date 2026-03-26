@@ -13,4 +13,47 @@ float3 accumulateWeightedColor(float3 historyColor, float historyWeight, float3 
     return (historyColor * historyWeight + newColor * newWeight) * invWeight;
 }
 
+float loadHistorySamples(int2 pixelCoord)
+{
+    if (pushConstants.Frame <= 0 || pushConstants.IsMoving != 0)
+        return 0.0;
+
+    return max(0.0, outputAdaptiveState[pixelCoord].z);
+}
+
+float loadExposureScale()
+{
+    return exp2(sceneSettings.RenderSettings.Exposure);
+}
+
+float3 loadTemporalReferenceColor(int2 pixelCoord, float exposureScale)
+{
+    if (pushConstants.Frame <= 0 || pushConstants.IsMoving != 0 || pushConstants.PixelSizePercent > 100)
+        return float3(0.0);
+
+    return outputColor[pixelCoord].rgb / max(exposureScale, EPSILON);
+}
+
+void storeAccumulatedFrame(
+    int2 pixelCoord,
+    float historySamples,
+    float3 newColorWithExposure,
+    float newAlpha,
+    float newWeight)
+{
+    float3 finalColor = accumulateWeightedColor(
+        outputColor[pixelCoord].rgb,
+        historySamples,
+        newColorWithExposure,
+        newWeight);
+    float finalAlpha = accumulateWeightedScalar(
+        outputColor[pixelCoord].a,
+        historySamples,
+        newAlpha,
+        newWeight);
+
+    outputColor[pixelCoord] = float4(finalColor, finalAlpha);
+    outputAdaptiveState[pixelCoord] = float4(0.0, 0.0, historySamples + newWeight, 0.0);
+}
+
 #endif // ACCUMULATION_SLANG

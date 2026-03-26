@@ -1,5 +1,5 @@
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Tonemapping/agx.slang"
 #include "../Tonemapping/aces.slang"
 #include "../Tonemapping/filmic.slang"
@@ -26,6 +26,7 @@ struct CompositePushConstants
     float adaptiveTargetError;
     int adaptiveMinSamples;
     int isMoving;
+    int pickBuffersFlippedY;
 };
 
 [[vk::push_constant]] ConstantBuffer<CompositePushConstants> pc;
@@ -47,14 +48,24 @@ float3 applyTonemap(float3 hdrColor) {
 }
 
 int2 toPickPixel(int2 outputPixel, int2 outputSize) {
+    if (pc.pickBuffersFlippedY == 0)
+        return outputPixel;
     return int2(outputPixel.x, (outputSize.y - 1) - outputPixel.y);
 }
 
-bool isSelectedHit(int2 outputPixel, int2 outputSize) {
+int2 mapOutputPixelToInputPixel(int2 outputPixel, int2 outputSize, int2 inputSize)
+{
+    int x = outputPixel.x * inputSize.x / max(outputSize.x, 1);
+    int y = outputPixel.y * inputSize.y / max(outputSize.y, 1);
+    return clamp(int2(x, y), int2(0, 0), max(inputSize - 1, int2(0, 0)));
+}
+
+bool isSelectedHit(int2 outputPixel, int2 outputSize, int2 inputSize) {
     if (outputPixel.x < 0 || outputPixel.y < 0 || outputPixel.x >= outputSize.x || outputPixel.y >= outputSize.y)
         return false;
 
-    int2 pickPixel = toPickPixel(outputPixel, outputSize);
+    int2 inputPixel = mapOutputPixelToInputPixel(outputPixel, outputSize, inputSize);
+    int2 pickPixel = toPickPixel(inputPixel, inputSize);
     uint cryptoId = inputCryptoImage[pickPixel];
     if (cryptoId != pc.selectedInstanceId)
         return false;
@@ -109,7 +120,12 @@ float3 visualizeAlbedo(int2 pixel)
 
 float3 visualizePosition(int2 pixel, int2 outputSize)
 {
-    int2 pickPixel = toPickPixel(pixel, outputSize);
+    uint inputWidth;
+    uint inputHeight;
+    inputPositionImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
+    int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
+    int2 pickPixel = toPickPixel(inputPixel, inputSize);
     float4 packedPosition = inputPositionImage[pickPixel];
     if (packedPosition.w <= 0.5)
         return float3(0.0);
@@ -132,19 +148,24 @@ float3 hashIdToColor(uint id)
 
 float3 visualizeCryptoId(int2 pixel, int2 outputSize)
 {
-    int2 pickPixel = toPickPixel(pixel, outputSize);
+    uint inputWidth;
+    uint inputHeight;
+    inputCryptoImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
+    int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
+    int2 pickPixel = toPickPixel(inputPixel, inputSize);
     uint cryptoId = inputCryptoImage[pickPixel];
-    if (cryptoId == INVALID_INSTANCE)
+    if (cryptoId == InvalidInstance)
         return float3(0.0);
     return hashIdToColor(cryptoId);
 }
 
-float3 visualizeBuffer(int2 pixel, int2 outputSize, float4 hdrImage)
+float3 visualizeBuffer(int2 pixel, int2 outputSize, int2 inputSize, float4 hdrImage)
 {
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_ALBEDO)
-        return visualizeAlbedo(pixel);
+        return visualizeAlbedo(mapOutputPixelToInputPixel(pixel, outputSize, inputSize));
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_NORMALS)
-        return visualizeNormals(pixel);
+        return visualizeNormals(mapOutputPixelToInputPixel(pixel, outputSize, inputSize));
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_POSITION)
         return visualizePosition(pixel, outputSize);
     if (pc.visualizationMode == BufferVisualizationMode.BUFFER_VISUALIZATION_CRYPTO_ID)
@@ -154,7 +175,7 @@ float3 visualizeBuffer(int2 pixel, int2 outputSize, float4 hdrImage)
     return applyTonemap(hdrImage.rgb);
 }
 
-bool hasSelectionOutline(int2 pixel, int2 outputSize, bool centerSelected)
+bool hasSelectionOutline(int2 pixel, int2 outputSize, int2 inputSize, bool centerSelected)
 {
     const int outlineRadius = 2;
     for (int y = -outlineRadius; y <= outlineRadius; ++y) {
@@ -162,7 +183,7 @@ bool hasSelectionOutline(int2 pixel, int2 outputSize, bool centerSelected)
             if (x == 0 && y == 0)
                 continue;
 
-            if (isSelectedHit(pixel + int2(x, y), outputSize) != centerSelected)
+            if (isSelectedHit(pixel + int2(x, y), outputSize, inputSize) != centerSelected)
                 return true;
         }
     }
@@ -178,19 +199,24 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint outputHeight;
     outputImage.GetDimensions(outputWidth, outputHeight);
     int2 outputSize = int2(outputWidth, outputHeight);
+    uint inputWidth;
+    uint inputHeight;
+    inputColorImage.GetDimensions(inputWidth, inputHeight);
+    int2 inputSize = int2(inputWidth, inputHeight);
     if (pixel.x >= outputSize.x || pixel.y >= outputSize.y)
         return;
 
-    float4 hdrImage = inputColorImage[pixel];
-    float3 color = visualizeBuffer(pixel, outputSize, hdrImage);
+    int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
+    float4 hdrImage = inputColorImage[inputPixel];
+    float3 color = visualizeBuffer(pixel, outputSize, inputSize, hdrImage);
 
-    if (pc.selectedInstanceId == INVALID_INSTANCE) {
+    if (pc.selectedInstanceId == InvalidInstance) {
         outputImage[pixel] = float4(color, hdrImage.a);
         return;
     }
 
-    bool centerSelected = isSelectedHit(pixel, outputSize);
-    bool edge = hasSelectionOutline(pixel, outputSize, centerSelected);
+    bool centerSelected = isSelectedHit(pixel, outputSize, inputSize);
+    bool edge = hasSelectionOutline(pixel, outputSize, inputSize, centerSelected);
 
     if (edge) {
         const float3 outlineColor = float3(1.0, 0.78, 0.12);

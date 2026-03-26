@@ -1,6 +1,6 @@
 // AO Miss - RTX entry point
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "..//Integrators/AoIntegrator.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;

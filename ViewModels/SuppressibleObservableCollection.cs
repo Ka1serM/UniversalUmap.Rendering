@@ -14,11 +14,38 @@ public class SuppressibleObservableCollection<T> : ObservableCollection<T>
             return;
 
         suppress = true;
-        foreach (var item in items)
-            Add(item);
+        try
+        {
+            foreach (var item in items)
+                Add(item);
+        }
+        finally
+        {
+            suppress = false;
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
+    }
 
-        suppress = false;
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+    public void ReplaceAllSuppressed(IList<T> items)
+    {
+        if (items is null)
+        {
+            Clear();
+            return;
+        }
+
+        suppress = true;
+        try
+        {
+            Items.Clear();
+            for (var i = 0; i < items.Count; i++)
+                Items.Add(items[i]);
+        }
+        finally
+        {
+            suppress = false;
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
     }
 
     protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)

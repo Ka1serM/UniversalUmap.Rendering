@@ -1,7 +1,7 @@
 #ifndef PATHTRACING_RAYGEN_SLANG
 #define PATHTRACING_RAYGEN_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 

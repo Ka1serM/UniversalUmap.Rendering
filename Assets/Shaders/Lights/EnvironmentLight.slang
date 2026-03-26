@@ -9,8 +9,8 @@
 
 float2 directionToEnvironmentUv(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
     float3 rotatedDir = worldRayDirection;
-    rotatedDir.x = worldRayDirection.x * environmentData.rotationCos - worldRayDirection.z * environmentData.rotationSin;
-    rotatedDir.z = worldRayDirection.x * environmentData.rotationSin + worldRayDirection.z * environmentData.rotationCos;
+    rotatedDir.x = worldRayDirection.x * environmentData.RotationCos - worldRayDirection.z * environmentData.RotationSin;
+    rotatedDir.z = worldRayDirection.x * environmentData.RotationSin + worldRayDirection.z * environmentData.RotationCos;
 
     float2 uv;
     uv.x = atan2(rotatedDir.z, rotatedDir.x) / (2.0 * PI) + 0.5;
@@ -19,28 +19,28 @@ float2 directionToEnvironmentUv(in float3 worldRayDirection, in EnvironmentDataG
 }
 
 float3 sampleEnvironmentMapColor(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops) {
-    if (environmentData.textureIndex == -1)
+    if (environmentData.TextureIndex == -1)
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.textureIndex].Sample(uv).rgb * exposureStops;
+    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * exposureStops;
 }
 
 float3 sampleEnvironmentMapColorLod(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in float exposureStops, in float lod) {
-    if (environmentData.textureIndex == -1)
+    if (environmentData.TextureIndex == -1)
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.textureIndex].SampleLevel(uv, max(lod, 0.0)).rgb * exposureStops;
+    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, max(lod, 0.0)).rgb * exposureStops;
 }
 
 float evaluateEnvironmentPdfForDirection(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
-    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+    if (environmentData.TextureIndex < 0 || environmentData.CdfTextureIndex < 0)
         return 0.0;
 
     uint envWidth;
     uint envHeight;
-    textureSamplers[environmentData.textureIndex].GetDimensions(envWidth, envHeight);
+    textureSamplers[environmentData.TextureIndex].GetDimensions(envWidth, envHeight);
     int2 envSize = int2(envWidth, envHeight);
     if (envSize.x <= 0 || envSize.y <= 0)
         return 0.0;
@@ -48,7 +48,7 @@ float evaluateEnvironmentPdfForDirection(in float3 worldRayDirection, in Environ
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
     int x = clamp(int(floor(uv.x * float(envSize.x))), 0, envSize.x - 1);
     int y = clamp(int(floor(uv.y * float(envSize.y))), 0, envSize.y - 1);
-    float uvPdf = max(textureSamplers[environmentData.cdfTextureIndex].Load(int3(int2(x, y), 0)).a, 0.0);
+    float uvPdf = max(textureSamplers[environmentData.CdfTextureIndex].Load(int3(int2(x, y), 0)).a, 0.0);
     float theta = uv.y * PI;
     float sinTheta = max(sin(theta), EPSILON);
     return uvPdf / max(2.0 * PI * PI * sinTheta, EPSILON);
@@ -59,52 +59,52 @@ float evaluateNeeLightPdfForDirection(in float3 worldRayDirection, in Environmen
 }
 
 float3 evaluateEnvironmentRadiance(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
-    if (environmentData.textureIndex == -1)
+    if (environmentData.TextureIndex == -1)
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.textureIndex].Sample(uv).rgb * environmentData.lightingExposureScale;
+    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * environmentData.LightingExposureScale;
 }
 
 float3 evaluateEnvironmentVisibleRadiance(in float3 worldRayDirection, in EnvironmentDataGpu environmentData) {
-    if (environmentData.textureIndex == -1)
+    if (environmentData.TextureIndex == -1)
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.textureIndex].Sample(uv).rgb * environmentData.visibleExposureScale;
+    return textureSamplers[environmentData.TextureIndex].Sample(uv).rgb * environmentData.VisibleExposureScale;
 }
 
 void shadeMiss(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout Payload payload) {
-    float3 envColor = payload.depth == 0
+    float3 envColor = payload.Depth == 0
         ? evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData)
         : evaluateEnvironmentRadiance(worldRayDirection, environmentData);
 
-    if (payload.depth > 0 && payload.lastBsdfPdf > 0.0) {
+    if (payload.Depth > 0 && payload.LastBsdfPdf > 0.0) {
         float neeLightPdf = evaluateNeeLightPdfForDirection(worldRayDirection, environmentData);
-        float wBsdf = powerHeuristic(payload.lastBsdfPdf, neeLightPdf);
+        float wBsdf = powerHeuristic(payload.LastBsdfPdf, neeLightPdf);
         envColor *= wBsdf;
     }
 
-    payload.attenuation = float3(1.0);
-    payload.emission    = envColor;
-    payload.albedo      = envColor;
-    payload.normal      = float3(0.0);
+    payload.Attenuation = float3(1.0);
+    payload.Emission    = envColor;
+    payload.Albedo      = envColor;
+    payload.Normal      = float3(0.0);
 
-    if ((payload.depth == 0 && environmentData.visible == 0) || (payload.depth == 0 && renderSettings.transparentBackground != 0))
-        payload.flags |= uint(BounceType.ENV_TRANSPARENT);
+    if ((payload.Depth == 0 && environmentData.Visible == 0) || (payload.Depth == 0 && renderSettings.TransparentBackground != 0))
+        payload.Flags |= uint(BounceType.ENV_TRANSPARENT);
 
-    payload.flags |= uint(BounceType.RAY_TERMINATED);
+    payload.Flags |= uint(BounceType.RAY_TERMINATED);
 }
 
 void shadeMiss(in float3 worldRayDirection, in EnvironmentDataGpu environmentData, in RenderSettingsDataGpu renderSettings, inout AoPayload payload) {
-    payload.emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
-    payload.albedo = payload.emission;
-    payload.normal = float3(0.0);
+    payload.Emission = evaluateEnvironmentVisibleRadiance(worldRayDirection, environmentData);
+    payload.Albedo = payload.Emission;
+    payload.Normal = float3(0.0);
 
-    if (environmentData.visible == 0 || renderSettings.transparentBackground != 0)
-        payload.flags |= uint(BounceType.ENV_TRANSPARENT);
+    if (environmentData.Visible == 0 || renderSettings.TransparentBackground != 0)
+        payload.Flags |= uint(BounceType.ENV_TRANSPARENT);
 
-    payload.flags |= uint(BounceType.RAY_TERMINATED);
+    payload.Flags |= uint(BounceType.RAY_TERMINATED);
 }
 
 int binarySearchMarginalCdf(int cdfTextureIndex, int height, float xi)
@@ -143,12 +143,12 @@ float3 sampleEnvironmentDirection(
     out float lightPdf)
 {
     lightPdf = 0.0;
-    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+    if (environmentData.TextureIndex < 0 || environmentData.CdfTextureIndex < 0)
         return float3(0.0);
 
     uint envWidth;
     uint envHeight;
-    textureSamplers[environmentData.textureIndex].GetDimensions(envWidth, envHeight);
+    textureSamplers[environmentData.TextureIndex].GetDimensions(envWidth, envHeight);
     int2 envSize = int2(envWidth, envHeight);
     if (envSize.x <= 0 || envSize.y <= 0)
         return float3(0.0);
@@ -156,9 +156,9 @@ float3 sampleEnvironmentDirection(
     float xi1 = rand(rngState);
     float xi2 = rand(rngState);
 
-    int y = binarySearchMarginalCdf(environmentData.cdfTextureIndex, envSize.y, xi1);
-    int x = binarySearchConditionalCdf(environmentData.cdfTextureIndex, envSize.x, y, xi2);
-    float4 cdfTexel = textureSamplers[environmentData.cdfTextureIndex].Load(int3(int2(x, y), 0));
+    int y = binarySearchMarginalCdf(environmentData.CdfTextureIndex, envSize.y, xi1);
+    int x = binarySearchConditionalCdf(environmentData.CdfTextureIndex, envSize.x, y, xi2);
+    float4 cdfTexel = textureSamplers[environmentData.CdfTextureIndex].Load(int3(int2(x, y), 0));
 
     float v = (float(y) + 0.5) / float(envSize.y);
     float u = (float(x) + 0.5) / float(envSize.x);
@@ -175,8 +175,8 @@ float3 sampleEnvironmentDirection(
         sin(phi) * sinTheta);
 
     float3 worldDir = rotatedDir;
-    worldDir.x = rotatedDir.x * environmentData.rotationCos + rotatedDir.z * environmentData.rotationSin;
-    worldDir.z = -rotatedDir.x * environmentData.rotationSin + rotatedDir.z * environmentData.rotationCos;
+    worldDir.x = rotatedDir.x * environmentData.RotationCos + rotatedDir.z * environmentData.RotationSin;
+    worldDir.z = -rotatedDir.x * environmentData.RotationSin + rotatedDir.z * environmentData.RotationCos;
     return fastNormalize(worldDir);
 }
 
@@ -191,8 +191,8 @@ struct EnvironmentLight : ILight
         sample.Li = float3(0.0);
         sample.pdf = 0.0;
 
-        EnvironmentDataGpu environmentData = sceneSettings.environment;
-        if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+        EnvironmentDataGpu environmentData = sceneSettings.Environment;
+        if (environmentData.TextureIndex < 0 || environmentData.CdfTextureIndex < 0)
             return sample;
 
         uint rngState = asuint(u.x * 4294967295.0) ^ (asuint(u.y * 4294967295.0) * 747796405u + 2891336453u);
@@ -200,7 +200,7 @@ struct EnvironmentLight : ILight
             rngState = 1u;
 
         sample.wi = sampleEnvironmentDirection(environmentData, rngState, sample.pdf);
-        sample.Li = sampleEnvironmentMapColor(sample.wi, environmentData, environmentData.lightingExposureScale);
+        sample.Li = sampleEnvironmentMapColor(sample.wi, environmentData, environmentData.LightingExposureScale);
         return sample;
     }
 
@@ -208,12 +208,12 @@ struct EnvironmentLight : ILight
     {
         referencePoint = referencePoint;
 
-        EnvironmentDataGpu environmentData = sceneSettings.environment;
-        if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+        EnvironmentDataGpu environmentData = sceneSettings.Environment;
+        if (environmentData.TextureIndex < 0 || environmentData.CdfTextureIndex < 0)
             return 0.0;
 
         float2 uv = directionToEnvironmentUv(wi, environmentData);
-        int cdfTex = environmentData.cdfTextureIndex;
+        int cdfTex = environmentData.CdfTextureIndex;
         uint width;
         uint height;
         textureSamplers[cdfTex].GetDimensions(width, height);

@@ -2,9 +2,9 @@ using Avalonia.Controls;
 
 namespace UniversalUmap.Rendering.Views;
 
-public partial class MapsEnvironmentPanel : UserControl
+public partial class EnvironmentPanel : UserControl
 {
-    public MapsEnvironmentPanel()
+    public EnvironmentPanel()
     {
         InitializeComponent();
     }

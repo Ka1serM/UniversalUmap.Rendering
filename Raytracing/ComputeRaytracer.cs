@@ -191,7 +191,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants)
     {
-        var selectedPipeline = Scene.RenderMode switch
+        var selectedPipeline = CachedRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipeline,
             RenderMode.DirectLighting => directPipeline,

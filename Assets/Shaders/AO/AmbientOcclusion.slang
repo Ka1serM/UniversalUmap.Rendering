@@ -1,17 +1,14 @@
 #ifndef AMBIENT_OCCLUSION_SLANG
 #define AMBIENT_OCCLUSION_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 #include "../Core/Core.slang"
 #include "../Bxdfs/Brdf.slang"
 #include "../Geometry/Intersection.slang"
 
 static const float AO_MAX_DISTANCE = 1.5;
-enum AoConfig : int
-{
-    AO_SAMPLES = 4,
-};
+static const int AO_SAMPLES = 4;
 
 bool traceAoShadowRay(float3 rayOrigin, float3 rayDirection, float tMin, float tMax)
 {
@@ -36,7 +33,7 @@ bool traceAoShadowRay(float3 rayOrigin, float3 rayDirection, float tMin, float t
 float estimateAmbientOcclusion(float3 worldPosition, float3 geometricNormal, inout uint rngState)
 {
     float occluded = 0.0;
-    for (int i = 0; i < AoConfig.AO_SAMPLES; ++i) {
+    for (int i = 0; i < AO_SAMPLES; ++i) {
         float3 dir = sampleDiffuse(geometricNormal, rngState);
         float nDotL = max(dot(geometricNormal, dir), 0.0);
 
@@ -45,18 +42,13 @@ float estimateAmbientOcclusion(float3 worldPosition, float3 geometricNormal, ino
         if (traceAoShadowRay(origin, dir, bias, AO_MAX_DISTANCE))
             occluded += 1.0;
     }
-    return 1.0 - (occluded / float(AoConfig.AO_SAMPLES));
-}
-
-float3 shadeAmbientOcclusionOnly(float ao)
-{
-    return float3(ao);
+    return 1.0 - (occluded / float(AO_SAMPLES));
 }
 
 float3 shadeAmbientOcclusionSurface(float3 worldPosition, float3 geometricNormal, inout uint rngState)
 {
     float ao = estimateAmbientOcclusion(worldPosition, geometricNormal, rngState);
-    return shadeAmbientOcclusionOnly(ao);
+    return float3(ao);
 }
 
 #endif // AMBIENT_OCCLUSION_SLANG

@@ -1,7 +1,7 @@
 #ifndef DIRECTLIGHTING_CLOSESTHIT_SLANG
 #define DIRECTLIGHTING_CLOSESTHIT_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 
@@ -19,17 +19,17 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr)
     SurfaceData surface = loadRayTracingSurfaceData(tlasInstanceIndex, primitiveIndex, attr.barycentrics);
     DirectLightingIntegrator<PbrMaterial> integrator;
     integrator.shadeClosestHit(
-        surface.worldPosition,
-        surface.worldShadowPosition,
-        surface.shadingNormal,
-        surface.geometricNormal,
-        surface.tangent,
-        surface.tangentSign,
-        surface.uv,
+        surface.WorldPosition,
+        surface.WorldShadowPosition,
+        surface.ShadingNormal,
+        surface.GeometricNormal,
+        surface.Tangent,
+        surface.TangentSign,
+        surface.UV,
         WorldRayDirection(),
-        surface.material,
+        surface.Material,
         payload);
-    payload.objectIndex = instanceId;
+    payload.ObjectIndex = instanceId;
 }
 
 #endif

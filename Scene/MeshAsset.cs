@@ -42,6 +42,9 @@ public sealed class MeshAsset : IDisposable
     private readonly Accel? blasRtx;
     private readonly GpuBuffer? bvhNodesBuffer;
     private readonly GpuBuffer? bvhIndicesBuffer;
+    private readonly Vector3 localBoundsMin;
+    private readonly Vector3 localBoundsMax;
+    private readonly uint indexCount;
 
     public string Name { get; }
     public uint MeshIndex { get; internal set; } = uint.MaxValue;
@@ -102,6 +105,8 @@ public sealed class MeshAsset : IDisposable
         IndexBuffer = indexBuffer;
         FaceBuffer = faceBuffer;
         MaterialBuffer = materialBuffer;
+        indexCount = (uint)indexArray.Length;
+        ComputeLocalBounds(vertexArray, out localBoundsMin, out localBoundsMax);
 
         // Compute traversal path uses a CPU-built BVH with GPU addresses.
         BvhBuilder.Build(vertexArray, indexArray, out var bvhNodes, out var bvhIndices);
@@ -128,12 +133,18 @@ public sealed class MeshAsset : IDisposable
             context.Api.TryGetDeviceExtension<KhrAccelerationStructure>(context.Instance, context.Device, out var accelExt))
         {
             var accel = new Accel(context, accelExt);
+            var buildCommandBuffer = context.CreateCommandBuffer();
+            context.BeginCommandBuffer(buildCommandBuffer);
             accel.BuildBottomLevelTriangles(
+                buildCommandBuffer,
                 primitiveCount: (uint)faceArray.Length,
                 vertexAddress: vertexBuffer.DeviceAddress,
                 vertexStride: (ulong)System.Runtime.InteropServices.Marshal.SizeOf<Vertex>(),
                 maxVertex: (uint)Math.Max(0, vertexArray.Length - 1),
                 indexAddress: indexBuffer.DeviceAddress);
+            // Finish BLAS creation here instead of leaving a long tail of queued GPU work
+            // that can make the viewer feel "stuck" until some later state change.
+            context.SubmitAndWait(buildCommandBuffer);
             blasRtx = accel;
         }
 
@@ -408,7 +419,10 @@ public sealed class MeshAsset : IDisposable
             FaceAddress = FaceBuffer.DeviceAddress,
             MaterialAddress = MaterialBuffer.DeviceAddress,
             BvhNodeAddress = bvhNodesBuffer?.DeviceAddress ?? 0,
-            BvhIndexAddress = bvhIndicesBuffer?.DeviceAddress ?? 0
+            BvhIndexAddress = bvhIndicesBuffer?.DeviceAddress ?? 0,
+            LocalBoundsMin = localBoundsMin,
+            IndexCount = indexCount,
+            LocalBoundsMax = localBoundsMax
         };
     }
 
@@ -435,6 +449,24 @@ public sealed class MeshAsset : IDisposable
     {
         var remapped = Vector3.TransformNormal(unrealPosition, UnrealToRendererBasis);
         return remapped * UnrealToRendererScale;
+    }
+
+    private static void ComputeLocalBounds(IReadOnlyList<Vertex> vertices, out Vector3 min, out Vector3 max)
+    {
+        if (vertices.Count == 0)
+        {
+            min = Vector3.Zero;
+            max = Vector3.Zero;
+            return;
+        }
+
+        min = vertices[0].Position;
+        max = vertices[0].Position;
+        for (var i = 1; i < vertices.Count; i++)
+        {
+            min = Vector3.Min(min, vertices[i].Position);
+            max = Vector3.Max(max, vertices[i].Position);
+        }
     }
 
     private static Vector3 ConvertUnrealDirection(Vector3 unrealDirection)

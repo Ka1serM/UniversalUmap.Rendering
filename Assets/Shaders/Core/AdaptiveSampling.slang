@@ -2,7 +2,7 @@
 #ifndef ADAPTIVE_SAMPLING_SLANG
 #define ADAPTIVE_SAMPLING_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 #include "../Core/Core.slang"
 #include "Accumulation.slang"
@@ -29,13 +29,15 @@ struct AdaptiveSamplingFrameState {
 AdaptiveSamplingContext loadAdaptiveSamplingContext(int2 pixelCoord)
 {
     AdaptiveSamplingContext context;
-    context.hasHistory = (pushConstants.frame > 0) && (pushConstants.isMoving == 0);
+    context.hasHistory = (pushConstants.Frame > 0) && (pushConstants.IsMoving == 0);
     context.prevColorData = context.hasHistory ? outputColor[pixelCoord] : float4(0.0);
     context.prevAdaptiveData = context.hasHistory ? outputAdaptiveState[pixelCoord] : float4(0.0);
-    context.exposureScale = exp2(sceneSettings.renderSettings.exposure);
-    context.adaptiveSamplingEnabled = sceneSettings.renderSettings.adaptiveSamplingEnabled != 0 && !isInteractiveFrame();
-    context.adaptiveMinSamples = max(1, sceneSettings.renderSettings.adaptiveMinSamples);
-    context.adaptiveTargetError = max(sceneSettings.renderSettings.adaptiveTargetError, 0.0);
+    context.exposureScale = exp2(sceneSettings.RenderSettings.Exposure);
+    // Temporarily disable adaptive sampling in the main lighting shaders while we
+    // investigate the post-load performance regression.
+    context.adaptiveSamplingEnabled = false;
+    context.adaptiveMinSamples = max(1, sceneSettings.RenderSettings.AdaptiveMinSamples);
+    context.adaptiveTargetError = max(sceneSettings.RenderSettings.AdaptiveTargetError, 0.0);
     context.previousTotalSamples = context.hasHistory ? context.prevAdaptiveData.z : 0.0;
     context.wasConverged = false;
     if (context.hasHistory && context.adaptiveSamplingEnabled && context.previousTotalSamples >= float(context.adaptiveMinSamples)) {

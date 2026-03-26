@@ -43,7 +43,7 @@ float3 estimateDirectLighting(
         }
     }
 
-    if (environmentData.textureIndex < 0 || environmentData.cdfTextureIndex < 0)
+    if (environmentData.TextureIndex < 0 || environmentData.CdfTextureIndex < 0)
         return directContribution;
 
     EnvironmentLight environmentLight;
@@ -76,17 +76,17 @@ float3 sampleDiffuseEnvironment(
     float3 normal,
     EnvironmentDataGpu environmentData)
 {
-    if (environmentData.irradianceMapIndex >= 0) {
+    if (environmentData.IrradianceMapIndex >= 0) {
         float2 uv = directionToEnvironmentUv(normal, environmentData);
-        return textureSamplers[environmentData.irradianceMapIndex].Sample(uv).rgb
-             * environmentData.lightingExposureScale;
+        return textureSamplers[environmentData.IrradianceMapIndex].Sample(uv).rgb
+             * environmentData.LightingExposureScale;
     }
 
     return sampleEnvironmentMapColorLod(
         normal,
         environmentData,
-        environmentData.lightingExposureScale,
-        max(environmentData.maxTextureLod, 0.0));
+        environmentData.LightingExposureScale,
+        max(environmentData.MaxTextureLod, 0.0));
 }
 
 float3 sampleSpecularEnvironment(
@@ -95,16 +95,16 @@ float3 sampleSpecularEnvironment(
     EnvironmentDataGpu environmentData)
 {
     float perceptualRoughness = clamp(roughness, 0.0, 1.0);
-    float lod = perceptualRoughness * max(environmentData.maxTextureLod, 0.0);
-    int specularTextureIndex = environmentData.radianceMapIndex >= 0
-        ? environmentData.radianceMapIndex
-        : environmentData.textureIndex;
+    float lod = perceptualRoughness * max(environmentData.MaxTextureLod, 0.0);
+    int specularTextureIndex = environmentData.RadianceMapIndex >= 0
+        ? environmentData.RadianceMapIndex
+        : environmentData.TextureIndex;
     if (specularTextureIndex < 0)
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(reflectedDir, environmentData);
     return textureSamplers[specularTextureIndex].SampleLevel(uv, max(lod, 0.0)).rgb
-         * environmentData.lightingExposureScale;
+         * environmentData.LightingExposureScale;
 }
 
 float3 shadeAmbientOcclusionPbrSurface(

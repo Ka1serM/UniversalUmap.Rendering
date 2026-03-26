@@ -6,57 +6,57 @@
 
 float3 sampleMaterialAlbedo(MaterialData material, float2 uv)
 {
-    float3 albedo = material.albedo;
-    if (material.albedoIndex != -1)
-        albedo *= textureSamplers[material.albedoIndex].Sample(uv).rgb;
+    float3 albedo = material.Albedo;
+    if (material.AlbedoIndex != -1)
+        albedo *= textureSamplers[material.AlbedoIndex].Sample(uv).rgb;
     return albedo;
 }
 
 float3 sampleMaterialEmission(MaterialData material, float2 uv)
 {
-    float3 emission = material.emission * material.emissionStrength;
-    if (material.emissionIndex != -1)
-        emission *= textureSamplers[material.emissionIndex].Sample(uv).rgb;
+    float3 emission = material.Emission * material.EmissionStrength;
+    if (material.EmissionIndex != -1)
+        emission *= textureSamplers[material.EmissionIndex].Sample(uv).rgb;
     return emission;
 }
 
 float sampleMaterialMetallic(MaterialData material, float2 uv)
 {
-    float metallic = material.metallic;
-    if (material.metallicIndex != -1)
-        metallic *= textureSamplers[material.metallicIndex].Sample(uv).r;
+    float metallic = material.Metallic;
+    if (material.MetallicIndex != -1)
+        metallic *= textureSamplers[material.MetallicIndex].Sample(uv).r;
     return metallic;
 }
 
 float sampleMaterialSpecular(MaterialData material, float2 uv)
 {
-    float specular = material.specular;
-    if (material.specularIndex != -1)
-        specular *= textureSamplers[material.specularIndex].Sample(uv).r;
+    float specular = material.Specular;
+    if (material.SpecularIndex != -1)
+        specular *= textureSamplers[material.SpecularIndex].Sample(uv).r;
     return specular;
 }
 
 float sampleMaterialRoughness(MaterialData material, float2 uv)
 {
-    float roughness = material.roughness;
-    if (material.roughnessIndex != -1)
-        roughness *= textureSamplers[material.roughnessIndex].Sample(uv).r;
+    float roughness = material.Roughness;
+    if (material.RoughnessIndex != -1)
+        roughness *= textureSamplers[material.RoughnessIndex].Sample(uv).r;
     return roughness;
 }
 
 float sampleMaterialOpacity(MaterialData material, float2 uv)
 {
-    float opacity = material.opacity;
-    if (material.opacityIndex != -1)
-        opacity *= textureSamplers[material.opacityIndex].Sample(uv).a;
+    float opacity = material.Opacity;
+    if (material.OpacityIndex != -1)
+        opacity *= textureSamplers[material.OpacityIndex].Sample(uv).a;
     return opacity;
 }
 
 float sampleMaterialTransmission(MaterialData material, float2 uv)
 {
-    float transmission = material.transmission;
-    if (material.transmissionIndex != -1)
-        transmission *= textureSamplers[material.transmissionIndex].Sample(uv).r;
+    float transmission = material.Transmission;
+    if (material.TransmissionIndex != -1)
+        transmission *= textureSamplers[material.TransmissionIndex].Sample(uv).r;
     return transmission;
 }
 

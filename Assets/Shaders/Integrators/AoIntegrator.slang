@@ -13,6 +13,7 @@
 #include "../AO/AmbientOcclusion.slang"
 #include "IIntegrator.slang"
 #include "../Lights/EnvironmentLight.slang"
+#include "../Materials/PbrMaterial.slang"
 
 struct AoIntegrator : IIntegrator<AoPayload>
 {
@@ -20,25 +21,25 @@ struct AoIntegrator : IIntegrator<AoPayload>
     void traceRayCompute(float3 rayOrigin, float3 rayDirection, float tMin, float tMax, inout AoPayload payload)
     {
         HitInfo hit = traceScene(rayOrigin, rayDirection, tMin, tMax);
-        if (hit.instanceIndex == INVALID_INSTANCE) {
+        if (hit.instanceIndex == InvalidInstance) {
             shadeMiss(rayDirection, payload);
-            payload.objectIndex = INVALID_INSTANCE;
+            payload.ObjectIndex = InvalidInstance;
             return;
         }
 
         SurfaceData surface = loadComputeSurfaceData(hit.instanceIndex, hit.primitiveIndex, hit.barycentrics);
         shadeClosestHit(
-            surface.worldPosition,
-            surface.worldShadowPosition,
-            surface.shadingNormal,
-            surface.geometricNormal,
-            surface.tangent,
-            surface.tangentSign,
-            surface.uv,
+            surface.WorldPosition,
+            surface.WorldShadowPosition,
+            surface.ShadingNormal,
+            surface.GeometricNormal,
+            surface.Tangent,
+            surface.TangentSign,
+            surface.UV,
             rayDirection,
-            surface.material,
+            surface.Material,
             payload);
-        payload.objectIndex = hit.instanceIndex;
+        payload.ObjectIndex = hit.instanceIndex;
     }
 #endif
 
@@ -46,8 +47,8 @@ struct AoIntegrator : IIntegrator<AoPayload>
     {
         shadeMiss(
             worldRayDirection,
-            sceneSettings.environment,
-            sceneSettings.renderSettings,
+            sceneSettings.Environment,
+            sceneSettings.RenderSettings,
             payload);
     }
 
@@ -66,9 +67,20 @@ struct AoIntegrator : IIntegrator<AoPayload>
         float3 viewDir = fastNormalize(-worldRayDirection);
         float3 geometricFacingNormal = computeFacingGeometricNormal(geometricNormal, viewDir);
 
-        float3 unusedShadowPosition = shadowPosition;
-        payload.position = worldPosition;
-        float3 albedo = float3(1.0);
+        payload.Position = worldPosition;
+
+        PbrMaterial materialModel;
+        MaterialSample materialSample = materialModel.sample(material, interpolatedUV);
+        float opacity = materialSample.opacity;
+
+        if (rand(payload.RngState) > opacity) {
+            payload.Flags |= uint(BounceType.RAY_TRANSPARENT);
+            payload.ObjectIndex = InvalidInstance;
+            payload.Albedo = float3(0.0);
+            payload.Normal = float3(0.0);
+            payload.Emission = float3(0.0);
+            return;
+        }
 
         float3 shadingNormalTextured = sampleMaterialShadingNormal(
             material,
@@ -77,11 +89,12 @@ struct AoIntegrator : IIntegrator<AoPayload>
             interpolatedTangent,
             interpolatedTangentSign);
         float3 shadingFacingNormal = computeFacingShadingNormal(shadingNormalTextured, viewDir, geometricFacingNormal);
+        float3 albedo = materialSample.albedo;
 
-        payload.albedo = albedo;
-        payload.normal = shadingFacingNormal * 0.5 + 0.5;
-        payload.emission = shadeAmbientOcclusionSurface(worldPosition, geometricFacingNormal, payload.rngState);
-        payload.flags |= uint(BounceType.RAY_TERMINATED);
+        payload.Albedo = albedo;
+        payload.Normal = shadingFacingNormal * 0.5 + 0.5;
+        payload.Emission = shadeAmbientOcclusionSurface(worldPosition, geometricFacingNormal, payload.RngState);
+        payload.Flags |= uint(BounceType.RAY_TERMINATED);
     }
 
     void primaryRayGen(int2 pixelCoord, int2 screenSize)
@@ -89,61 +102,94 @@ struct AoIntegrator : IIntegrator<AoPayload>
         if (pixelCoord.x >= screenSize.x || pixelCoord.y >= screenSize.y)
             return;
 
-        const int2 pickPixelCoord = int2(pixelCoord.x, (screenSize.y - 1) - pixelCoord.y);
-        uint2 seed = pcg2d(uint2(pixelCoord) ^ uint2(pushConstants.frame * 16777619));
+        int2 shadingScreenSize = effectiveShadingScreenSize(screenSize);
+        int2 shadingPixelCoord = mapOutputPixelToShadingPixel(pixelCoord, screenSize, shadingScreenSize);
+        int2 blockStart = shadingPixelStart(shadingPixelCoord, screenSize, shadingScreenSize);
+        int2 blockEnd = shadingPixelEndExclusive(shadingPixelCoord, screenSize, shadingScreenSize);
+        int2 blockCenterPixel = clamp((blockStart + (blockEnd - int2(1))) / 2, int2(0), screenSize - 1);
+        if (!isShadingLeaderPixel(pixelCoord, screenSize, shadingScreenSize))
+            return;
+
+        uint2 seed = pcg2d(uint2(blockCenterPixel) ^ uint2(pushConstants.Frame * 16777619));
         uint rngState = seed.x;
+        bool useThinLens = !isInteractiveFrame();
+        bool canReuseStablePrimary = isInteractiveFrame() || (pushConstants.Camera.Aperture <= 0.0);
 
         R2Sampler sampler;
         SamplerState samplerState;
-        sampler.startPixel(pixelCoord, pushConstants.frame, samplerState);
-        float3 rayOrigin, rayDirection;
-        if (isInteractiveFrame()) {
-            PerspectiveCamera<R2Sampler> camera;
-            camera.generateRay(pixelCoord, screenSize, samplerState, sampler, true, rayOrigin, rayDirection);
-        } else {
-            ThinLensCamera<R2Sampler> camera;
-            camera.generateRay(pixelCoord, screenSize, samplerState, sampler, true, rayOrigin, rayDirection);
-        }
+        sampler.startPixel(blockCenterPixel, pushConstants.Frame, samplerState);
+        float3 stableRayOrigin, stableRayDirection;
+        PerspectiveCamera<R2Sampler> stableCamera;
+        stableCamera.generateRay(blockCenterPixel, screenSize, samplerState, sampler, true, stableRayOrigin, stableRayDirection);
 
-        AoPayload payload;
-        payload.initialize(rngState);
+        AoPayload stablePrimaryPayload;
+        stablePrimaryPayload.initialize(rngState);
 
 #ifdef USE_COMPUTE
-        traceRayCompute(rayOrigin, rayDirection, 0.001, 1000.0, payload);
+        traceRayCompute(stableRayOrigin, stableRayDirection, 0.001, 1000.0, stablePrimaryPayload);
 #else
-        RayDesc ray;
-        ray.Origin = rayOrigin;
-        ray.Direction = rayDirection;
-        ray.TMin = 0.001;
-        ray.TMax = 1000.0;
-        TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
+        AoPayload stablePayload = stablePrimaryPayload;
+        RayDesc stablePrimaryRay;
+        stablePrimaryRay.Origin = stableRayOrigin;
+        stablePrimaryRay.Direction = stableRayDirection;
+        stablePrimaryRay.TMin = 0.001;
+        stablePrimaryRay.TMax = 1000.0;
+        TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, stablePrimaryRay, stablePayload);
+        stablePrimaryPayload = stablePayload;
 #endif
 
-        outputCrypto[pickPixelCoord] = payload.objectIndex;
-
-        if (payload.objectIndex != INVALID_INSTANCE)
-            outputPosition[pickPixelCoord] = float4(payload.position, 1.0);
-        else
-            outputPosition[pickPixelCoord] = float4(0.0);
-
-        float3 aoColor = (payload.objectIndex == INVALID_INSTANCE)
-            ? payload.emission
-            : float3(payload.emission.r);
-
-        float historySamples = 0.0;
-        if (pushConstants.frame > 0 && pushConstants.isMoving == 0)
-            historySamples = max(0.0, outputAdaptiveState[pixelCoord].z);
-
-        float3 accumulatedAoColor = aoColor;
-        if (historySamples > 0.0) {
-            float3 previousColor = outputColor[pixelCoord].rgb;
-            accumulatedAoColor = accumulateWeightedColor(previousColor, historySamples, aoColor, 1.0);
+        AoPayload payload = stablePrimaryPayload;
+        if (useThinLens && !canReuseStablePrimary) {
+            sampler.startPixel(blockCenterPixel, pushConstants.Frame, samplerState);
+            float3 rayOrigin, rayDirection;
+            ThinLensCamera<R2Sampler> camera;
+            camera.generateRay(blockCenterPixel, screenSize, samplerState, sampler, true, rayOrigin, rayDirection);
+            payload.initialize(rngState);
+#ifdef USE_COMPUTE
+                traceRayCompute(rayOrigin, rayDirection, 0.001, 1000.0, payload);
+#else
+                RayDesc ray;
+                ray.Origin = rayOrigin;
+                ray.Direction = rayDirection;
+                ray.TMin = 0.001;
+                ray.TMax = 1000.0;
+                TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
+#endif
         }
 
-        outputColor[pixelCoord] = float4(accumulatedAoColor, 1.0);
-        outputAlbedo[pixelCoord] = float4(payload.albedo, 1.0);
-        outputNormal[pixelCoord] = float4(payload.normal, 0.0);
-        outputAdaptiveState[pixelCoord] = float4(0.0, 0.0, historySamples + 1.0, 0.0);
+        float3 aoColor = (payload.ObjectIndex == InvalidInstance)
+            ? payload.Emission
+            : (sceneSettings.RenderSettings.AoSampleAlbedo != 0
+                ? payload.Albedo * payload.Emission.r
+                : float3(payload.Emission.r));
+
+        for (int y = blockStart.y; y < blockEnd.y; ++y) {
+            for (int x = blockStart.x; x < blockEnd.x; ++x) {
+                int2 outputPixel = int2(x, y);
+                int2 pickPixelCoord = int2(outputPixel.x, (screenSize.y - 1) - outputPixel.y);
+                outputCrypto[pickPixelCoord] = stablePrimaryPayload.ObjectIndex;
+
+                if (stablePrimaryPayload.ObjectIndex != InvalidInstance)
+                    outputPosition[pickPixelCoord] = float4(stablePrimaryPayload.Position, 1.0);
+                else
+                    outputPosition[pickPixelCoord] = float4(0.0);
+
+                float historySamples = 0.0;
+                if (pushConstants.Frame > 0 && pushConstants.IsMoving == 0)
+                    historySamples = max(0.0, outputAdaptiveState[outputPixel].z);
+
+                float3 accumulatedAoColor = aoColor;
+                if (historySamples > 0.0) {
+                    float3 previousColor = outputColor[outputPixel].rgb;
+                    accumulatedAoColor = accumulateWeightedColor(previousColor, historySamples, aoColor, 1.0);
+                }
+
+                outputColor[outputPixel] = float4(accumulatedAoColor, 1.0);
+                outputAlbedo[outputPixel] = float4(stablePrimaryPayload.Albedo, 1.0);
+                outputNormal[outputPixel] = float4(stablePrimaryPayload.Normal, 0.0);
+                outputAdaptiveState[outputPixel] = float4(0.0, 0.0, historySamples + 1.0, 0.0);
+            }
+        }
     }
 };
 

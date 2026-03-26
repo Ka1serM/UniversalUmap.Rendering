@@ -6,12 +6,12 @@
 #include "ILight.slang"
 
 bool hasDirectionalLight(in EnvironmentDataGpu environmentData) {
-    return environmentData.directionalIntensity > EPSILON &&
-           dot(environmentData.directionalDirection, environmentData.directionalDirection) > EPSILON;
+    return environmentData.DirectionalIntensity > EPSILON &&
+           dot(environmentData.DirectionalDirection, environmentData.DirectionalDirection) > EPSILON;
 }
 
 float3 getDirectionalLightDirection(in EnvironmentDataGpu environmentData) {
-    float3 d = environmentData.directionalDirection;
+    float3 d = environmentData.DirectionalDirection;
     float l2 = dot(d, d);
     if (l2 <= EPSILON)
         return float3(0.0, 1.0, 0.0);
@@ -26,9 +26,9 @@ struct DirectionalLight : ILight
         u = u;
 
         LightLiSample sample;
-        sample.wi = getDirectionalLightDirection(sceneSettings.environment);
-        sample.Li = float3(sceneSettings.environment.directionalIntensity);
-        sample.pdf = hasDirectionalLight(sceneSettings.environment) ? 1.0 : 0.0;
+        sample.wi = getDirectionalLightDirection(sceneSettings.Environment);
+        sample.Li = float3(sceneSettings.Environment.DirectionalIntensity);
+        sample.pdf = hasDirectionalLight(sceneSettings.Environment) ? 1.0 : 0.0;
         return sample;
     }
 
@@ -45,10 +45,10 @@ struct DirectionalLight : ILight
         u2 = u2;
 
         LightLeSample sample;
-        sample.direction = getDirectionalLightDirection(sceneSettings.environment);
-        sample.radiance = float3(sceneSettings.environment.directionalIntensity);
-        sample.pdfPos = hasDirectionalLight(sceneSettings.environment) ? 1.0 : 0.0;
-        sample.pdfDir = hasDirectionalLight(sceneSettings.environment) ? 1.0 : 0.0;
+        sample.direction = getDirectionalLightDirection(sceneSettings.Environment);
+        sample.radiance = float3(sceneSettings.Environment.DirectionalIntensity);
+        sample.pdfPos = hasDirectionalLight(sceneSettings.Environment) ? 1.0 : 0.0;
+        sample.pdfDir = hasDirectionalLight(sceneSettings.Environment) ? 1.0 : 0.0;
         return sample;
     }
 };

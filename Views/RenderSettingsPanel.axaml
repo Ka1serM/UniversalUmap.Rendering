@@ -1,16 +1,32 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:converters="clr-namespace:UniversalUmap.Rendering.Converters;assembly=UniversalUmap.Rendering"
              xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
-             mc:Ignorable="d"
-             x:Class="UniversalUmap.Rendering.Views.MapsRenderSettingsPanel"
-             x:DataType="viewModels:MapsRenderSettingsPanelViewModel">
+             x:Class="UniversalUmap.Rendering.Views.RenderSettingsPanel"
+             x:DataType="viewModels:RenderSettingsPanelViewModel">
+    <UserControl.Resources>
+        <converters:RenderPixelSizeDisplayConverter x:Key="RenderPixelSizeDisplay" />
+    </UserControl.Resources>
+
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel HorizontalAlignment="Stretch" Spacing="12">
             <StackPanel Spacing="3">
                 <TextBlock Text="Mode" FontSize="12" Opacity="0.9" />
                 <ComboBox ItemsSource="{Binding RenderModes}"
                           SelectedItem="{Binding Model.RenderMode, Mode=TwoWay}" />
+            </StackPanel>
+
+            <StackPanel Spacing="3">
+                <TextBlock Text="Pixel Size" FontSize="12" Opacity="0.9" />
+                <ComboBox ItemsSource="{Binding PixelSizes}"
+                          SelectedItem="{Binding Model.PixelSize, Mode=TwoWay}">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource RenderPixelSizeDisplay}}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
             </StackPanel>
 
             <StackPanel Spacing="3">
@@ -28,6 +44,9 @@
                                Text="{Binding Model.SamplesPerPixel, StringFormat={}{0:0}}" />
                 </Grid>
             </StackPanel>
+
+            <CheckBox Content="Apply Pixel Size Only While Moving" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.ApplyPixelSizeOnlyWhileMoving, Mode=TwoWay}" />
 
             <StackPanel Spacing="3">
                 <TextBlock Text="Path Depth" FontSize="12" Opacity="0.9" />
@@ -84,6 +103,9 @@
 
             <CheckBox Content="Transparent Background" VerticalAlignment="Center"
                       IsChecked="{Binding Model.TransparentBackground, Mode=TwoWay}" />
+
+            <CheckBox Content="Sample Albedo in AO Mode" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.AoSampleAlbedo, Mode=TwoWay}" />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

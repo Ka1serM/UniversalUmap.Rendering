@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Serilog;
 using Silk.NET.Vulkan;
@@ -16,20 +17,22 @@ public sealed unsafe class Compositor : IDisposable
         public float AdaptiveTargetError;
         public int AdaptiveMinSamples;
         public int IsMoving;
+        public int PickBuffersFlippedY;
+        public int Pad0;  // Struct padding to 16 bytes
+        public int Pad1;  // Struct padding to 16 bytes
     }
 
     private readonly Context context;
     private readonly DescriptorSetLayout descriptorSetLayout;
-    private readonly DescriptorSet descriptorSet;
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
+    private readonly Dictionary<ulong, DescriptorSet> descriptorSetsByOutputViewHandle = [];
     private ulong lastColorInputViewHandle;
     private ulong lastAlbedoInputViewHandle;
     private ulong lastNormalInputViewHandle;
     private ulong lastCryptoInputViewHandle;
     private ulong lastPositionInputViewHandle;
     private ulong lastAdaptiveInputViewHandle;
-    private ulong lastOutputViewHandle;
     private bool hasLoggedDispatch;
 
     public Compositor(Context context)
@@ -74,8 +77,6 @@ public sealed unsafe class Compositor : IDisposable
             DescriptorSetCount = 1,
             PSetLayouts = &descriptorSetLayoutLocal
         };
-        context.Api.AllocateDescriptorSets(context.Device, in allocInfo, out var descriptorSetLocal).ThrowOnError();
-
         var pipelineLayoutInfo = new PipelineLayoutCreateInfo
         {
             SType = StructureType.PipelineLayoutCreateInfo,
@@ -109,7 +110,6 @@ public sealed unsafe class Compositor : IDisposable
         context.Api.DestroyShaderModule(context.Device, computeModule, default);
 
         descriptorSetLayout = descriptorSetLayoutLocal;
-        descriptorSet = descriptorSetLocal;
         pipelineLayout = pipelineLayoutLocal;
         pipeline = pipelineLocal;
         Log.Information("Compositor pipeline created.");
@@ -128,9 +128,10 @@ public sealed unsafe class Compositor : IDisposable
         int adaptiveMinSamples,
         uint selectedInstanceId,
         ImageResource outputImage,
-        int isMoving)
+        int isMoving,
+        bool pickBuffersFlippedY)
     {
-        UpdateBindings(colorInputImage, albedoInputImage, normalInputImage, cryptoInputImage, positionInputImage, adaptiveInputImage, outputImage);
+        var descriptorSet = UpdateBindings(colorInputImage, albedoInputImage, normalInputImage, cryptoInputImage, positionInputImage, adaptiveInputImage, outputImage);
 
         colorInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
         albedoInputImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
@@ -148,7 +149,8 @@ public sealed unsafe class Compositor : IDisposable
             VisualizationMode = visualizationMode,
             AdaptiveTargetError = adaptiveTargetError,
             AdaptiveMinSamples = adaptiveMinSamples,
-            IsMoving = isMoving
+            IsMoving = isMoving,
+            PickBuffersFlippedY = pickBuffersFlippedY ? 1 : 0
         };
         context.Api.CmdPushConstants(
             commandBuffer.InternalHandle,
@@ -171,7 +173,7 @@ public sealed unsafe class Compositor : IDisposable
         context.Api.CmdDispatch(commandBuffer.InternalHandle, groupCountX, groupCountY, 1);
     }
 
-    private void UpdateBindings(
+    private DescriptorSet UpdateBindings(
         ImageResource colorInputImage,
         ImageResource albedoInputImage,
         ImageResource normalInputImage,
@@ -180,14 +182,30 @@ public sealed unsafe class Compositor : IDisposable
         ImageResource adaptiveInputImage,
         ImageResource outputImage)
     {
-        if (lastColorInputViewHandle == colorInputImage.ViewHandle &&
-            lastAlbedoInputViewHandle == albedoInputImage.ViewHandle &&
-            lastNormalInputViewHandle == normalInputImage.ViewHandle &&
-            lastCryptoInputViewHandle == cryptoInputImage.ViewHandle &&
-            lastPositionInputViewHandle == positionInputImage.ViewHandle &&
-            lastAdaptiveInputViewHandle == adaptiveInputImage.ViewHandle &&
-            lastOutputViewHandle == outputImage.ViewHandle)
-            return;
+        var inputsChanged =
+            lastColorInputViewHandle != colorInputImage.ViewHandle ||
+            lastAlbedoInputViewHandle != albedoInputImage.ViewHandle ||
+            lastNormalInputViewHandle != normalInputImage.ViewHandle ||
+            lastCryptoInputViewHandle != cryptoInputImage.ViewHandle ||
+            lastPositionInputViewHandle != positionInputImage.ViewHandle ||
+            lastAdaptiveInputViewHandle != adaptiveInputImage.ViewHandle;
+
+        if (inputsChanged)
+        {
+            descriptorSetsByOutputViewHandle.Clear();
+            lastColorInputViewHandle = colorInputImage.ViewHandle;
+            lastAlbedoInputViewHandle = albedoInputImage.ViewHandle;
+            lastNormalInputViewHandle = normalInputImage.ViewHandle;
+            lastCryptoInputViewHandle = cryptoInputImage.ViewHandle;
+            lastPositionInputViewHandle = positionInputImage.ViewHandle;
+            lastAdaptiveInputViewHandle = adaptiveInputImage.ViewHandle;
+            Log.Debug("Compositor input bindings changed; invalidating cached output descriptor sets.");
+        }
+
+        if (descriptorSetsByOutputViewHandle.TryGetValue(outputImage.ViewHandle, out var cachedDescriptorSet))
+            return cachedDescriptorSet;
+
+        var descriptorSet = AllocateDescriptorSet();
 
         var colorInputInfo = new DescriptorImageInfo(default, new ImageView(colorInputImage.ViewHandle), ImageLayout.General);
         var albedoInputInfo = new DescriptorImageInfo(default, new ImageView(albedoInputImage.ViewHandle), ImageLayout.General);
@@ -262,14 +280,27 @@ public sealed unsafe class Compositor : IDisposable
         };
 
         context.Api.UpdateDescriptorSets(context.Device, 7, writes, 0, null);
-        lastColorInputViewHandle = colorInputImage.ViewHandle;
-        lastAlbedoInputViewHandle = albedoInputImage.ViewHandle;
-        lastNormalInputViewHandle = normalInputImage.ViewHandle;
-        lastCryptoInputViewHandle = cryptoInputImage.ViewHandle;
-        lastPositionInputViewHandle = positionInputImage.ViewHandle;
-        lastAdaptiveInputViewHandle = adaptiveInputImage.ViewHandle;
-        lastOutputViewHandle = outputImage.ViewHandle;
-        Log.Information("Compositor image bindings updated (color/albedo/normal/crypto/position/adaptive/output).");
+        descriptorSetsByOutputViewHandle[outputImage.ViewHandle] = descriptorSet;
+        Log.Debug("Compositor descriptor set created for output view {OutputViewHandle}.", outputImage.ViewHandle);
+        return descriptorSet;
+    }
+
+    private DescriptorSet AllocateDescriptorSet()
+    {
+        unsafe
+        {
+            var descriptorSetLayoutLocal = descriptorSetLayout;
+            var allocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = context.DescriptorPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = &descriptorSetLayoutLocal
+            };
+
+            context.Api.AllocateDescriptorSets(context.Device, in allocInfo, out var descriptorSet).ThrowOnError();
+            return descriptorSet;
+        }
     }
 
     public void Dispose()

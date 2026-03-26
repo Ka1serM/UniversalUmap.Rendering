@@ -1,7 +1,7 @@
 #ifndef PATHTRACING_PIPELINE_SLANG
 #define PATHTRACING_PIPELINE_SLANG
 
-#include "../SharedStructs.slang"
+#include "../Shared.slang"
 #include "../Bindings.slang"
 #include "..//Geometry/Intersection.slang"
 

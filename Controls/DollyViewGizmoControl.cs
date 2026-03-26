@@ -10,7 +10,7 @@ using FluentIcons.Common;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class DollyViewGizmoControl : CapturingControlBase
+public sealed class DollyViewGizmoControl : ContentControl
 {
     private const float HoverScaleBoost = 0.06f;
     private static readonly Color FillColor = Color.FromArgb(196, 26, 26, 26);
@@ -63,7 +63,8 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         base.OnDetachedFromVisualTree(e);
     }
 
@@ -77,7 +78,7 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (IsCaptureActive)
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
             return;
         isHovering = false;
         ApplyVisualState();
@@ -90,7 +91,9 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
         if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
-        BeginCapture(e.Pointer, e.GetPosition(this));
+        if (!PointerCaptureCoordinator.TryBegin(this, e.Pointer, e.GetPosition(this)))
+            return;
+
         ApplyVisualState();
         e.Handled = true;
     }
@@ -98,10 +101,10 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (!IsCaptureActive)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
-        if (TryConsumeCaptureWarpMove())
+        if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
@@ -112,21 +115,21 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
             return;
 
         var position = e.GetPosition(this);
-        var delta = GetCaptureDelta(position);
+        var delta = PointerCaptureCoordinator.GetDelta(this, position);
         if (Math.Abs(delta.Y) > double.Epsilon)
             viewer.Scene.DollyCamera((float)(-delta.Y * 0.05));
 
-        TryWrapCapture(position);
+        PointerCaptureCoordinator.TryWrapAround(this, position);
         e.Handled = true;
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
-        if (!IsCaptureActive)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
-        EndCapture(e.Pointer);
+        PointerCaptureCoordinator.End(this, e.Pointer);
         isHovering = Bounds.Contains(e.GetPosition(this));
         ApplyVisualState();
         e.Handled = true;
@@ -135,7 +138,8 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         isHovering = false;
         ApplyVisualState();
     }
@@ -143,14 +147,15 @@ public sealed class DollyViewGizmoControl : CapturingControlBase
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         isHovering = false;
         ApplyVisualState();
     }
 
     private void ApplyVisualState()
     {
-        if (IsCaptureActive)
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
         {
             chrome.Background = ActiveBrush;
             icon.Foreground = IconBrush;

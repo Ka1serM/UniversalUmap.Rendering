@@ -1,19 +1,18 @@
 using System;
 using Avalonia;
 using UniversalUmap.Rendering.Scenes;
-using UniversalUmap.Rendering.Raytracing;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
 internal sealed class GpuScenePicker
 {
     private readonly Scene scene;
-    private readonly GpuRaytracer raytracer;
+    public IGpuRenderPath? RenderPath { get; set; }
 
-    public GpuScenePicker(Scene scene, GpuRaytracer raytracer)
+    public GpuScenePicker(Scene scene, IGpuRenderPath renderPath)
     {
         this.scene = scene;
-        this.raytracer = raytracer;
+        RenderPath = renderPath;
     }
 
     public bool TryPickInstance(
@@ -25,11 +24,15 @@ internal sealed class GpuScenePicker
         out int pixelY)
     {
         instance = null;
-        instanceId = SharedShaderDefines.InvalidInstance;
+        instanceId = ShaderDefines.INVALID_INSTANCE;
         pixelX = 0;
         pixelY = 0;
 
-        var renderSize = raytracer.RenderImageSize;
+        var renderPath = RenderPath;
+        if (renderPath is null)
+            return false;
+
+        var renderSize = renderPath.RenderImageSize;
         if (controlSize.Width <= 0 || controlSize.Height <= 0 || renderSize.Width <= 0 || renderSize.Height <= 0)
             return false;
 
@@ -45,10 +48,11 @@ internal sealed class GpuScenePicker
 
         var queryPixelX = pixelX;
         var queryPixelY = pixelY;
-        if (!raytracer.QueryPixelUInt(raytracer.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
+
+        if (!renderPath.QueryPixelUInt(renderPath.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
             !scene.TrySelectInstance(pickedId, out instance))
         {
-            instanceId = SharedShaderDefines.InvalidInstance;
+            instanceId = ShaderDefines.INVALID_INSTANCE;
             return false;
         }
 

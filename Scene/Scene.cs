@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
+using System.Threading;
 using Avalonia;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Serilog;
@@ -16,6 +17,26 @@ namespace UniversalUmap.Rendering;
 
 public sealed class Scene : IDisposable, IScene
 {
+    private sealed class DeferredUpdateScope : IDisposable
+    {
+        private readonly Scene owner;
+        private bool disposed;
+
+        public DeferredUpdateScope(Scene owner)
+        {
+            this.owner = owner;
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+
+            disposed = true;
+            owner.EndDeferredUpdates();
+        }
+    }
+
     private readonly Context context;
     private readonly List<SceneHierarchyNode> hierarchyRoots = [];
     private readonly object sync = new();
@@ -23,8 +44,10 @@ public sealed class Scene : IDisposable, IScene
     private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MeshAsset> meshAssetsByName = new(StringComparer.OrdinalIgnoreCase);
     private SceneDirtyFlags dirtyFlags;
+    private SceneDirtyFlags deferredDirtyFlags;
+    private int deferredUpdateDepth;
+    private Func<Func<object?>, object?>? gpuDispatcher;
 
-    public ulong Version { get; private set; }
     public int SelectedInstanceIndex { get; private set; } = -1;
     public MeshInstance? SelectedInstance =>
         SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
@@ -39,6 +62,16 @@ public sealed class Scene : IDisposable, IScene
     public Context Context => context;
     internal event Action? CameraChanged;
     internal event Action<EnvironmentSettings>? EnvironmentChanged;
+    internal event Action<SceneDirtyFlags>? DirtyStateChanged;
+
+    internal readonly record struct RenderDataGpu(
+        BufferVisualizationMode BufferVisualization,
+        uint SelectedInstanceId,
+        int EnvironmentTextureIndex,
+        int IsMoving,
+        RenderSettingsDataGpu RenderSettings,
+        CameraDataGpu Camera,
+        EnvironmentDataGpu Environment);
 
     internal Scene(Context context, Input input)
     {
@@ -61,6 +94,33 @@ public sealed class Scene : IDisposable, IScene
     {
         lock (sync)
             action();
+    }
+
+    internal void SetGpuDispatcher(Func<Func<object?>, object?> dispatcher)
+    {
+        gpuDispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+    }
+
+    public T RunOnGpuThread<T>(Func<T> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        var dispatcher = gpuDispatcher;
+        if (dispatcher is null)
+            return action();
+
+        var result = dispatcher(() => action());
+        return result is T typed ? typed : default!;
+    }
+
+    public void RunOnGpuThread(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        RunOnGpuThread<object?>(() =>
+        {
+            action();
+            return null;
+        });
     }
 
     private static string RequireNamedAsset<TAsset>(TAsset asset, Func<TAsset, string> getName, string assetType)
@@ -97,6 +157,10 @@ public sealed class Scene : IDisposable, IScene
         return meshAssetsByName.TryGetValue(meshAsset.Name, out var existing) && ReferenceEquals(existing, meshAsset);
     }
 
+    /// <summary>
+    /// Gets or adds a named asset using double-checked locking.
+    /// The factory is called OUTSIDE the lock to avoid blocking readers during expensive GPU allocation.
+    /// </summary>
     private TAsset? GetOrAddNamedAsset<TAsset>(
         string name,
         Func<TAsset?> factory,
@@ -110,26 +174,40 @@ public sealed class Scene : IDisposable, IScene
         if (factory is null)
             throw new ArgumentNullException(nameof(factory));
 
-        var result = Synchronize(() =>
+        // First check without lock - fast path for existing assets
+        TAsset? result;
+        lock (sync)
         {
             if (itemsByName.TryGetValue(name, out var existing))
-                return (existing, false);
+            {
+                added = false;
+                return existing;
+            }
+        }
 
-            var created = factory();
-            if (created is null)
-                return ((TAsset?)null, false);
+        // Factory call OUTSIDE lock - expensive GPU allocation happens here
+        var created = factory();
+        if (created is null)
+        {
+            added = false;
+            return null;
+        }
 
-            if (itemsByName.TryGetValue(name, out existing))
+        // Second check with lock - another thread might have added it
+        lock (sync)
+        {
+            if (itemsByName.TryGetValue(name, out var existing))
             {
                 created.Dispose();
-                return (existing, false);
+                added = false;
+                return existing;
             }
 
-            return (add(created), true);
-        });
+            result = add(created);
+        }
 
-        added = result.Item2;
-        return result.Item1;
+        added = true;
+        return result;
     }
 
     private TAsset? FindNamedAsset<TAsset>(string name, Dictionary<string, TAsset> itemsByName)
@@ -157,6 +235,28 @@ public sealed class Scene : IDisposable, IScene
         });
     }
 
+    internal RenderDataGpu CaptureRenderData()
+    {
+        return Synchronize(() => new RenderDataGpu(
+            RenderSettings.BufferVisualization,
+            SelectedInstanceIndex >= 0 ? (uint)SelectedInstanceIndex : ShaderDefines.INVALID_INSTANCE,
+            Environment.TextureIndex,
+            Camera.IsMoving,
+            RenderSettings.ToStruct(),
+            Camera.ToStruct(),
+            Environment.ToStruct()));
+    }
+
+    internal RasterCameraDataGpu CaptureRasterCameraData()
+    {
+        return Synchronize(() => new RasterCameraDataGpu
+        {
+            Position = Camera.Position,
+            Direction = Camera.ToStruct().Direction,
+            WorldToClip = Camera.WorldToClip
+        });
+    }
+
     public TextureAsset Add(TextureAsset texture)
     {
         var added = AddNamedAsset(
@@ -166,7 +266,7 @@ public sealed class Scene : IDisposable, IScene
             static (item, index) => item.Index = index,
             SceneDirtyFlags.Textures | SceneDirtyFlags.Accumulation,
             "Texture");
-        Log.Information("Added texture '{TextureName}' at bindless index {TextureIndex}.", added.Name, added.Index);
+        Log.Debug("Added texture '{TextureName}' at bindless index {TextureIndex}.", added.Name, added.Index);
         return added;
     }
 
@@ -290,6 +390,12 @@ public sealed class Scene : IDisposable, IScene
         Synchronize(() => RenderSettings.RenderMode = renderMode);
     }
 
+    public IDisposable DeferUpdates()
+    {
+        Synchronize(() => deferredUpdateDepth++);
+        return new DeferredUpdateScope(this);
+    }
+
     public void TryLoadDefaultEnvironment()
     {
         const string hdriFileName = "kiara_1_dawn_4k.hdr";
@@ -345,11 +451,7 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearHierarchy()
     {
-        Synchronize(() =>
-        {
-            hierarchyRoots.Clear();
-            Version++;
-        });
+        hierarchyRoots.Clear();
     }
 
     public void AddHierarchyRoot(SceneHierarchyNode root)
@@ -357,11 +459,7 @@ public sealed class Scene : IDisposable, IScene
         if (root is null)
             throw new ArgumentNullException(nameof(root));
 
-        Synchronize(() =>
-        {
-            hierarchyRoots.Add(root);
-            Version++;
-        });
+        hierarchyRoots.Add(root);
     }
 
     public void AddHierarchyChild(SceneHierarchyNode parent, SceneHierarchyNode child)
@@ -371,21 +469,13 @@ public sealed class Scene : IDisposable, IScene
         if (child is null)
             throw new ArgumentNullException(nameof(child));
 
-        Synchronize(() =>
-        {
-            parent.Children.Add(child);
-            Version++;
-        });
+        parent.Children.Add(child);
     }
 
     public void SetHierarchyRoots(IReadOnlyList<SceneHierarchyNode> roots)
     {
-        Synchronize(() =>
-        {
-            hierarchyRoots.Clear();
-            hierarchyRoots.AddRange(roots);
-            Version++;
-        });
+        hierarchyRoots.Clear();
+        hierarchyRoots.AddRange(roots);
     }
 
     public void ClearGeometry(bool keepDefaultTestCube = false)
@@ -413,19 +503,36 @@ public sealed class Scene : IDisposable, IScene
         });
     }
 
+
     public void ClearDirty(SceneDirtyFlags flags)
     {
         Synchronize(() => dirtyFlags &= ~flags);
     }
 
+    public bool TryGetInstanceAt(int index, out MeshInstance? instance)
+    {
+        lock (sync)
+        {
+            if (index < 0 || index >= meshInstances.Count)
+            {
+                instance = null;
+                return false;
+            }
+            instance = meshInstances[index];
+            return true;
+        }
+    }
+
     public IReadOnlyList<SceneHierarchyNode> GetHierarchyRootsSnapshot()
     {
-        return Synchronize(() => hierarchyRoots.ToArray());
+        lock (sync)
+            return hierarchyRoots.ToArray();
     }
 
     internal TextureAsset[] GetTexturesSnapshot()
     {
-        return Synchronize(() => texturesByName.Values.ToArray());
+        lock (sync)
+            return texturesByName.Values.ToArray();
     }
 
     internal bool TryGetTextureAt(int index, out TextureAsset? texture)
@@ -446,7 +553,7 @@ public sealed class Scene : IDisposable, IScene
     {
         var result = Synchronize(() =>
         {
-            var selectedInstanceIndex = instanceId == SharedShaderDefines.InvalidInstance || instanceId >= meshInstances.Count
+            var selectedInstanceIndex = instanceId == ShaderDefines.INVALID_INSTANCE || instanceId >= meshInstances.Count
                 ? -1
                 : (int)instanceId;
             var changedSelection = TrySetSelectedInstanceIndexUnsafe(selectedInstanceIndex);
@@ -501,8 +608,59 @@ public sealed class Scene : IDisposable, IScene
 
     internal void SetDirty(SceneDirtyFlags flags)
     {
-        dirtyFlags |= flags;
-        Version++;
+        SceneDirtyFlags changedFlags;
+        // Camera and settings updates must always be applied immediately to ensure
+        // the camera can update every frame regardless of batch updates.
+        var immediateFlags = flags & (SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
+        var deferred = flags & ~(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
+
+        changedFlags = SceneDirtyFlags.None;
+        if (immediateFlags != SceneDirtyFlags.None)
+        {
+            var newlyAddedImmediateFlags = immediateFlags & ~dirtyFlags;
+            dirtyFlags |= immediateFlags;
+            changedFlags |= newlyAddedImmediateFlags;
+        }
+
+        if (deferred != SceneDirtyFlags.None && deferredUpdateDepth > 0)
+        {
+            var newlyDeferredFlags = deferred & ~deferredDirtyFlags;
+            deferredDirtyFlags |= deferred;
+            changedFlags |= newlyDeferredFlags;
+            if (changedFlags != SceneDirtyFlags.None)
+                DirtyStateChanged?.Invoke(changedFlags);
+            return;
+        }
+
+        if (deferred != SceneDirtyFlags.None)
+        {
+            var newlyAddedDeferredFlags = deferred & ~dirtyFlags;
+            dirtyFlags |= deferred;
+            changedFlags |= newlyAddedDeferredFlags;
+        }
+
+        if (changedFlags != SceneDirtyFlags.None)
+            DirtyStateChanged?.Invoke(changedFlags);
+    }
+
+    private void EndDeferredUpdates()
+    {
+        Synchronize(() =>
+        {
+            if (deferredUpdateDepth <= 0)
+                throw new InvalidOperationException("Deferred update scope is not active.");
+
+            deferredUpdateDepth--;
+            if (deferredUpdateDepth != 0 || deferredDirtyFlags == SceneDirtyFlags.None)
+                return;
+
+            dirtyFlags |= deferredDirtyFlags;
+            deferredDirtyFlags = SceneDirtyFlags.None;
+            
+            // Always mark accumulation as dirty after batch updates to ensure
+            // the first frame properly resets all accumulated state
+            dirtyFlags |= SceneDirtyFlags.Accumulation;
+        });
     }
 
     void IScene.SetAccumulationDirty()
@@ -517,7 +675,19 @@ public sealed class Scene : IDisposable, IScene
 
     internal byte[] BuildInstanceData()
     {
-        if (meshInstances.Count == 0)
+        var instances = Synchronize(() =>
+        {
+            if (meshInstances.Count == 0)
+                return null;
+
+            var result = new InstanceGpu[meshInstances.Count];
+            for (var i = 0; i < meshInstances.Count; i++)
+                result[i] = meshInstances[i].BuildInstanceData();
+
+            return result;
+        });
+
+        if (instances is null)
         {
             var empty = new InstanceGpu
             {
@@ -529,43 +699,94 @@ public sealed class Scene : IDisposable, IScene
             return StructPacking.ToBytes(new[] { empty });
         }
 
-        var instances = new InstanceGpu[meshInstances.Count];
-        for (var i = 0; i < meshInstances.Count; i++)
-            instances[i] = meshInstances[i].BuildInstanceData();
-
         return StructPacking.ToBytes(instances);
     }
 
     internal byte[] BuildMeshAddressData()
     {
-        if (meshAssetsByName.Count == 0)
+        var addresses = Synchronize(() =>
+        {
+            if (meshAssetsByName.Count == 0)
+                return null;
+
+            var result = new MeshAddressesGpu[meshAssetsByName.Count];
+            var index = 0;
+            foreach (var meshAsset in meshAssetsByName.Values)
+                result[index++] = meshAsset.GetBufferAddresses();
+
+            return result;
+        });
+
+        if (addresses is null)
         {
             var empty = new MeshAddressesGpu();
             return StructPacking.ToBytes(new[] { empty });
         }
 
-        var addresses = new MeshAddressesGpu[meshAssetsByName.Count];
-        var index = 0;
-        foreach (var meshAsset in meshAssetsByName.Values)
-            addresses[index++] = meshAsset.GetBufferAddresses();
-
         return StructPacking.ToBytes(addresses);
+    }
+
+    internal byte[] BuildMeshRasterMetadata()
+    {
+        var metadata = Synchronize(() =>
+        {
+            if (meshAssetsByName.Count == 0)
+                return null;
+
+            var instanceCapacities = new uint[meshAssetsByName.Count];
+            for (var i = 0; i < meshInstances.Count; i++)
+            {
+                var meshIndex = meshInstances[i].GetMeshIndex();
+                if (meshIndex < instanceCapacities.Length)
+                    instanceCapacities[meshIndex]++;
+            }
+
+            var result = new MeshRasterMetadataGpu[meshAssetsByName.Count];
+            uint runningOffset = 0;
+            foreach (var meshAsset in meshAssetsByName.Values)
+            {
+                var meshIndex = meshAsset.MeshIndex;
+                var capacity = meshIndex < instanceCapacities.Length ? instanceCapacities[meshIndex] : 0u;
+                result[meshIndex] = new MeshRasterMetadataGpu
+                {
+                    VisibleInstanceOffset = runningOffset,
+                    InstanceCapacity = capacity,
+                    IndexCount = meshAsset.GetBufferAddresses().IndexCount
+                };
+                runningOffset += capacity;
+            }
+
+            return result;
+        });
+
+        if (metadata is null)
+            return StructPacking.ToBytes(new[] { new MeshRasterMetadataGpu() });
+
+        return StructPacking.ToBytes(metadata);
     }
 
     internal byte[] BuildRtxInstanceData()
     {
-        if (meshInstances.Count == 0)
+        var instances = Synchronize(() =>
+        {
+            if (meshInstances.Count == 0)
+                return null;
+
+            var result = new AccelerationStructureInstanceKHR[meshInstances.Count];
+            for (var i = 0; i < meshInstances.Count; i++)
+            {
+                result[i] = meshInstances[i].BuildRtxInstanceData();
+                // Set InstanceCustomIndex to the instance array index for unique identification.
+                result[i].InstanceCustomIndex = (uint)i;
+            }
+
+            return result;
+        });
+
+        if (instances is null)
         {
             var empty = new AccelerationStructureInstanceKHR();
             return StructPacking.ToBytes(new[] { empty });
-        }
-
-        var instances = new AccelerationStructureInstanceKHR[meshInstances.Count];
-        for (var i = 0; i < meshInstances.Count; i++)
-        {
-            instances[i] = meshInstances[i].BuildRtxInstanceData();
-            // Set InstanceCustomIndex to the instance array index for unique identification
-            instances[i].InstanceCustomIndex = (uint)i;
         }
 
         return StructPacking.ToBytes(instances);
@@ -573,7 +794,19 @@ public sealed class Scene : IDisposable, IScene
 
     internal byte[] BuildRtxInstanceBufferData()
     {
-        if (meshInstances.Count == 0)
+        var instances = Synchronize(() =>
+        {
+            if (meshInstances.Count == 0)
+                return null;
+
+            var result = new InstanceGpu[meshInstances.Count];
+            for (var i = 0; i < meshInstances.Count; i++)
+                result[i] = meshInstances[i].BuildInstanceData();
+
+            return result;
+        });
+
+        if (instances is null)
         {
             var empty = new InstanceGpu
             {
@@ -583,13 +816,7 @@ public sealed class Scene : IDisposable, IScene
             return StructPacking.ToBytes(new[] { empty });
         }
 
-        var rtxInstances = new InstanceGpu[meshInstances.Count];
-        for (var i = 0; i < meshInstances.Count; i++)
-        {
-            rtxInstances[i] = meshInstances[i].BuildInstanceData();
-        }
-
-        return StructPacking.ToBytes(rtxInstances);
+        return StructPacking.ToBytes(instances);
     }
 
     public void Dispose()

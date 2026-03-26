@@ -13,8 +13,6 @@ namespace UniversalUmap.Rendering.Raytracing;
 internal sealed unsafe class RtxRaytracer : GpuRaytracer
 {
     private const int TlasBufferCount = 2;
-    private const int MaxTlasBuildsPerSecond = 10;
-    private static readonly TimeSpan MinTlasRebuildInterval = TimeSpan.FromSeconds(1d / MaxTlasBuildsPerSecond);
     private readonly KhrAccelerationStructure accelExt;
     private readonly KhrRayTracingPipeline rtExt;
 
@@ -27,8 +25,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     private readonly TlasResourceSlot[] tlasSlots;
     private int activeTlasSlotIndex;
-    private int queuedTlasSlotIndex = -1;
-    private long lastTlasBuildTicks;
     private GpuBuffer meshBuffer = default!;
     private GpuBuffer rtxInstanceBuffer = default!;
 
@@ -86,7 +82,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         for (var i = 0; i < tlasSlots.Length; i++)
             tlasSlots[i] = new TlasResourceSlot(Context, accelExt);
         activeTlasSlotIndex = 0;
-        lastTlasBuildTicks = 0;
         meshBuffer = new GpuBuffer(
             Context,
             16,
@@ -237,7 +232,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     protected override void ExecuteRaytracing(CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants)
     {
-        RayTracingPipelineState pipelineState = Scene.RenderMode switch
+        RayTracingPipelineState pipelineState = CachedRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipelineState,
             RenderMode.DirectLighting => directPipelineState,
@@ -276,7 +271,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
         var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
         var rtxInstancesDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas);
-        if (!meshesDirty && !tlasDirty && !rtxInstancesDirty && queuedTlasSlotIndex < 0)
+        if (!meshesDirty && !tlasDirty && !rtxInstancesDirty)
             return;
 
         var meshBytesLength = 0;
@@ -334,15 +329,11 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         }
 
         if (tlasDirty)
-            queuedTlasSlotIndex = force ? activeTlasSlotIndex : (activeTlasSlotIndex + 1) % tlasSlots.Length;
-
-        if (queuedTlasSlotIndex >= 0 && ShouldBuildTlasNow(force))
         {
-            var tlasSlot = tlasSlots[queuedTlasSlotIndex];
-            UpdateTlas(commandBuffer, tlasSlot, queuedTlasSlotIndex);
-            activeTlasSlotIndex = queuedTlasSlotIndex;
-            queuedTlasSlotIndex = -1;
-            lastTlasBuildTicks = Stopwatch.GetTimestamp();
+            var nextTlasSlotIndex = force ? activeTlasSlotIndex : (activeTlasSlotIndex + 1) % tlasSlots.Length;
+            var tlasSlot = tlasSlots[nextTlasSlotIndex];
+            UpdateTlas(commandBuffer, tlasSlot, nextTlasSlotIndex);
+            activeTlasSlotIndex = nextTlasSlotIndex;
             Scene.ClearDirty(SceneDirtyFlags.Tlas);
         }
 
@@ -353,7 +344,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
                 meshBytesLength,
                 activeTlasSlotIndex,
                 tlasSlots.Length,
-                queuedTlasSlotIndex >= 0);
+                false);
         }
     }
 
@@ -362,15 +353,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     protected override uint OutputImageBindingBase => 2;
     protected override uint SceneSettingsBinding => 9;
     protected override uint TextureArrayBinding => 10;
-
-    private bool ShouldBuildTlasNow(bool force)
-    {
-        if (force || lastTlasBuildTicks == 0)
-            return true;
-
-        var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - lastTlasBuildTicks) / (double)Stopwatch.Frequency);
-        return elapsed >= MinTlasRebuildInterval;
-    }
 
     private ShaderModule CreateShaderModule(ReadOnlySpan<byte> shaderBytes)
     {
@@ -557,9 +539,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         Context.RetainForExecution(commandBuffer, previousInstancesBuffer);
 
         var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
-        // NoorRay-style: TLAS upload/build via one-time immediate submit path.
-        // Frame command buffer stays focused on ray trace/composite work.
-        slot.Tlas.BuildTopLevel(primitiveCount, slot.InstancesBuffer.DeviceAddress);
+        slot.Tlas.BuildTopLevel(commandBuffer, primitiveCount, slot.InstancesBuffer.DeviceAddress);
 
         var accelInfo = new WriteDescriptorSetAccelerationStructureKHR
         {

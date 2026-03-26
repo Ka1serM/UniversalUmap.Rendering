@@ -13,7 +13,7 @@ using Avalonia.VisualTree;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class RotateViewGizmoControl : CapturingControlBase
+public sealed class RotateViewGizmoControl : ContentControl
 {
     private const float SnapDurationSeconds = 0.32f;
     private const float DefaultArcballPivotDistance = 10f;
@@ -117,7 +117,8 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         DetachObservedScene();
         DetachTopLevel();
         animationTimer.Stop();
@@ -223,7 +224,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (IsCaptureActive)
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
         ClearHoverState();
@@ -246,9 +247,11 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
                 activeRenderer.Scene!.SetArcballPivot(GetDefaultArcballPivot(activeRenderer));
 
             snapAnimating = false;
+            if (!PointerCaptureCoordinator.TryBegin(this, e.Pointer, localPointer))
+                return;
+
             rotating = true;
             orbitCaptureMode = true;
-            BeginCapture(e.Pointer, localPointer);
             centerFadeTarget = CenterFadeStrength;
             EnsureAnimationRunning(resetClock: true);
             InvalidateVisual();
@@ -262,7 +265,8 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             pressedPointer = localPointer;
             pressedAxisWorldDirection = AxisDirections[pressedAxisId];
             orbitCaptureMode = false;
-            BeginCapture(e.Pointer, localPointer);
+            if (!PointerCaptureCoordinator.TryBegin(this, e.Pointer, localPointer))
+                return;
             e.Handled = true;
         }
     }
@@ -273,13 +277,13 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
         localPointer = e.GetPosition(this);
         hasTrackedPointer = true;
 
-        if (!IsCaptureActive)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this))
         {
             RecomputeHover(localPointer, startAnimations: true);
             return;
         }
 
-        if (TryConsumeCaptureWarpMove())
+        if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
         {
             e.Handled = true;
             return;
@@ -294,7 +298,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             return;
         }
 
-        var delta = GetCaptureDelta(localPointer);
+        var delta = PointerCaptureCoordinator.GetDelta(this, localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
             activeRenderer.Scene!.OrbitAroundPivot((float)(-delta.X * 0.01), (float)(-delta.Y * 0.01));
@@ -303,7 +307,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             InvalidateVisual();
         }
 
-        TryWrapCapture(localPointer);
+        PointerCaptureCoordinator.TryWrapAround(this, localPointer);
         e.Handled = true;
     }
 
@@ -311,9 +315,9 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
     {
         base.OnPointerReleased(e);
 
-        if (IsCaptureActive)
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
         {
-            EndCapture(e.Pointer);
+            PointerCaptureCoordinator.End(this, e.Pointer);
             var wasOrbitCapture = orbitCaptureMode;
             orbitCaptureMode = false;
             rotating = false;
@@ -353,7 +357,8 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
@@ -368,19 +373,19 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             return;
         }
 
-        if (!IsCaptureActive && hasTrackedPointer)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
 
         var deltaSeconds = GetTickDeltaSeconds();
         var changed = AdvanceAnimations(deltaSeconds);
 
-        if (changed || rotating || IsCaptureActive)
+        if (changed || rotating || PointerCaptureCoordinator.IsOwnedBy(this))
             InvalidateVisual();
     }
 
     private bool NeedsAnimation()
     {
-        if (rotating || IsCaptureActive || snapAnimating)
+        if (rotating || PointerCaptureCoordinator.IsOwnedBy(this) || snapAnimating)
             return true;
 
         if (Math.Abs(centerFadeCurrent - centerFadeTarget) > AnimationEpsilon)
@@ -456,11 +461,12 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        EndCapture();
+        if (PointerCaptureCoordinator.IsOwnedBy(this))
+            PointerCaptureCoordinator.End(this);
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
-        if (!IsCaptureActive && hasTrackedPointer)
+        if (!PointerCaptureCoordinator.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
         InvalidateVisual();
     }
@@ -657,7 +663,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
             if (this.GetVisualRoot() is null)
                 return;
 
-            if (IsPointerOver && !IsCaptureActive)
+            if (IsPointerOver && !PointerCaptureCoordinator.IsOwnedBy(this))
                 RecomputeHover(localPointer, startAnimations: true);
             else
                 InvalidateVisual();
@@ -689,7 +695,7 @@ public sealed class RotateViewGizmoControl : CapturingControlBase
 
     private void OnTopLevelPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (this.GetVisualRoot() is null || IsCaptureActive)
+        if (this.GetVisualRoot() is null || PointerCaptureCoordinator.IsOwnedBy(this))
             return;
 
         localPointer = e.GetPosition(this);

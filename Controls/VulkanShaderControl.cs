@@ -12,7 +12,7 @@ using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public abstract class VulkanShaderControl : CapturingControlBase
+public abstract class VulkanShaderControl : ContentControl
 {
     protected static readonly IBrush HitTestBrush = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
 
@@ -222,7 +222,7 @@ public abstract class VulkanShaderControl : CapturingControlBase
 
         try
         {
-            if (!surface.TryBeginDraw(pixelSize, out var image))
+            if (!surface.TryAcquireRenderLease(pixelSize, out var lease))
             {
                 QueueNextFrame();
                 return;
@@ -230,13 +230,34 @@ public abstract class VulkanShaderControl : CapturingControlBase
 
             try
             {
-                OnRasterDraw(context, image);
+                if (lease.WaitForAvailability)
+                {
+                    var waitCommandBuffer = context.CreateCommandBuffer();
+                    context.BeginCommandBuffer(waitCommandBuffer);
+                    context.SubmitCommandBuffer(
+                        waitCommandBuffer,
+                        [lease.ImageAvailableSemaphore],
+                        [PipelineStageFlags.ColorAttachmentOutputBit]);
+                }
+
+                OnRasterDraw(context, lease.Image);
+                var commandBuffer = context.CreateCommandBuffer();
+                context.BeginCommandBuffer(commandBuffer);
+                lease.Image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
+                context.SubmitCommandBuffer(commandBuffer, signalSemaphores: [lease.RenderFinishedSemaphore]);
+                surface.CompleteRender(lease, commandBuffer);
             }
             finally
             {
-                surface.Present();
+                if (surface.TryPresentLatestReadyFrame())
+                {
+                    frameDirty = false;
+                }
+                else
+                {
+                    QueueNextFrame();
+                }
             }
-            frameDirty = false;
         }
         catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
         {
@@ -260,7 +281,7 @@ public abstract class VulkanShaderControl : CapturingControlBase
 
     private void QueueNextFrame()
     {
-        if (!running || !initialized || !frameDirty || updateQueued || avaloniaCompositor is null || !IsVisible)
+        if (!running || !initialized || !frameDirty || updateQueued || avaloniaCompositor is null)
             return;
 
         updateQueued = true;
