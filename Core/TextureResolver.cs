@@ -206,7 +206,7 @@ public static class TextureResolver
                 {
                     for (var i = 0; i < texInfos?.Length && i < texVals?.Length; i++)
                     {
-                        if (texVals[i].TryLoad(out UTexture export))
+                        if (texVals[i] is not null && texVals[i].TryLoad(out UTexture export))
                             textures.TryAdd(texInfos[i].Name.Text, export);
                     }
                 }

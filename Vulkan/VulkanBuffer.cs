@@ -5,7 +5,7 @@ using UniversalUmap.Rendering.Core;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
-internal sealed unsafe class GpuBuffer : IDisposable
+internal sealed unsafe class VulkanBuffer : IDisposable
 {
     private readonly Vk api;
     private readonly Device device;
@@ -15,7 +15,7 @@ internal sealed unsafe class GpuBuffer : IDisposable
     public ulong Size { get; }
     public ulong DeviceAddress { get; }
 
-    public GpuBuffer(
+    public VulkanBuffer(
         Context context,
         ulong size,
         BufferUsageFlags usage,

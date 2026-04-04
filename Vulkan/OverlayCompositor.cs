@@ -110,17 +110,17 @@ public sealed unsafe class Compositor : IDisposable
 
     public void Record(
         Context.CommandBuffer commandBuffer,
-        ImageResource colorInputImage,
-        ImageResource albedoInputImage,
-        ImageResource normalInputImage,
-        ImageResource cryptoInputImage,
-        ImageResource positionInputImage,
-        ImageResource adaptiveInputImage,
+        VulkanImage colorInputImage,
+        VulkanImage albedoInputImage,
+        VulkanImage normalInputImage,
+        VulkanImage cryptoInputImage,
+        VulkanImage positionInputImage,
+        VulkanImage adaptiveInputImage,
         int visualizationMode,
         float adaptiveTargetError,
         int adaptiveMinSamples,
         uint selectedInstanceId,
-        ImageResource outputImage,
+        VulkanImage outputImage,
         int isMoving,
         bool pickBuffersFlippedY)
     {
@@ -167,13 +167,13 @@ public sealed unsafe class Compositor : IDisposable
     }
 
     private DescriptorSet UpdateBindings(
-        ImageResource colorInputImage,
-        ImageResource albedoInputImage,
-        ImageResource normalInputImage,
-        ImageResource cryptoInputImage,
-        ImageResource positionInputImage,
-        ImageResource adaptiveInputImage,
-        ImageResource outputImage)
+        VulkanImage colorInputImage,
+        VulkanImage albedoInputImage,
+        VulkanImage normalInputImage,
+        VulkanImage cryptoInputImage,
+        VulkanImage positionInputImage,
+        VulkanImage adaptiveInputImage,
+        VulkanImage outputImage)
     {
         var inputsChanged =
             lastColorInputViewHandle != colorInputImage.ViewHandle ||

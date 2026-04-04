@@ -34,25 +34,25 @@
     ]
   },
   "packageFolders": {
-    "/var/home/marcel/.containers/dev/.nuget/packages/": {}
+    "/home/marcel/.nuget/packages/": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/run/host/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/EnvMapPrecompute.csproj",
+      "projectUniqueName": "/home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/EnvMapPrecompute.csproj",
       "projectName": "EnvMapPrecompute",
-      "projectPath": "/run/host/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/EnvMapPrecompute.csproj",
-      "packagesPath": "/var/home/marcel/.containers/dev/.nuget/packages/",
-      "outputPath": "/run/host/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/",
+      "projectPath": "/home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/EnvMapPrecompute.csproj",
+      "packagesPath": "/home/marcel/.nuget/packages/",
+      "outputPath": "/home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "/var/home/marcel/.containers/dev/.nuget/NuGet/NuGet.Config"
+        "/home/marcel/.nuget/NuGet/NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net10.0"
       ],
       "sources": {
-        "/usr/lib/dotnet/library-packs": {},
+        "/usr/lib64/dotnet/library-packs": {},
         "https://api.nuget.org/v3/index.json": {}
       },
       "frameworks": {
@@ -98,7 +98,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/10.0.103/PortableRuntimeIdentifierGraph.json",
+        "runtimeIdentifierGraphPath": "/usr/lib64/dotnet/sdk/10.0.104/PortableRuntimeIdentifierGraph.json",
         "packagesToPrune": {
           "Microsoft.CSharp": "(,4.7.32767]",
           "Microsoft.VisualBasic": "(,10.4.32767]",

@@ -4,86 +4,82 @@
              x:Class="UniversalUmap.Rendering.Controls.RenderModeSwitcher"
              x:DataType="controls:RenderModeSwitcher">
     <UserControl.Styles>
-        <Style Selector="controls|RenderModeSwitcher Border#Shell">
-            <Setter Property="CornerRadius" Value="10" />
-            <Setter Property="BoxShadow" Value="0 6 18 0 #55000000" />
-        </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Border#ShellContent">
-            <Setter Property="Background" Value="#E51A1A1A" />
-            <Setter Property="CornerRadius" Value="10" />
-        </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Button.modeSegment">
-            <Setter Property="Width" Value="30" />
-            <Setter Property="Height" Value="30" />
-            <Setter Property="Padding" Value="0" />
-            <Setter Property="Margin" Value="0" />
-            <Setter Property="CornerRadius" Value="0" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Foreground" Value="#B8FFFFFF" />
-            <Setter Property="Template">
-                <ControlTemplate>
-                    <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="{TemplateBinding CornerRadius}">
-                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                          Content="{TemplateBinding Content}"
-                                          ContentTemplate="{TemplateBinding ContentTemplate}"
-                                          Padding="{TemplateBinding Padding}" />
-                    </Border>
-                </ControlTemplate>
+        <Style Selector="Border.renderModeShell">
+            <Setter Property="CornerRadius" Value="{StaticResource radius-md}" />
+            <Setter Property="BoxShadow" Value="{StaticResource shadow-surface-rest}" />
+            <Setter Property="ClipToBounds" Value="True" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BoxShadowsTransition Property="BoxShadow" Duration="0:0:0.12" Easing="QuadraticEaseOut" />
+                </Transitions>
             </Setter>
         </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Button.modeSegment:pointerover">
-            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
-            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        <Style Selector="Border.renderModeShellContent">
+            <Setter Property="Background" Value="{DynamicResource Surface}" />
         </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected">
-            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
-            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        <Style Selector="Button.renderModeSegment">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="MinWidth" Value="30" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="MaxWidth" Value="30" />
+            <Setter Property="MaxHeight" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="CornerRadius" Value="{StaticResource radius-md}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{DynamicResource Foreground}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.16" Easing="CubicEaseOut" />
+                    <BrushTransition Property="Foreground" Duration="0:0:0.16" Easing="CubicEaseOut" />
+                </Transitions>
+            </Setter>
         </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected:pointerover">
-            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
-            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        <Style Selector="Button.renderModeSegment:pointerover">
+            <Setter Property="Background" Value="{DynamicResource OverlaySoft}" />
+            <Setter Property="Foreground" Value="{DynamicResource Foreground}" />
         </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Button.modeSegment.selected:pressed">
-            <Setter Property="Background" Value="{DynamicResource AppAccentPressedBrush}" />
-            <Setter Property="Foreground" Value="#F5FFFFFF" />
+        <Style Selector="Button.renderModeSegment.selected">
+            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentForeground}" />
         </Style>
-
-        <Style Selector="controls|RenderModeSwitcher Border.segmentDivider">
+        <Style Selector="Button.renderModeSegment.selected:pointerover">
+            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentForeground}" />
+        </Style>
+        <Style Selector="Button.renderModeSegment.selected:pressed">
+            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentForeground}" />
+        </Style>
+        <Style Selector="Border.renderModeSegmentDivider">
             <Setter Property="Width" Value="1" />
             <Setter Property="Margin" Value="0,5" />
-            <Setter Property="Background" Value="#24FFFFFF" />
+            <Setter Property="Background" Value="{DynamicResource Border}" />
         </Style>
     </UserControl.Styles>
-
-    <Border x:Name="Shell">
-        <Border x:Name="ShellContent"
-                ClipToBounds="True">
-            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+    <Border x:Name="Shell" Classes="renderModeShell">
+        <Border x:Name="ShellContent" Classes="renderModeShellContent"
+                ClipToBounds="True"
+                Padding="3">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto">
                 <Button x:Name="AoButton"
                         Grid.Column="0"
-                        Classes="modeSegment"
+                        Classes="renderModeSegment"
                         Click="AoButton_OnClick"
                         ToolTip.Tip="Ambient Occlusion">
-                    <Viewbox Width="18" Height="18">
-                        <Canvas Width="18" Height="18">
-                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                    <Viewbox Width="16" Height="16">
+                        <Canvas Width="16" Height="16">
+                            <Ellipse Width="14" Height="14" Canvas.Left="1" Canvas.Top="1"
                                      Stroke="{Binding $parent[Button].Foreground}"
                                      StrokeThickness="1.2" />
-                            <Path Data="M4.5,9 C5.2,5.4 8.4,3.4 11.8,3.4 C13.1,3.4 14.3,3.7 15.4,4.3"
+                            <Path Data="M4,8 C4.6,4.8 7.4,3 10.5,3 C11.7,3 12.8,3.3 13.8,3.8"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1" />
-                            <Path Data="M3.9,10.5 C4.9,12.8 7.1,14.5 9.8,14.8"
+                            <Path Data="M3.5,9.5 C4.3,11.5 6.3,13 8.7,13.3"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1"
                                   Opacity="0.85" />
@@ -91,26 +87,26 @@
                     </Viewbox>
                 </Button>
 
-                <Border Grid.Column="1" Classes="segmentDivider" />
+                <Border Grid.Column="1" Classes="renderModeSegmentDivider" />
 
                 <Button x:Name="DirectLightingButton"
                         Grid.Column="2"
-                        Classes="modeSegment"
+                        Classes="renderModeSegment"
                         Click="DirectLightingButton_OnClick"
                         ToolTip.Tip="Direct Lighting">
-                    <Viewbox Width="18" Height="18">
-                        <Canvas Width="18" Height="18">
-                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                    <Viewbox Width="16" Height="16">
+                        <Canvas Width="16" Height="16">
+                            <Ellipse Width="14" Height="14" Canvas.Left="1" Canvas.Top="1"
                                      Stroke="{Binding $parent[Button].Foreground}"
                                      StrokeThickness="1.2" />
-                            <Path Data="M4.1,11.7 C6.6,11.1 7.7,9.3 8.6,7.7 C9.5,6.1 10.8,4.7 14.1,4.1"
+                            <Path Data="M3.7,10.5 C6.1,10 7.2,8.3 8,6.8 C8.8,5.3 10,3.9 13,3.3"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1" />
-                            <Path Data="M3.8,8.7 C5.8,8.2 7.1,7.1 8.1,5.6"
+                            <Path Data="M3.4,7.9 C5.3,7.4 6.5,6.4 7.4,4.9"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1"
                                   Opacity="0.8" />
-                            <Path Data="M8.8,13.6 C10.5,12.9 11.7,11.7 13.1,9.5 C13.7,8.5 14.5,7.8 15.3,7.4"
+                            <Path Data="M8,12.2 C9.7,11.5 10.8,10.4 12.2,8.2 C12.7,7.3 13.5,6.6 14.2,6.2"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1"
                                   Opacity="0.9" />
@@ -118,59 +114,31 @@
                     </Viewbox>
                 </Button>
 
-                <Border Grid.Column="3" Classes="segmentDivider" />
+                <Border Grid.Column="3" Classes="renderModeSegmentDivider" />
 
                 <Button x:Name="PathTracingButton"
                         Grid.Column="4"
-                        Classes="modeSegment"
+                        Classes="renderModeSegment"
                         Click="PathTracingButton_OnClick"
                         ToolTip.Tip="Path Tracing">
-                    <Viewbox Width="18" Height="18">
-                        <Canvas Width="18" Height="18">
-                            <Ellipse Width="16" Height="16" Canvas.Left="1" Canvas.Top="1"
+                    <Viewbox Width="16" Height="16">
+                        <Canvas Width="16" Height="16">
+                            <Ellipse Width="14" Height="14" Canvas.Left="1" Canvas.Top="1"
                                      Stroke="{Binding $parent[Button].Foreground}"
                                      StrokeThickness="1.2" />
-                            <Path Data="M4.7,5.6 C6.7,3.9 9.7,3.3 12.3,4.1 C14.6,4.8 15.8,6.2 16,7.7"
+                            <Path Data="M4.2,5 C6.1,3.4 8.9,2.8 11.4,3.6 C13.5,4.3 14.6,5.6 14.8,7"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1" />
-                            <Path Data="M5.1,12.7 C6.7,14 8.8,14.7 11.1,14.5 C13.8,14.2 15.8,12.4 16.2,9.8"
+                            <Path Data="M4.6,11.5 C6.1,12.7 8,13.3 10.2,13.1 C12.8,12.8 14.7,11.2 15,8.8"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1"
                                   Opacity="0.9" />
-                            <Path Data="M8.4,5.3 C9.7,6.4 10.6,7.6 11.1,9.1"
+                            <Path Data="M7.6,4.7 C8.9,5.7 9.8,6.8 10.2,8.2"
                                   Stroke="{Binding $parent[Button].Foreground}"
                                   StrokeThickness="1"
                                   Opacity="0.75" />
                         </Canvas>
                     </Viewbox>
-                </Button>
-
-                <Border Grid.Column="5" Classes="segmentDivider" />
-
-                <Button x:Name="RasterButton"
-                        Grid.Column="6"
-                        Classes="modeSegment"
-                        Click="RasterButton_OnClick"
-                        ToolTip.Tip="Rasterized">
-                    <TextBlock Text="R"
-                               FontSize="13"
-                               FontWeight="SemiBold"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center" />
-                </Button>
-
-                <Border Grid.Column="7" Classes="segmentDivider" />
-
-                <Button x:Name="RasterShadowsButton"
-                        Grid.Column="8"
-                        Classes="modeSegment"
-                        Click="RasterShadowsButton_OnClick"
-                        ToolTip.Tip="Rasterized + RT Shadows">
-                    <TextBlock Text="RS"
-                               FontSize="11"
-                               FontWeight="SemiBold"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center" />
                 </Button>
             </Grid>
         </Border>

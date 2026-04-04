@@ -323,6 +323,13 @@ public sealed class Context : IDisposable
                     interopMatch = new Span<byte>(physicalId.DeviceUuid, 16).SequenceEqual(gpuInterop.DeviceUuid);
                 }
 
+                if ((hasInteropLuid || hasInteropUuid) && !interopMatch)
+                {
+                    var skippedName = Marshal.PtrToStringAnsi((IntPtr)physicalProps2.Properties.DeviceName) ?? "Unknown Vulkan device";
+                    Log.Information("Skipping GPU {GpuName}: does not match Avalonia compositor device identity.", skippedName);
+                    continue;
+                }
+
                 var deviceExtensions = new List<string>
                 {
                     "VK_KHR_external_memory",

@@ -7,52 +7,57 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel HorizontalAlignment="Stretch" Spacing="12">
             <StackPanel Spacing="3">
-                <TextBlock Text="FOV" FontSize="12" Opacity="0.9" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="renderLabel" Text="FOV" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                     <Slider Grid.Column="0" Minimum="10" Maximum="150" TickFrequency="1" HorizontalAlignment="Stretch"
                             Value="{Binding Model.HorizontalFovDegrees, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
-                               Text="{Binding Model.HorizontalFovDegrees, StringFormat={}{0:0.00} deg}" />
+                    <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                               Padding="4,0,0,0"
+                               Text="{Binding Model.HorizontalFovDegrees, StringFormat={}{0:0.0}°}" />
                 </Grid>
             </StackPanel>
 
             <StackPanel Spacing="3">
-                <TextBlock Text="Focal Length" FontSize="12" Opacity="0.9" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="renderLabel" Text="Focal Length" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                     <Slider Grid.Column="0" Minimum="8" Maximum="200" TickFrequency="1" HorizontalAlignment="Stretch"
                             Value="{Binding Model.FocalLengthMm, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
-                               Text="{Binding Model.FocalLengthMm, StringFormat={}{0:0.00} mm}" />
+                    <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                               Padding="4,0,0,0"
+                               Text="{Binding Model.FocalLengthMm, StringFormat={}{0:0.0} mm}" />
                 </Grid>
             </StackPanel>
 
             <StackPanel Spacing="3">
-                <TextBlock Text="F Stop" FontSize="12" Opacity="0.9" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="renderLabel" Text="F Stop" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                     <Slider Grid.Column="0" Minimum="0" Maximum="32" TickFrequency="0.1" HorizontalAlignment="Stretch"
                             Value="{Binding Model.Aperture, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
-                               Text="{Binding Model.Aperture, StringFormat=f/{0:0.00}}" />
+                    <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                               Padding="4,0,0,0"
+                               Text="{Binding Model.Aperture, StringFormat=f/{0:0.0}}" />
                 </Grid>
             </StackPanel>
 
             <StackPanel Spacing="3">
-                <TextBlock Text="Focus Distance" FontSize="12" Opacity="0.9" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="renderLabel" Text="Focus Distance" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                     <Slider Grid.Column="0" Minimum="0.1" Maximum="100" TickFrequency="0.1" HorizontalAlignment="Stretch"
                             Value="{Binding Model.FocusDistance, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
-                               Text="{Binding Model.FocusDistance, StringFormat={}{0:0.00} m}" />
+                    <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                               Padding="4,0,0,0"
+                               Text="{Binding Model.FocusDistance, StringFormat={}{0:0.0} m}" />
                 </Grid>
             </StackPanel>
 
             <StackPanel Spacing="3">
-                <TextBlock Text="Bokeh Bias" FontSize="12" Opacity="0.9" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="renderLabel" Text="Bokeh Bias" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                     <Slider Grid.Column="0" Minimum="0.1" Maximum="4" TickFrequency="0.05" HorizontalAlignment="Stretch"
                             Value="{Binding Model.BokehBias, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Width="72" HorizontalAlignment="Right" TextAlignment="Right" FontSize="12"
-                               Text="{Binding Model.BokehBias, StringFormat={}{0:0.00}}" />
+                    <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                               Padding="4,0,0,0"
+                               Text="{Binding Model.BokehBias, StringFormat={}{0:0.0}}" />
                 </Grid>
             </StackPanel>
         </StackPanel>

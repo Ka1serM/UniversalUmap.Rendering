@@ -110,7 +110,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
         context.DrawEllipse(HitTestBrush, null, center, radius, radius);
     }
 
-    protected override void OnRasterDraw(Context context, ImageResource target)
+    protected override void OnRasterDraw(Context context, VulkanImage target)
     {
         if (!hasDirectionFromSource)
             RefreshFromSource();
@@ -212,11 +212,7 @@ public sealed class SunDirectionControl : VulkanShaderControl
                 suppressUiEvents = true;
                 try
                 {
-                    var scene = source.Scene;
-                    if (scene is not null)
-                    {
-                        scene.Synchronize(() => scene.Environment.DirectionalDirection = direction);
-                    }
+                    source.SetDirectionalLightDirection(direction);
                 }
                 finally
                 {

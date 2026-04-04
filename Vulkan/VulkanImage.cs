@@ -10,7 +10,7 @@ using UniversalUmap.Rendering.Core;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
-public sealed unsafe class ImageResource : IDisposable
+public sealed unsafe class VulkanImage : IDisposable
 {
     private readonly Context context;
     private readonly ImageUsageFlags imageUsageFlags;
@@ -31,7 +31,7 @@ public sealed unsafe class ImageResource : IDisposable
     public uint UsageFlags => (uint)imageUsageFlags;
     public uint CurrentLayout => (uint)currentLayout;
 
-    public ImageResource(
+    public VulkanImage(
         Context context,
         uint format,
         PixelSize size,

@@ -5,17 +5,17 @@ public partial class RenderSettings : ObservableObject
     , IGpuSnapshot<RenderSettingsDataGpu>
 {
     [ObservableProperty] private int samplesPerPixel = 1;
-    [ObservableProperty] private int pathDepth = 4;
-    [ObservableProperty] private bool applyPixelSizeOnlyWhileMoving;
-    [ObservableProperty] private bool adaptiveSamplingEnabled = true;
+    [ObservableProperty] private int pathDepth = 3;
+    [ObservableProperty] private bool applyPixelSizeOnlyWhileMoving = true;
+    [ObservableProperty] private bool adaptiveSamplingEnabled = false;
     [ObservableProperty] private int adaptiveMinSamples = 4;
     [ObservableProperty] private float adaptiveTargetError = 0.03f;
     [ObservableProperty] private int russianRouletteStartBounce = 3;
     [ObservableProperty] private BufferVisualizationMode bufferVisualization = BufferVisualizationMode.FinalColor;
     [ObservableProperty] private float exposure = 0f;
-    [ObservableProperty] private bool transparentBackground;
+    [ObservableProperty] private bool transparentBackground = false;
     [ObservableProperty] private RenderMode renderMode = RenderMode.AmbientOcclusion;
-    [ObservableProperty] private RenderPixelSize pixelSize = RenderPixelSize.X1;
+    [ObservableProperty] private RenderPixelSize pixelSize = RenderPixelSize.X2;
     [ObservableProperty] private bool aoSampleAlbedo = true;
 
     RenderSettingsDataGpu IGpuSnapshot<RenderSettingsDataGpu>.ToStruct() => ToStruct();

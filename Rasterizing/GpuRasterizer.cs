@@ -46,21 +46,21 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
     private readonly Pipeline graphicsPipeline;
     private readonly Sampler previousPositionSampler;
 
-    private GpuBuffer instancesBuffer;
-    private GpuBuffer meshBuffer;
-    private GpuBuffer meshRasterMetadataBuffer;
-    private GpuBuffer visibleInstanceIdsBuffer;
-    private GpuBuffer visibleCountsBuffer;
-    private GpuBuffer indirectCommandsBuffer;
-    private GpuBuffer sceneSettingsBuffer;
+    private VulkanBuffer instancesBuffer;
+    private VulkanBuffer meshBuffer;
+    private VulkanBuffer meshRasterMetadataBuffer;
+    private VulkanBuffer visibleInstanceIdsBuffer;
+    private VulkanBuffer visibleCountsBuffer;
+    private VulkanBuffer indirectCommandsBuffer;
+    private VulkanBuffer sceneSettingsBuffer;
 
-    private ImageResource? outputColorImage;
-    private ImageResource? albedoImage;
-    private ImageResource? normalImage;
-    private ImageResource? cryptoImage;
-    private ImageResource? positionImage;
-    private ImageResource? adaptiveStateImage;
-    private DepthImageResource? depthImage;
+    private VulkanImage? outputColorImage;
+    private VulkanImage? albedoImage;
+    private VulkanImage? normalImage;
+    private VulkanImage? cryptoImage;
+    private VulkanImage? positionImage;
+    private VulkanImage? adaptiveStateImage;
+    private VulkanDepthImage? depthImage;
     private PixelSize renderImageSize;
     private ulong lastBoundColorImageViewHandle;
     private bool settingsDirty = true;
@@ -140,7 +140,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         visibleInstanceIdsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit);
         visibleCountsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit);
         indirectCommandsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit);
-        sceneSettingsBuffer = new GpuBuffer(
+        sceneSettingsBuffer = new VulkanBuffer(
             context,
             (ulong)Marshal.SizeOf<SceneSettingsDataGpu>(),
             BufferUsageFlags.StorageBufferBit,
@@ -157,16 +157,16 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         scene.Environment.PropertyChanged += (_, _) => settingsDirty = true;
     }
 
-    public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raster output image is not initialized.");
-    public ImageResource OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raster albedo image is not initialized.");
-    public ImageResource OutputNormal => normalImage ?? throw new InvalidOperationException("Raster normal image is not initialized.");
-    public ImageResource OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raster crypto image is not initialized.");
-    public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raster position image is not initialized.");
-    public ImageResource OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raster adaptive image is not initialized.");
+    public VulkanImage OutputColor => outputColorImage ?? throw new InvalidOperationException("Raster output image is not initialized.");
+    public VulkanImage OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raster albedo image is not initialized.");
+    public VulkanImage OutputNormal => normalImage ?? throw new InvalidOperationException("Raster normal image is not initialized.");
+    public VulkanImage OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raster crypto image is not initialized.");
+    public VulkanImage OutputPosition => positionImage ?? throw new InvalidOperationException("Raster position image is not initialized.");
+    public VulkanImage OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raster adaptive image is not initialized.");
     public PixelSize RenderImageSize => renderImageSize;
     public bool PickBuffersFlippedY => false;
 
-    public void Record(PixelSize renderSize, ImageResource image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
+    public void Record(PixelSize renderSize, VulkanImage image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
     {
         EnsureRenderImages(renderSize, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
@@ -185,7 +185,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }
 
-    public bool QueryPixelUInt(ImageResource image, int pixelX, int pixelY, out uint value)
+    public bool QueryPixelUInt(VulkanImage image, int pixelX, int pixelY, out uint value)
     {
         value = 0;
         if (image.CurrentLayout == (uint)ImageLayout.Undefined)
@@ -200,7 +200,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         return true;
     }
 
-    public bool QueryPixelHalf4(ImageResource image, int pixelX, int pixelY, out Vector4 value)
+    public bool QueryPixelHalf4(VulkanImage image, int pixelX, int pixelY, out Vector4 value)
     {
         value = default;
         if (image.CurrentLayout == (uint)ImageLayout.Undefined)
@@ -364,9 +364,9 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         return sampler;
     }
 
-    private GpuBuffer CreatePlaceholderBuffer(BufferUsageFlags usage)
+    private VulkanBuffer CreatePlaceholderBuffer(BufferUsageFlags usage)
     {
-        return new GpuBuffer(
+        return new VulkanBuffer(
             context,
             16,
             usage,
@@ -388,13 +388,13 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         if (depthImage is not null) context.RetainForExecution(commandBuffer, depthImage);
 
         var supportedHandles = new string[0];
-        outputColorImage = new ImageResource(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
-        albedoImage = new ImageResource(context, (uint)Format.R8G8B8A8Unorm, size, false, supportedHandles);
-        normalImage = new ImageResource(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        cryptoImage = new ImageResource(context, (uint)Format.R32Uint, size, false, supportedHandles);
-        positionImage = new ImageResource(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        adaptiveStateImage = new ImageResource(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
-        depthImage = new DepthImageResource(context, DepthFormat, size);
+        outputColorImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
+        albedoImage = new VulkanImage(context, (uint)Format.R8G8B8A8Unorm, size, false, supportedHandles);
+        normalImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
+        cryptoImage = new VulkanImage(context, (uint)Format.R32Uint, size, false, supportedHandles);
+        positionImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
+        adaptiveStateImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
+        depthImage = new VulkanDepthImage(context, DepthFormat, size);
         renderImageSize = size;
         lastBoundColorImageViewHandle = 0;
         hasHistory = false;
@@ -416,16 +416,16 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         var previousVisibleCounts = visibleCountsBuffer;
         var previousIndirectCommands = indirectCommandsBuffer;
 
-        instancesBuffer = new GpuBuffer(context, (ulong)instanceBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, instanceBytes);
-        meshBuffer = new GpuBuffer(context, (ulong)meshBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, meshBytes);
-        meshRasterMetadataBuffer = new GpuBuffer(context, (ulong)rasterMetadataBytes.Length, BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, rasterMetadataBytes);
+        instancesBuffer = new VulkanBuffer(context, (ulong)instanceBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, instanceBytes);
+        meshBuffer = new VulkanBuffer(context, (ulong)meshBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, meshBytes);
+        meshRasterMetadataBuffer = new VulkanBuffer(context, (ulong)rasterMetadataBytes.Length, BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, rasterMetadataBytes);
 
         var instanceCount = (uint)Math.Max(1, instanceBytes.Length / StructPacking.SizeOf<InstanceGpu>());
         meshCount = (uint)Math.Max(1, rasterMetadataBytes.Length / StructPacking.SizeOf<MeshRasterMetadataGpu>());
 
-        visibleInstanceIdsBuffer = new GpuBuffer(context, (ulong)(Math.Max(1u, instanceCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        visibleCountsBuffer = new GpuBuffer(context, (ulong)(Math.Max(1u, meshCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        indirectCommandsBuffer = new GpuBuffer(context, (ulong)(Math.Max(1u, meshCount) * StructPacking.SizeOf<DrawIndirectCommandGpu>()), BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        visibleInstanceIdsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, instanceCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        visibleCountsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, meshCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        indirectCommandsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, meshCount) * StructPacking.SizeOf<DrawIndirectCommandGpu>()), BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
 
         context.RetainForExecution(commandBuffer, previousInstances);
         context.RetainForExecution(commandBuffer, previousMeshes);
@@ -630,7 +630,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         context.Api.CmdDispatch(commandBuffer.InternalHandle, groupCountX, groupCountY, 1);
     }
 
-    private RenderingAttachmentInfo CreateColorAttachment(ImageResource image, ClearValue clearValue)
+    private RenderingAttachmentInfo CreateColorAttachment(VulkanImage image, ClearValue clearValue)
     {
         return new RenderingAttachmentInfo
         {
@@ -719,9 +719,9 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         }
     }
 
-    private uint ReadPixelUInt(ImageResource image, int pixelX, int pixelY)
+    private uint ReadPixelUInt(VulkanImage image, int pixelX, int pixelY)
     {
-        using var staging = new GpuBuffer(context, sizeof(uint), BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        using var staging = new VulkanBuffer(context, sizeof(uint), BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
 
         unsafe
@@ -739,9 +739,9 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         }
     }
 
-    private Vector4 ReadPixelHalf4(ImageResource image, int pixelX, int pixelY)
+    private Vector4 ReadPixelHalf4(VulkanImage image, int pixelX, int pixelY)
     {
-        using var staging = new GpuBuffer(context, sizeof(ushort) * 4, BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        using var staging = new VulkanBuffer(context, sizeof(ushort) * 4, BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
 
         unsafe
@@ -764,7 +764,7 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
         }
     }
 
-    private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer staging, int pixelX, int pixelY)
+    private void CopyImagePixelToBuffer(VulkanImage image, VulkanBuffer staging, int pixelX, int pixelY)
     {
         var commandBuffer = context.CreateCommandBuffer();
         context.BeginCommandBuffer(commandBuffer);

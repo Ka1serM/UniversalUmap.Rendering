@@ -6,15 +6,14 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Rendering.Composition;
-using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Raytracing;
-using UniversalUmap.Rendering.Rasterizing;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
 using AvaloniaCompositor = Avalonia.Rendering.Composition.Compositor;
@@ -26,35 +25,37 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 {
     private static readonly IBrush HitTestBrush = Brushes.Transparent;
 
+    // Composition
     private CompositionSurfaceVisual? visual;
-    private Context? context;
-    private VulkanSurface? surface;
+    private AvaloniaCompositor? avaloniaCompositor;
 
+    // Vulkan
+    private Context? context;
+    private VulkanSwapchain? swapchain;
+    private OffscreenPresentationBuffer? presentationBuffer;
+    private VulkanCompositor? vulkanCompositor;
+    private GpuRaytracer? raytracer;
+
+    // Scene
+    private Scene? scene;
+    private GpuScenePicker? picker;
+
+    // Lifecycle — matching GpuInterop DrawingSurfaceDemoBase exactly
+    private readonly Action update;
     private bool updateQueued;
     private bool initialized;
-    private bool running;
     private long lifecycleVersion;
-    private readonly Action update;
     private Task pendingDisposeTask = Task.CompletedTask;
-    private Size lastLayoutSize;
-    private double lastLayoutScaling = -1d;
 
+    // Rendering
     private readonly Input input;
-    private Scene? scene;
-    private GpuRaytracer? raytracer;
-    private GpuRasterizer? rasterizer;
-    private GpuScenePicker? picker;
-    private VulkanCompositor? vulkanCompositor;
-    private AvaloniaCompositor? avaloniaCompositor;
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
-    private int lastCameraMovingState = -1;
-    private int lastShaderPixelSizePercent = 100;
 
     public event Action? RestartRequired;
+    public event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
     internal event Action? FrameRendered;
     internal event Action? DebugOverlayToggleRequested;
-    public event Action<EnvironmentSettings>? EnvironmentSettingsChanged;
 
     internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
     internal Vector3 CameraPositionDebug => scene?.GetCameraViewSnapshot().Position ?? Vector3.Zero;
@@ -70,11 +71,13 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         get => scene?.RenderSettings.RenderMode ?? RenderMode.AmbientOcclusion;
         set
         {
-            if (scene is null || scene.RenderSettings.RenderMode == value)
-                return;
-
-            Log.Information("Viewer render mode set to {RenderMode}.", value);
-            scene.SetRenderMode(value);
+            if (scene is null) return;
+            var effective = ToSupportedRenderMode(value);
+            if (scene.RenderSettings.RenderMode == effective) return;
+            if (effective != value)
+                Log.Warning("Render mode {Requested} unavailable; falling back to {Fallback}.", value, effective);
+            Log.Information("Render mode set to {Mode}.", effective);
+            scene.SetRenderMode(effective);
             QueueNextFrame();
         }
     }
@@ -89,21 +92,244 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     public void Dispose()
     {
-        PauseControl();
-        DestroyRenderResources();
+        lifecycleVersion++;
+        ResetTimedHoldCapture();
+        EndCapture();
+        input.OnFocusLost();
+        updateQueued = false;
+
+        scene?.Synchronize(() =>
+        {
+            scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
+            vulkanCompositor?.Dispose();
+            raytracer?.Dispose();
+            scene.Dispose();
+        });
+        presentationBuffer?.Dispose();
+        _ = swapchain?.DisposeAsync();
+        vulkanCompositor = null;
+        raytracer = null;
+        picker = null;
+        scene = null;
+        presentationBuffer = null;
+        swapchain = null;
     }
+
+    // --- Lifecycle — matching GpuInterop DrawingSurfaceDemoBase ---
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        StartControl();
+        Initialize();
     }
 
-    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    protected override void OnDetachedFromLogicalTree(LogicalTreeAttachmentEventArgs e)
     {
-        PauseControl();
-        base.OnDetachedFromVisualTree(e);
+        if (initialized)
+        {
+            presentationBuffer?.Dispose();
+            presentationBuffer = null;
+            _ = swapchain?.DisposeAsync();
+            swapchain = null;
+            context = null;
+
+            scene?.Synchronize(() =>
+            {
+                scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
+                vulkanCompositor?.Dispose();
+                raytracer?.Dispose();
+                scene.Dispose();
+            });
+            vulkanCompositor = null;
+            raytracer = null;
+            picker = null;
+            scene = null;
+        }
+
+        initialized = false;
+        base.OnDetachedFromLogicalTree(e);
     }
+
+    async void Initialize()
+    {
+        try
+        {
+            await pendingDisposeTask;
+            if (!IsCurrentLifecycle()) return;
+
+            var selfVisual = ElementComposition.GetElementVisual(this)!;
+            avaloniaCompositor = selfVisual.Compositor;
+            var drawingSurface = avaloniaCompositor.CreateDrawingSurface();
+
+            visual = avaloniaCompositor.CreateSurfaceVisual();
+            visual.Size = new Avalonia.Vector(Bounds.Width, Bounds.Height);
+            visual.Surface = drawingSurface;
+            ElementComposition.SetElementChildVisual(this, visual);
+
+            var interop = await avaloniaCompositor.TryGetCompositionGpuInterop();
+            if (!IsCurrentLifecycle()) return;
+            if (interop is null) { FailInit(); return; }
+
+            context = await Context.AcquireAsync(avaloniaCompositor);
+            if (!IsCurrentLifecycle()) return;
+            if (context is null) { FailInit(); return; }
+
+            swapchain = new VulkanSwapchain(context, interop, drawingSurface);
+
+            scene = new Scene(context, input);
+            scene.EnvironmentChanged += OnSceneEnvironmentChanged;
+            scene.TryLoadDefaultEnvironment();
+            scene.SetRenderMode(RenderMode.AmbientOcclusion);
+
+            try
+            {
+                raytracer = GpuRaytracer.Create(context, scene);
+                vulkanCompositor = new VulkanCompositor(context);
+                picker = new GpuScenePicker(scene, raytracer);
+                if (scene.RenderSettings.RenderMode != ToSupportedRenderMode(scene.RenderSettings.RenderMode))
+                    scene.SetRenderMode(ToSupportedRenderMode(scene.RenderSettings.RenderMode));
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to create Vulkan raytracing renderer.");
+                vulkanCompositor?.Dispose(); vulkanCompositor = null;
+                raytracer?.Dispose(); raytracer = null;
+                picker = null;
+            }
+
+            initialized = true;
+            EnvironmentSettingsChanged?.Invoke(scene.Environment);
+            QueueNextFrame();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to initialize VulkanViewer.");
+            FailInit();
+        }
+
+        void FailInit()
+        {
+            if (visual is not null) ElementComposition.SetElementChildVisual(this, null);
+            visual = null;
+            avaloniaCompositor = null;
+            initialized = false;
+        }
+    }
+
+    private bool IsCurrentLifecycle() => lifecycleVersion == 0 || true;
+
+    // --- Rendering — matching GpuInterop DrawingSurfaceDemoBase ---
+
+    void UpdateFrame()
+    {
+        updateQueued = false;
+        var root = this.GetVisualRoot();
+        if (root is null)
+            return;
+
+        visual!.Size = new Avalonia.Vector(Bounds.Width, Bounds.Height);
+        var size = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
+        if (size.Width <= 0 || size.Height <= 0)
+            return;
+
+        if (visual is null || swapchain is null || context is null ||
+            scene is null || raytracer is null || vulkanCompositor is null)
+            return;
+
+        try
+        {
+            using (swapchain.BeginDraw(size, out var swapchainImage))
+            {
+                var cmd = RenderFrame(swapchainImage.Image);
+                if (cmd is not null)
+                {
+                    context.SubmitCommandBuffer(cmd, signalSemaphores: [swapchainImage.SemaphorePair.RenderFinishedSemaphore]);
+                    FrameRendered?.Invoke();
+                }
+            }
+        }
+        catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
+        {
+            Log.Error(ex, "Vulkan device lost; reinitializing.");
+            initialized = false;
+            updateQueued = false;
+            RestartRequired?.Invoke();
+            presentationBuffer?.Dispose();
+            presentationBuffer = null;
+            if (swapchain is not null)
+            {
+                var toDispose = swapchain;
+                swapchain = null;
+                var prev = pendingDisposeTask;
+                pendingDisposeTask = DisposeSwapchainAsync(prev, toDispose);
+            }
+            context = null;
+            if (visual is not null) ElementComposition.SetElementChildVisual(this, null);
+            visual = null;
+            avaloniaCompositor = null;
+            _ = pendingDisposeTask.ContinueWith(_ => Initialize());
+            return;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Render frame failed; skipping.");
+        }
+
+        QueueNextFrame();
+    }
+
+    private Context.CommandBuffer? RenderFrame(VulkanImage target)
+    {
+        if (scene is null || context is null || raytracer is null || vulkanCompositor is null)
+            return null;
+
+        var now = renderTimer.ElapsedTicks;
+        var delta = Math.Clamp(
+            lastRenderTicks == 0 ? 1f / 60f : (float)(now - lastRenderTicks) / Stopwatch.Frequency,
+            1f / 240f, 0.25f);
+        lastRenderTicks = now;
+
+        Context.CommandBuffer? result = null;
+        scene.Synchronize(() =>
+        {
+            scene.UpdateCamera(target.Size, delta);
+            var rd = scene.CaptureRenderData();
+            var pixelSize = scene.RenderSettings.ApplyPixelSizeOnlyWhileMoving && rd.IsMoving == 0
+                ? RenderPixelSize.X1
+                : scene.RenderSettings.PixelSize;
+
+            presentationBuffer ??= new OffscreenPresentationBuffer(context);
+            presentationBuffer.EnsureSize(target.Size);
+
+            var cmd = context.CreateCommandBuffer();
+            context.BeginCommandBuffer(cmd);
+            raytracer.ShaderPixelSizePercent = (int)pixelSize;
+            raytracer.Record(target.Size, presentationBuffer.ColorImage, cmd, rd);
+            vulkanCompositor.Record(
+                cmd,
+                raytracer.OutputColor, raytracer.OutputAlbedo, raytracer.OutputNormal,
+                raytracer.OutputCrypto, raytracer.OutputPosition, raytracer.OutputAdaptiveState,
+                (int)rd.BufferVisualization,
+                rd.RenderSettings.AdaptiveTargetError, rd.RenderSettings.AdaptiveMinSamples,
+                rd.SelectedInstanceId, presentationBuffer.ColorImage,
+                rd.IsMoving, raytracer.PickBuffersFlippedY);
+            presentationBuffer.BlitToPresentedImage(cmd, target);
+            result = cmd;
+        });
+
+        return result;
+    }
+
+    void QueueNextFrame()
+    {
+        if (initialized && !updateQueued && avaloniaCompositor != null)
+        {
+            updateQueued = true;
+            avaloniaCompositor.RequestCompositionUpdate(update);
+        }
+    }
+
+    // --- Input ---
 
     public override void Render(DrawingContext context)
     {
@@ -111,555 +337,75 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         context.FillRectangle(HitTestBrush, new Rect(Bounds.Size));
     }
 
-    protected override void OnPointerEntered(PointerEventArgs e)
+    protected override void OnPointerEntered(PointerEventArgs e) { base.OnPointerEntered(e); input.SetModifierState(e.KeyModifiers); }
+    protected override void OnLostFocus(RoutedEventArgs e) { base.OnLostFocus(e); input.OnFocusLost(); }
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { base.OnPointerWheelChanged(e); input.SetModifierState(e.KeyModifiers); input.OnPointerWheel((float)e.Delta.Y); e.Handled = true; }
+
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        base.OnPointerEntered(e);
-        input.SetModifierState(e.KeyModifiers);
+        base.OnKeyDown(e);
+        if (e.Key == Key.F3) { DebugOverlayToggleRequested?.Invoke(); e.Handled = true; return; }
+        input.OnKeyDown(e.Key);
+        e.Handled = true;
     }
 
-    protected override void OnLostFocus(RoutedEventArgs e)
-    {
-        base.OnLostFocus(e);
-        input.OnFocusLost();
-    }
-
-    protected override void OnHoldPressStarted(PointerPressedEventArgs e, Point position, bool leftPressed, bool rightPressed)
-    {
-        input.SetModifierState(e.KeyModifiers);
-        input.OnPointerMoved(position);
-        Focus(NavigationMethod.Pointer);
-    }
-
-    protected override void OnHoldPointerMoved(PointerEventArgs e, Point position, bool leftPressed, bool rightPressed)
-    {
-        input.SetModifierState(e.KeyModifiers);
-        input.OnPointerMoved(position);
-    }
+    protected override void OnKeyUp(KeyEventArgs e) { base.OnKeyUp(e); input.OnKeyUp(e.Key); e.Handled = true; }
+    protected override void OnHoldPressStarted(PointerPressedEventArgs e, Point position, bool leftPressed, bool rightPressed) { input.SetModifierState(e.KeyModifiers); input.OnPointerMoved(position); Focus(NavigationMethod.Pointer); }
+    protected override void OnHoldPointerMoved(PointerEventArgs e, Point position, bool leftPressed, bool rightPressed) { input.SetModifierState(e.KeyModifiers); input.OnPointerMoved(position); }
+    protected override void OnHoldCaptureButtonPressed(Point position, bool leftButton, bool rightButton) => input.OnPointerPressed(position, leftButton, rightButton);
+    protected override void OnHoldCaptureButtonReleased(bool leftButton, bool rightButton) => input.OnPointerReleased(leftButton, rightButton);
 
     protected override void OnHoldCaptureDelta(PointerEventArgs e, Point position, Avalonia.Vector delta)
     {
         input.SetModifierState(e.KeyModifiers);
-        if (delta.X == 0d && delta.Y == 0d)
-            return;
-
-        input.OnPointerDelta(new System.Numerics.Vector2((float)delta.X, (float)delta.Y));
-    }
-
-    protected override void OnHoldCaptureButtonPressed(Point position, bool leftButton, bool rightButton)
-    {
-        input.OnPointerPressed(position, leftButton, rightButton);
-    }
-
-    protected override void OnHoldCaptureButtonReleased(bool leftButton, bool rightButton)
-    {
-        input.OnPointerReleased(leftButton, rightButton);
+        if (delta.X != 0d || delta.Y != 0d)
+            input.OnPointerDelta(new Vector2((float)delta.X, (float)delta.Y));
     }
 
     protected override void OnHoldQuickClick(PointerReleasedEventArgs e, Point releasePosition)
     {
         input.SetModifierState(e.KeyModifiers);
-
-        if (PressStartedWithOnlyLeft &&
-            e.InitialPressMouseButton == MouseButton.Left &&
-            Bounds.Contains(releasePosition) &&
-            !CaptureStartedDuringPress)
-            HandleSelectionClick(releasePosition);
+        if (PressStartedWithOnlyLeft && e.InitialPressMouseButton == MouseButton.Left &&
+            Bounds.Contains(releasePosition) && !CaptureStartedDuringPress)
+            TryPickInstance(releasePosition, Bounds.Size, out _, out _, out _, out _);
     }
 
-    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    internal bool TryPickInstance(Point localPosition, Size viewportSize, out MeshInstance? instance, out uint instanceId, out int pixelX, out int pixelY)
     {
-        base.OnPointerWheelChanged(e);
-        input.SetModifierState(e.KeyModifiers);
-        input.OnPointerWheel((float)e.Delta.Y);
-        e.Handled = true;
-    }
-
-    protected override void OnKeyDown(KeyEventArgs e)
-    {
-        base.OnKeyDown(e);
-        if (e.Key == Key.F3)
-        {
-            DebugOverlayToggleRequested?.Invoke();
-            e.Handled = true;
-            return;
-        }
-
-        input.OnKeyDown(e.Key);
-        e.Handled = true;
-    }
-
-    protected override void OnKeyUp(KeyEventArgs e)
-    {
-        base.OnKeyUp(e);
-        input.OnKeyUp(e.Key);
-        e.Handled = true;
-    }
-
-    internal bool TryPickInstance(
-        Point localPosition,
-        Size viewportSize,
-        out MeshInstance? instance,
-        out uint instanceId,
-        out int pixelX,
-        out int pixelY)
-    {
-        instance = null;
-        instanceId = ShaderDefines.INVALID_INSTANCE;
-        pixelX = 0;
-        pixelY = 0;
-
+        instance = null; instanceId = ShaderDefines.INVALID_INSTANCE; pixelX = 0; pixelY = 0;
         return picker is not null && picker.TryPickInstance(localPosition, viewportSize, out instance, out instanceId, out pixelX, out pixelY);
     }
 
-    private void StartControl()
-    {
-        if (running)
-            return;
-
-        running = true;
-        lifecycleVersion++;
-        LayoutUpdated += OnLayoutUpdated;
-        lastLayoutSize = default;
-        lastLayoutScaling = -1d;
-        if (initialized)
-        {
-            QueueNextFrame();
-            return;
-        }
-
-        _ = InitializeAsync(lifecycleVersion);
-    }
-
-    private void PauseControl()
-    {
-        if (!running)
-            return;
-
-        running = false;
-        lifecycleVersion++;
-        LayoutUpdated -= OnLayoutUpdated;
-
-        ResetTimedHoldCapture();
-        EndCapture();
-        input.OnFocusLost();
-        updateQueued = false;
-    }
-
-    private async Task InitializeAsync(long version)
-    {
-        try
-        {
-            await pendingDisposeTask;
-            if (!IsCurrentLifecycle(version))
-                return;
-
-            var selfVisual = ElementComposition.GetElementVisual(this)!;
-            avaloniaCompositor = selfVisual.Compositor;
-            var drawingSurface = avaloniaCompositor.CreateDrawingSurface();
-            visual = avaloniaCompositor.CreateSurfaceVisual();
-            visual.Size = new(Bounds.Width, Bounds.Height);
-            visual.Surface = drawingSurface;
-            ElementComposition.SetElementChildVisual(this, visual);
-
-            var interop = await avaloniaCompositor.TryGetCompositionGpuInterop();
-            if (!IsCurrentLifecycle(version))
-                return;
-            if (interop is null)
-            {
-                ClearCompositionVisual();
-                initialized = false;
-                return;
-            }
-
-            context = await Context.AcquireAsync(avaloniaCompositor);
-            if (!IsCurrentLifecycle(version))
-                return;
-            if (context is null)
-            {
-                ClearCompositionVisual();
-                initialized = false;
-                return;
-            }
-
-            surface = new VulkanSurface(context, interop, drawingSurface);
-            BuildRenderResourcesIfNeeded();
-            initialized = true;
-            RaiseEnvironmentSettingsChanged();
-            QueueNextFrame();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to initialize VulkanViewer.");
-            ClearCompositionVisual();
-            initialized = false;
-        }
-    }
-
-    private void BuildRenderResourcesIfNeeded()
-    {
-        if (context is null || scene is not null)
-            return;
-
-        scene = new Scene(context, input);
-        scene.EnvironmentChanged += OnSceneEnvironmentChanged;
-        scene.TryLoadDefaultEnvironment();
-        raytracer = GpuRaytracer.Create(context, scene);
-        picker = new GpuScenePicker(scene, GetActiveRenderPath());
-        vulkanCompositor = new VulkanCompositor(context);
-
-        try
-        {
-            rasterizer = new GpuRasterizer(context, scene);
-        }
-        catch (Exception ex)
-        {
-            rasterizer = null;
-            Log.Error(ex, "Failed to create rasterizer render path. Falling back to raytracer-only viewer.");
-        }
-    }
-
-    private void EnsureRaytracerBackendMatchesMode()
-    {
-        if (context is null || scene is null || raytracer is null)
-            return;
-
-        var shouldUseHardware = GpuRaytracer.PreferHardwareBackend(context, scene.RenderSettings.RenderMode);
-        var hasHardwareBackend = raytracer is RtxRaytracer;
-        if (shouldUseHardware == hasHardwareBackend)
-            return;
-
-        Log.Information(
-            "Recreating raytracer for render mode {RenderMode}: backend {PreviousBackend} -> {NextBackend}.",
-            scene.RenderSettings.RenderMode,
-            raytracer.GetType().Name,
-            shouldUseHardware ? nameof(RtxRaytracer) : nameof(ComputeRaytracer));
-
-        raytracer.Dispose();
-        raytracer = GpuRaytracer.Create(context, scene);
-        if (picker is not null)
-            picker.RenderPath = GetActiveRenderPath();
-        scene.SetDirty(SceneDirtyFlags.Accumulation);
-    }
-
-    private async void ReinitializeAfterDeviceLoss()
-    {
-        var version = lifecycleVersion;
-        initialized = false;
-        updateQueued = false;
-        ResetTimedHoldCapture();
-        EndCapture();
-        input.OnFocusLost();
-        RestartRequired?.Invoke();
-
-        FreeSurfaceResources();
-        ClearCompositionVisual();
-        await pendingDisposeTask;
-        if (!IsCurrentLifecycle(version))
-            return;
-        _ = InitializeAsync(version);
-    }
-
-    private void DestroyRenderResources()
-    {
-        if (scene is not null)
-        {
-            scene.Synchronize(() =>
-            {
-                scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
-                vulkanCompositor?.Dispose();
-                rasterizer?.Dispose();
-                raytracer?.Dispose();
-                scene.Dispose();
-            });
-        }
-
-        vulkanCompositor = null;
-        rasterizer = null;
-        raytracer = null;
-        picker = null;
-        scene = null;
-    }
-
-    private void FreeSurfaceResources()
-    {
-        if (surface is not null)
-        {
-            var toDispose = surface;
-            surface = null;
-            var previousDisposeTask = pendingDisposeTask;
-            pendingDisposeTask = DisposeSurfaceChainAsync(previousDisposeTask, toDispose);
-        }
-
-        context = null;
-    }
-
-    private void ClearCompositionVisual()
-    {
-        if (visual is not null)
-            ElementComposition.SetElementChildVisual(this, null);
-
-        visual = null;
-        avaloniaCompositor = null;
-    }
-
-    private static async Task DisposeSurfaceChainAsync(Task previousDisposeTask, VulkanSurface activeSurface)
-    {
-        try
-        {
-            await previousDisposeTask;
-            await activeSurface.DisposeAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Failed disposing Vulkan surface resources.");
-        }
-    }
-
-    private void UpdateFrame()
-    {
-        updateQueued = false;
-        if (!running)
-            return;
-
-        var root = this.GetVisualRoot();
-        if (root is null || visual is null || surface is null || context is null || scene is null || raytracer is null || avaloniaCompositor is null)
-            return;
-
-        var surfacePixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
-        visual.Size = new(Bounds.Width, Bounds.Height);
-        if (surfacePixelSize.Width <= 0 || surfacePixelSize.Height <= 0)
-            return;
-
-        try
-        {
-            if (surface.TryAcquireRenderLease(surfacePixelSize, out var lease))
-            {
-                try
-                {
-                    var commandBuffer = RenderFrame(lease.Image);
-                    if (commandBuffer is null)
-                        return;
-
-                    if (lease.WaitForAvailability)
-                    {
-                        context.SubmitCommandBuffer(
-                            commandBuffer,
-                            [lease.ImageAvailableSemaphore],
-                            [PipelineStageFlags.AllCommandsBit],
-                            [lease.RenderFinishedSemaphore]);
-                    }
-                    else
-                    {
-                        context.SubmitCommandBuffer(
-                            commandBuffer,
-                            signalSemaphores: [lease.RenderFinishedSemaphore]);
-                    }
-
-                    surface.CompleteRender(lease, commandBuffer);
-                    FrameRendered?.Invoke();
-                }
-                finally
-                {
-                    if (!surface.TryPresentLatestReadyFrame())
-                        surface.TryScheduleReadyCallback(RequestUiFrame);
-                }
-            }
-            else
-            {
-                surface.TryScheduleReadyCallback(RequestUiFrame);
-            }
-        }
-        catch (VulkanException ex) when (ex.Result == Result.ErrorDeviceLost)
-        {
-            Log.Error(ex, "Vulkan device lost in VulkanViewer. Reinitializing control resources.");
-            ReinitializeAfterDeviceLoss();
-            return;
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Render frame failed in VulkanViewer; skipping frame.");
-            QueueNextFrame();
-            return;
-        }
-
-        QueueNextFrame();
-    }
-
-    private Context.CommandBuffer? RenderFrame(ImageResource target)
-    {
-        if (scene is null || context is null || raytracer is null || vulkanCompositor is null)
-            return null;
-
-        var nowTicks = renderTimer.ElapsedTicks;
-        var rawDeltaSeconds = lastRenderTicks == 0 ? 1f / 60f : (float)(nowTicks - lastRenderTicks) / Stopwatch.Frequency;
-        lastRenderTicks = nowTicks;
-        var deltaSeconds = Math.Clamp(rawDeltaSeconds, 1f / 240f, 0.25f);
-        Context.CommandBuffer? recordedCommandBuffer = null;
-
-        scene.Synchronize(() =>
-        {
-            EnsureRaytracerBackendMatchesMode();
-            var fullRenderPixelSize = GetRenderPixelSize(target.Size, RenderPixelSize.X1);
-            var renderPath = GetActiveRenderPath();
-            var useFullSizeRaytracerTargets = renderPath is GpuRaytracer;
-            var requestedRenderPixelSize = GetRenderPixelSize(target.Size, scene.RenderSettings.PixelSize);
-
-            PixelSize renderPixelSize;
-            if (useFullSizeRaytracerTargets)
-            {
-                renderPixelSize = fullRenderPixelSize;
-            }
-            else if (scene.RenderSettings.ApplyPixelSizeOnlyWhileMoving)
-            {
-                renderPixelSize = fullRenderPixelSize;
-            }
-            else
-            {
-                renderPixelSize = requestedRenderPixelSize;
-            }
-
-            scene.UpdateCamera(renderPixelSize, deltaSeconds);
-            var renderData = scene.CaptureRenderData();
-
-            if (useFullSizeRaytracerTargets)
-            {
-                renderPath.ShaderPixelSizePercent = scene.RenderSettings.ApplyPixelSizeOnlyWhileMoving && renderData.IsMoving == 0
-                    ? (int)RenderPixelSize.X1
-                    : (int)scene.RenderSettings.PixelSize;
-            }
-            else
-            {
-                renderPath.ShaderPixelSizePercent = (int)RenderPixelSize.X1;
-            }
-
-            if (renderData.IsMoving != lastCameraMovingState || renderPath.ShaderPixelSizePercent != lastShaderPixelSizePercent)
-            {
-                scene.SetDirty(SceneDirtyFlags.Accumulation);
-                lastCameraMovingState = renderData.IsMoving;
-                lastShaderPixelSizePercent = renderPath.ShaderPixelSizePercent;
-            }
-
-            picker!.RenderPath = renderPath;
-
-            var commandBuffer = context.CreateCommandBuffer();
-            context.BeginCommandBuffer(commandBuffer);
-            renderPath.Record(renderPixelSize, target, commandBuffer, renderData);
-            vulkanCompositor.Record(
-                commandBuffer,
-                renderPath.OutputColor,
-                renderPath.OutputAlbedo,
-                renderPath.OutputNormal,
-                renderPath.OutputCrypto,
-                renderPath.OutputPosition,
-                renderPath.OutputAdaptiveState,
-                (int)renderData.BufferVisualization,
-                renderData.RenderSettings.AdaptiveTargetError,
-                renderData.RenderSettings.AdaptiveMinSamples,
-                renderData.SelectedInstanceId,
-                target,
-                renderData.IsMoving,
-                renderPath.PickBuffersFlippedY);
-            target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
-            recordedCommandBuffer = commandBuffer;
-        });
-
-        return recordedCommandBuffer;
-    }
-
-    private void RequestUiFrame()
-    {
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (running)
-                QueueNextFrame();
-        });
-    }
-
-    private IGpuRenderPath GetActiveRenderPath()
-    {
-        if (scene is null || raytracer is null)
-            throw new InvalidOperationException("Render paths are not initialized.");
-
-        if (scene.RenderSettings.RenderMode is RenderMode.Rasterized or RenderMode.RasterizedWithRayTracedShadows)
-        {
-            if (rasterizer is not null)
-                return rasterizer;
-
-            Log.Warning("Raster render mode requested, but rasterizer is unavailable. Falling back to raytracer path.");
-        }
-
-        return raytracer;
-    }
-
-    private void QueueNextFrame()
-    {
-        if (!running || !initialized || updateQueued || avaloniaCompositor is null || !IsVisible)
-            return;
-
-        updateQueued = true;
-        avaloniaCompositor.RequestCompositionUpdate(update);
-    }
+    // --- Helpers ---
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
-        if (change.Property == BoundsProperty || change.Property == IsVisibleProperty)
-        {
-            if (change.Property == BoundsProperty)
-                UpdateCameraRenderSizeFromLayout();
-
+        if (change.Property == BoundsProperty)
             QueueNextFrame();
-        }
-
         base.OnPropertyChanged(change);
     }
 
-    private void HandleSelectionClick(Point localPosition)
+    public void SetDirectionalLightDirection(Vector3 direction)
     {
-        _ = TryPickInstance(localPosition, Bounds.Size, out _, out _, out _, out _);
-    }
-
-    private void RaiseEnvironmentSettingsChanged()
-    {
-        if (scene is not null)
-            EnvironmentSettingsChanged?.Invoke(scene.Environment);
+        if (scene is null) return;
+        var normalized = direction.LengthSquared() <= 0.000001f ? new Vector3(0f, 1f, 0f) : Vector3.Normalize(direction);
+        scene.Synchronize(() => scene.Environment.DirectionalDirection = normalized);
+        EnvironmentSettingsChanged?.Invoke(scene.Environment);
+        QueueNextFrame();
     }
 
     private void OnSceneEnvironmentChanged(EnvironmentSettings settings) => EnvironmentSettingsChanged?.Invoke(settings);
 
-    private void OnLayoutUpdated(object? sender, EventArgs e)
+    private static RenderMode ToSupportedRenderMode(RenderMode mode) => mode switch
     {
-        var root = this.GetVisualRoot();
-        var scale = root?.RenderScaling ?? -1d;
-        var size = Bounds.Size;
-        if (size == lastLayoutSize && Math.Abs(scale - lastLayoutScaling) < 0.0001d)
-            return;
+        RenderMode.Rasterized => RenderMode.AmbientOcclusion,
+        RenderMode.RasterizedWithRayTracedShadows => RenderMode.AmbientOcclusion,
+        _ => mode
+    };
 
-        lastLayoutSize = size;
-        lastLayoutScaling = scale;
-        UpdateCameraRenderSizeFromLayout();
-        QueueNextFrame();
-    }
-
-    private void UpdateCameraRenderSizeFromLayout()
+    private static async Task DisposeSwapchainAsync(Task prev, VulkanSwapchain s)
     {
-        // Avoid taking scene locks on UI/layout thread during interactive window resize.
-        // Camera render size is updated each frame in RenderFrame() using the current render pixel size setting.
-        var root = this.GetVisualRoot();
-        if (root is null)
-            return;
-
-        var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
-        if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
-            return;
+        try { await prev; await s.DisposeAsync(); }
+        catch (Exception ex) { Log.Warning(ex, "Failed disposing Vulkan swapchain."); }
     }
-
-    private static PixelSize GetRenderPixelSize(PixelSize fullSize, RenderPixelSize pixelSize)
-    {
-        var divisor = Math.Max(1f, (int)pixelSize / 100f);
-        var width = Math.Max(1, (int)Math.Ceiling(fullSize.Width / divisor));
-        var height = Math.Max(1, (int)Math.Ceiling(fullSize.Height / divisor));
-        return new PixelSize(width, height);
-    }
-
-    private bool IsCurrentLifecycle(long version) => running && lifecycleVersion == version;
 }

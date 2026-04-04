@@ -17,12 +17,12 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private sealed class TlasResourceSlot : IDisposable
     {
         public readonly Accel Tlas;
-        public GpuBuffer InstancesBuffer;
+        public VulkanBuffer InstancesBuffer;
 
         public TlasResourceSlot(Context context, KhrAccelerationStructure accelExt)
         {
             Tlas = new Accel(context, accelExt);
-            InstancesBuffer = new GpuBuffer(
+            InstancesBuffer = new VulkanBuffer(
                 context,
                 16,
                 BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr | BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.TransferDstBit,
@@ -53,8 +53,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private readonly TlasResourceSlot[] tlasSlots;
 
     private int activeTlasSlotIndex;
-    private GpuBuffer instancesBuffer;
-    private GpuBuffer meshBuffer;
+    private VulkanBuffer instancesBuffer;
+    private VulkanBuffer meshBuffer;
 
     public RtxRaytracer(Context context, Scene scene)
         : base(context, scene)
@@ -144,7 +144,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         }
     }
 
-    protected override void ExecuteRaytracing(Context.CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants)
+    protected override void ExecuteRaytracing(Context.CommandBuffer commandBuffer, VulkanImage image, PushDataGpu pushConstants)
     {
         var boundSets = stackalloc DescriptorSet[3];
         boundSets[0] = descriptorSet;
@@ -192,11 +192,12 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     private PipelineBundle GetPipelineBundle()
     {
-        return CachedRenderMode switch
+        return EffectiveRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipelines,
             RenderMode.DirectLighting => directLightingPipelines,
-            _ => pathTracingPipelines
+            RenderMode.PathTracing => pathTracingPipelines,
+            _ => directLightingPipelines
         };
     }
 

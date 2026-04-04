@@ -127,7 +127,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         context.DrawEllipse(HitTestBrush, null, center, radius, radius);
     }
 
-    protected override void OnRasterDraw(Context context, ImageResource target)
+    protected override void OnRasterDraw(Context context, VulkanImage target)
     {
         if (!hasRotationFromSource)
             RefreshFromSource();

@@ -9,8 +9,7 @@
         <TreeView x:Name="OutlinerTreeView"
                   ItemsSource="{Binding Items}"
                   SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
-                  AutoScrollToSelectedItem="True"
-                  Background="Transparent">
+                  AutoScrollToSelectedItem="True">
             <TreeView.ItemContainerTheme>
                 <ControlTheme TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                     <Setter Property="IsSelected" Value="{Binding IsSelected}" />
@@ -18,40 +17,25 @@
             </TreeView.ItemContainerTheme>
             <TreeView.ItemTemplate>
                 <TreeDataTemplate x:DataType="viewModels:OutlinerItem">
-                    <Grid Margin="0,0,0,4" ColumnDefinitions="Auto,*">
+                    <Grid ColumnDefinitions="Auto,*">
                         <Border Grid.Column="0"
-                                Width="24"
-                                Height="24"
-                                Margin="0,0,8,0"
-                                Background="#14FFFFFF"
-                                CornerRadius="6"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center">
-                            <icons:SymbolIcon HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              FontSize="13"
+                                Classes="treeIcon">
+                            <icons:SymbolIcon Classes="treeIcon"
                                               Symbol="{Binding Kind, Converter={StaticResource SceneNodeKindToSymbol}}" />
                         </Border>
                         <StackPanel Grid.Column="1" Spacing="1">
-                            <TextBlock VerticalAlignment="Center"
-                                       Text="{Binding Name}"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock VerticalAlignment="Center"
-                                       Opacity="0.55"
-                                       FontSize="11"
-                                       Text="{Binding Subtitle}"
-                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Classes="treeName"
+                                       Text="{Binding Name}" />
+                            <TextBlock Classes="treeSubtitle"
+                                       Text="{Binding Subtitle}" />
                         </StackPanel>
                     </Grid>
                 </TreeDataTemplate>
             </TreeView.ItemTemplate>
         </TreeView>
 
-        <TextBlock IsVisible="{Binding IsSceneEmpty}"
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Center"
-                   Opacity="0.45"
-                   FontSize="14"
+        <TextBlock Classes="emptyState"
+                   IsVisible="{Binding IsSceneEmpty}"
                    Text="Scene empty" />
     </Grid>
 </UserControl>

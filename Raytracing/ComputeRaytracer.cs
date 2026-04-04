@@ -20,8 +20,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     private readonly PipelineBundle directLightingPipelines;
     private readonly PipelineBundle pathTracingPipelines;
 
-    private GpuBuffer instancesBuffer;
-    private GpuBuffer meshBuffer;
+    private VulkanBuffer instancesBuffer;
+    private VulkanBuffer meshBuffer;
 
     public ComputeRaytracer(Context context, Scene scene)
         : base(context, scene)
@@ -73,7 +73,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         aoPipelines = aoPipelineBundle;
         directLightingPipelines = directLightingPipelineBundle;
         pathTracingPipelines = pathTracingPipelineBundle;
-        Log.Information("Compute raytracer pipelines and descriptors created.");
+        Log.Information("Compute raytracer pipelines and descriptors created for AO, Direct Lighting, and Path Tracing.");
 
         var initCommandBuffer = Context.CreateCommandBuffer();
         Context.BeginCommandBuffer(initCommandBuffer);
@@ -95,7 +95,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             meshBuffer.Size);
     }
 
-    protected override void ExecuteRaytracing(Context.CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants)
+    protected override void ExecuteRaytracing(Context.CommandBuffer commandBuffer, VulkanImage image, PushDataGpu pushConstants)
     {
         var boundDescriptorSets = stackalloc DescriptorSet[2];
         boundDescriptorSets[0] = descriptorSet;
@@ -120,11 +120,12 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
     private PipelineBundle GetPipelineBundle()
     {
-        return CachedRenderMode switch
+        return EffectiveRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipelines,
             RenderMode.DirectLighting => directLightingPipelines,
-            _ => pathTracingPipelines
+            RenderMode.PathTracing => pathTracingPipelines,
+            _ => directLightingPipelines
         };
     }
 

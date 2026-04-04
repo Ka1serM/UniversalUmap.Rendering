@@ -40,8 +40,8 @@ public sealed class MeshAsset : IDisposable
 
     private readonly Context context;
     private readonly Accel? blasRtx;
-    private readonly GpuBuffer? bvhNodesBuffer;
-    private readonly GpuBuffer? bvhIndicesBuffer;
+    private readonly VulkanBuffer? bvhNodesBuffer;
+    private readonly VulkanBuffer? bvhIndicesBuffer;
     private readonly Vector3 localBoundsMin;
     private readonly Vector3 localBoundsMax;
     private readonly uint indexCount;
@@ -49,10 +49,10 @@ public sealed class MeshAsset : IDisposable
     public string Name { get; }
     public uint MeshIndex { get; internal set; } = uint.MaxValue;
 
-    internal GpuBuffer VertexBuffer { get; }
-    internal GpuBuffer IndexBuffer { get; }
-    internal GpuBuffer FaceBuffer { get; }
-    internal GpuBuffer MaterialBuffer { get; }
+    internal VulkanBuffer VertexBuffer { get; }
+    internal VulkanBuffer IndexBuffer { get; }
+    internal VulkanBuffer FaceBuffer { get; }
+    internal VulkanBuffer MaterialBuffer { get; }
 
     public bool Dirty { get; private set; }
 
@@ -526,18 +526,18 @@ public sealed class MeshAsset : IDisposable
         return true;
     }
 
-    private static unsafe GpuBuffer UploadDeviceLocalBuffer(
+    private static unsafe VulkanBuffer UploadDeviceLocalBuffer(
         Context context,
         Context.CommandBuffer commandBuffer,
         ReadOnlySpan<byte> data,
         BufferUsageFlags usage)
     {
-        var destinationBuffer = new GpuBuffer(
+        var destinationBuffer = new VulkanBuffer(
             context,
             (ulong)data.Length,
             usage | BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.DeviceLocalBit);
-        var stagingBuffer = new GpuBuffer(
+        var stagingBuffer = new VulkanBuffer(
             context,
             (ulong)data.Length,
             BufferUsageFlags.TransferSrcBit,

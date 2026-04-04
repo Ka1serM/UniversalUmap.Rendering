@@ -21,7 +21,7 @@ public sealed unsafe class TextureAsset : IDisposable
     public string SourcePath { get; }
     public int Index { get; internal set; } = -1;
 
-    internal ImageResource Image { get; }
+    internal VulkanImage Image { get; }
     internal Sampler Sampler { get; }
 
     private TextureAsset(
@@ -39,14 +39,14 @@ public sealed unsafe class TextureAsset : IDisposable
         SourcePath = sourcePath;
         var mipLevels = generateMipmaps ? CalculateMipLevels(width, height) : 1u;
 
-        var staging = new GpuBuffer(
+        var staging = new VulkanBuffer(
             context,
             (ulong)pixelBytes.Length,
             BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         staging.Upload(pixelBytes);
 
-        Image = new ImageResource(
+        Image = new VulkanImage(
             context,
             (uint)format,
             new PixelSize((int)width, (int)height),

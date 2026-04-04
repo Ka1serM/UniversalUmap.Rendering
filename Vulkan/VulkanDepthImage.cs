@@ -4,7 +4,7 @@ using UniversalUmap.Rendering.Core;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
-internal sealed unsafe class DepthImageResource : IDisposable
+internal sealed unsafe class VulkanDepthImage : IDisposable
 {
     private readonly Context context;
     private readonly ImageView imageView;
@@ -16,7 +16,7 @@ internal sealed unsafe class DepthImageResource : IDisposable
     internal ImageView View => imageView;
     public PixelSize Size { get; }
 
-    public DepthImageResource(Context context, Format format, PixelSize size)
+    public VulkanDepthImage(Context context, Format format, PixelSize size)
     {
         this.context = context;
         Size = size;

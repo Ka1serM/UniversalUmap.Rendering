@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Platform;
 using Serilog;
@@ -55,24 +56,25 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     private bool hasLoggedCurrentRenderMode;
     private bool settingsDirty;
 
-    private ImageResource? outputColorImage;
-    private ImageResource? albedoImage;
-    private ImageResource? normalImage;
-    private ImageResource? cryptoImage;
-    private ImageResource? positionImage;
-    private ImageResource? adaptiveStateImage;
-    private GpuBuffer? sceneSettingsBuffer;
+    private VulkanImage? outputColorImage;
+    private VulkanImage? albedoImage;
+    private VulkanImage? normalImage;
+    private VulkanImage? cryptoImage;
+    private VulkanImage? positionImage;
+    private VulkanImage? adaptiveStateImage;
+    private VulkanBuffer? sceneSettingsBuffer;
+    private VulkanBuffer? sceneSettingsUploadBuffer;
     private PixelSize renderImageSize;
 
     private ulong lastBoundColorImageViewHandle;
     protected uint FrameIndex;
     private bool hasLoggedFirstRender;
-    protected GpuBuffer WavefrontCountersBuffer = null!;
-    protected GpuBuffer PathStateBuffer = null!;
-    protected GpuBuffer RayQueueABuffer = null!;
-    protected GpuBuffer RayQueueBBuffer = null!;
-    protected GpuBuffer HitQueueBuffer = null!;
-    protected GpuBuffer ShadowQueueBuffer = null!;
+    protected VulkanBuffer WavefrontCountersBuffer = null!;
+    protected VulkanBuffer PathStateBuffer = null!;
+    protected VulkanBuffer RayQueueABuffer = null!;
+    protected VulkanBuffer RayQueueBBuffer = null!;
+    protected VulkanBuffer HitQueueBuffer = null!;
+    protected VulkanBuffer ShadowQueueBuffer = null!;
     protected PixelSize WavefrontBufferSize;
     protected int WavefrontBufferSamples;
 
@@ -113,7 +115,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     public static GpuRaytracer Create(Context context, Scene scene)
     {
 #if DISABLE_RTX
-        Log.Information("RTX backend compile-time disabled (DISABLE_RTX); using Compute raytracer backend.");
+        Log.Information("Using Compute raytracer backend for render mode {RenderMode}.", scene.RenderSettings.RenderMode);
         return new ComputeRaytracer(context, scene);
 #else
         if (!PreferHardwareBackend(context, scene.RenderSettings.RenderMode))
@@ -138,25 +140,24 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 #endif
     }
 
-    public ImageResource OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
-    public ImageResource OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raytracer albedo image is not initialized");
-    public ImageResource OutputNormal => normalImage ?? throw new InvalidOperationException("Raytracer normal image is not initialized");
-    public ImageResource OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raytracer crypto image is not initialized");
-    public ImageResource OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
-    public ImageResource OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raytracer adaptive-state image is not initialized");
+    public VulkanImage OutputColor => outputColorImage ?? throw new InvalidOperationException("Raytracer output image is not initialized");
+    public VulkanImage OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raytracer albedo image is not initialized");
+    public VulkanImage OutputNormal => normalImage ?? throw new InvalidOperationException("Raytracer normal image is not initialized");
+    public VulkanImage OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raytracer crypto image is not initialized");
+    public VulkanImage OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
+    public VulkanImage OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raytracer adaptive-state image is not initialized");
     public PixelSize RenderImageSize => renderImageSize;
     public bool PickBuffersFlippedY => true;
 
-    public void Record(PixelSize renderSize, ImageResource image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
+    public void Record(PixelSize renderSize, VulkanImage image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
     {
         EnsureRenderImages(renderSize, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
+        if (settingsDirty || Scene.IsDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings))
+            FrameIndex = 0;
         UpdateOutputImageBindings();
         UpdateSceneSettingsBuffer(commandBuffer, renderData, force: false);
         UpdateTextureBindings();
-
-        if (Scene.IsDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings))
-            FrameIndex = 0;
 
         if (!hasLoggedFirstRender || FrameIndex < 3)
         {
@@ -175,7 +176,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
         if (!hasLoggedCurrentRenderMode)
         {
-            Log.Information("Raytracer using {RenderMode} mode.", CachedRenderMode);
+            Log.Information("Raytracer using {RenderMode} mode.", EffectiveRenderMode);
             hasLoggedCurrentRenderMode = true;
         }
 
@@ -191,7 +192,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         Scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }
 
-    protected abstract void ExecuteRaytracing(Context.CommandBuffer commandBuffer, ImageResource image, PushDataGpu pushConstants);
+    protected abstract void ExecuteRaytracing(Context.CommandBuffer commandBuffer, VulkanImage image, PushDataGpu pushConstants);
     protected abstract void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force);
     protected abstract DescriptorSet GetDescriptorSet();
     protected abstract DescriptorSetLayout GetDescriptorSetLayout();
@@ -200,9 +201,14 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     protected virtual uint TextureArrayBinding => 9;
     protected virtual uint RtxInstanceBufferBinding => 1; // Only used by RTX path
 
+    protected RenderMode EffectiveRenderMode
+    {
+        get => CachedRenderMode;
+    }
+
     protected int GetWavefrontSamplesPerFrame(PushDataGpu pushConstants)
     {
-        if (CachedRenderMode == RenderMode.PathTracing)
+        if (EffectiveRenderMode == RenderMode.PathTracing)
             return 1;
 
         if (pushConstants.IsMoving != 0 && pushConstants.PixelSizePercent > 100)
@@ -294,7 +300,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         if (sceneSettingsBuffer is not null)
             return false;
 
-        sceneSettingsBuffer = new GpuBuffer(
+        sceneSettingsBuffer = new VulkanBuffer(
             Context,
             (ulong)Marshal.SizeOf<SceneSettingsDataGpu>(),
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
@@ -323,6 +329,12 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         if (!force && !created && !settingsDirty)
             return;
 
+        sceneSettingsUploadBuffer ??= new VulkanBuffer(
+            Context,
+            (ulong)Unsafe.SizeOf<SceneSettingsDataGpu>(),
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
         var settings = new SceneSettingsDataGpu
         {
             RenderSettings = renderData.RenderSettings,
@@ -330,15 +342,10 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             RasterCamera = Scene.CaptureRasterCameraData()
         };
 
-        var settingsBytes = StructPacking.ToBytes(new[] { settings });
-        var staging = new GpuBuffer(
-            Context,
-            (ulong)settingsBytes.Length,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            settingsBytes);
-        CopyBuffer(commandBuffer.InternalHandle, staging, sceneSettingsBuffer, (ulong)settingsBytes.Length);
-        Context.RetainForExecution(commandBuffer, staging);
+        Span<SceneSettingsDataGpu> settingsSpan = stackalloc SceneSettingsDataGpu[1];
+        settingsSpan[0] = settings;
+        sceneSettingsUploadBuffer.Upload(MemoryMarshal.AsBytes(settingsSpan));
+        CopyBuffer(commandBuffer.InternalHandle, sceneSettingsUploadBuffer, sceneSettingsBuffer, (ulong)Unsafe.SizeOf<SceneSettingsDataGpu>());
         lastUploadedSettings = settings;
         settingsDirty = false;
     }
@@ -393,12 +400,12 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         }
 
         var supportedHandles = GetSupportedHandleTypes();
-        outputColorImage = new ImageResource(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
-        albedoImage = new ImageResource(Context, (uint)Format.R8G8B8A8Unorm, size, false, supportedHandles);
-        normalImage = new ImageResource(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        cryptoImage = new ImageResource(Context, (uint)Format.R32Uint, size, false, supportedHandles);
-        positionImage = new ImageResource(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        adaptiveStateImage = new ImageResource(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
+        outputColorImage = new VulkanImage(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
+        albedoImage = new VulkanImage(Context, (uint)Format.R8G8B8A8Unorm, size, false, supportedHandles);
+        normalImage = new VulkanImage(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
+        cryptoImage = new VulkanImage(Context, (uint)Format.R32Uint, size, false, supportedHandles);
+        positionImage = new VulkanImage(Context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
+        adaptiveStateImage = new VulkanImage(Context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
         renderImageSize = size;
         lastBoundColorImageViewHandle = 0;
         FrameIndex = 0;
@@ -416,7 +423,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         ClearColorImage(adaptiveStateImage!, ImageLayout.TransferDstOptimal, new ClearColorValue(0f, 0f, 0f, 0f), commandBuffer);
     }
 
-    private unsafe void ClearColorImage(ImageResource image, ImageLayout clearLayout, ClearColorValue clearValue, Context.CommandBuffer commandBuffer)
+    private unsafe void ClearColorImage(VulkanImage image, ImageLayout clearLayout, ClearColorValue clearValue, Context.CommandBuffer commandBuffer)
     {
         image.TransitionLayout(commandBuffer.InternalHandle, clearLayout, AccessFlags.TransferWriteBit);
 
@@ -456,7 +463,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         lastBoundColorImageViewHandle = 0;
     }
 
-    public bool QueryPixelUInt(ImageResource image, int pixelX, int pixelY, out uint value)
+    public bool QueryPixelUInt(VulkanImage image, int pixelX, int pixelY, out uint value)
     {
         value = 0;
         if (image is null)
@@ -474,7 +481,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         return true;
     }
 
-    public bool QueryPixelHalf4(ImageResource image, int pixelX, int pixelY, out Vector4 value)
+    public bool QueryPixelHalf4(VulkanImage image, int pixelX, int pixelY, out Vector4 value)
     {
         value = default;
         if (image is null)
@@ -591,9 +598,9 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         reverseSet = sets[2];
     }
 
-    protected GpuBuffer CreateHostVisibleStorageBuffer(ulong size)
+    protected VulkanBuffer CreateHostVisibleStorageBuffer(ulong size)
     {
-        return new GpuBuffer(
+        return new VulkanBuffer(
             Context,
             Math.Max(size, 16),
             BufferUsageFlags.StorageBufferBit,
@@ -601,18 +608,18 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             new byte[Math.Max((int)size, 16)]);
     }
 
-    protected GpuBuffer CreateWavefrontStorageBuffer(ulong size)
+    protected VulkanBuffer CreateWavefrontStorageBuffer(ulong size)
     {
-        return new GpuBuffer(
+        return new VulkanBuffer(
             Context,
             Math.Max(size, 16),
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.DeviceLocalBit);
     }
 
-    protected GpuBuffer CreateDeviceLocalBuffer(ulong size, BufferUsageFlags usage)
+    protected VulkanBuffer CreateDeviceLocalBuffer(ulong size, BufferUsageFlags usage)
     {
-        return new GpuBuffer(
+        return new VulkanBuffer(
             Context,
             Math.Max(size, 16),
             usage | BufferUsageFlags.TransferDstBit,
@@ -629,7 +636,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         ShadowQueueBuffer = CreateWavefrontStorageBuffer(16);
     }
 
-    protected void UpdateMeshSceneBuffers(Context.CommandBuffer commandBuffer, ref GpuBuffer instancesBuffer, ref GpuBuffer meshBuffer, DescriptorSet descriptorSet)
+    protected void UpdateMeshSceneBuffers(Context.CommandBuffer commandBuffer, ref VulkanBuffer instancesBuffer, ref VulkanBuffer meshBuffer, DescriptorSet descriptorSet)
     {
         var instanceBytes = Scene.BuildInstanceData();
         var meshBytes = Scene.BuildMeshAddressData();
@@ -776,7 +783,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         Context.Api.UpdateDescriptorSets(Context.Device, 4, writes, 0, null);
     }
 
-    protected void UpdateWavefrontQueueBindings(DescriptorSet wavefrontDescriptorSet, GpuBuffer inputQueue, GpuBuffer outputQueue)
+    protected void UpdateWavefrontQueueBindings(DescriptorSet wavefrontDescriptorSet, VulkanBuffer inputQueue, VulkanBuffer outputQueue)
     {
         var inputInfo = new DescriptorBufferInfo(inputQueue.Handle, 0, inputQueue.Size);
         var outputInfo = new DescriptorBufferInfo(outputQueue.Handle, 0, outputQueue.Size);
@@ -976,7 +983,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected void ExecuteWavefrontPass(
         Context.CommandBuffer commandBuffer,
-        ImageResource image,
+        VulkanImage image,
         PushDataGpu pushConstants,
         PipelineLayout pipelineLayout,
         DescriptorSet wavefrontBootstrapDescriptorSet,
@@ -999,14 +1006,14 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         var queueCapacity = ComputeWavefrontQueueCapacity(image.Size, pushConstants);
         var workerCount = ComputeWavefrontWorkerCount(image.Size, pushConstants);
         var maxBounces = ComputeWavefrontDispatchBounceCount(pushConstants);
-        var usesQueuedShadowRays = CachedRenderMode is RenderMode.DirectLighting or RenderMode.PathTracing;
+        var usesQueuedShadowRays = EffectiveRenderMode == RenderMode.DirectLighting;
         if (FrameIndex < 3)
         {
             Log.Debug(
                 "{Backend} dispatch plan: frame={Frame} mode={RenderMode} size={Width}x{Height} queueCapacity={QueueCapacity} workerCount={WorkerCount} queuedShadows={QueuedShadows} maxBounces={MaxBounces}",
                 backendName,
                 FrameIndex,
-                CachedRenderMode,
+                EffectiveRenderMode,
                 image.Size.Width,
                 image.Size.Height,
                 queueCapacity,
@@ -1085,10 +1092,10 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         DestroyPipeline(bundle.Generate);
     }
 
-    protected GpuBuffer UploadDeviceLocalBuffer(Context.CommandBuffer commandBuffer, ReadOnlySpan<byte> data, BufferUsageFlags usage)
+    protected VulkanBuffer UploadDeviceLocalBuffer(Context.CommandBuffer commandBuffer, ReadOnlySpan<byte> data, BufferUsageFlags usage)
     {
         var destinationBuffer = CreateDeviceLocalBuffer((ulong)data.Length, usage);
-        var stagingBuffer = new GpuBuffer(
+        var stagingBuffer = new VulkanBuffer(
             Context,
             (ulong)data.Length,
             BufferUsageFlags.TransferSrcBit,
@@ -1099,7 +1106,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         return destinationBuffer;
     }
 
-    private void CopyBuffer(CommandBuffer commandBuffer, GpuBuffer sourceBuffer, GpuBuffer destinationBuffer, ulong size)
+    private void CopyBuffer(CommandBuffer commandBuffer, VulkanBuffer sourceBuffer, VulkanBuffer destinationBuffer, ulong size)
     {
         var region = new BufferCopy
         {
@@ -1129,9 +1136,9 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             null);
     }
 
-    private uint ReadPixelUInt(ImageResource image, int pixelX, int pixelY)
+    private uint ReadPixelUInt(VulkanImage image, int pixelX, int pixelY)
     {
-        using var staging = new GpuBuffer(
+        using var staging = new VulkanBuffer(
             Context,
             sizeof(uint),
             BufferUsageFlags.TransferDstBit,
@@ -1154,9 +1161,9 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         }
     }
 
-    private Vector4 ReadPixelHalf4(ImageResource image, int pixelX, int pixelY)
+    private Vector4 ReadPixelHalf4(VulkanImage image, int pixelX, int pixelY)
     {
-        using var staging = new GpuBuffer(
+        using var staging = new VulkanBuffer(
             Context,
             sizeof(ushort) * 4,
             BufferUsageFlags.TransferDstBit,
@@ -1186,7 +1193,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         return new Vector4(x, y, z, w);
     }
 
-    private void CopyImagePixelToBuffer(ImageResource image, GpuBuffer stagingBuffer, int pixelX, int pixelY)
+    private void CopyImagePixelToBuffer(VulkanImage image, VulkanBuffer stagingBuffer, int pixelX, int pixelY)
     {
         // Picking is latency-sensitive but infrequent. Drain older submissions first so
         // the readback runs against a fully produced image instead of racing startup or resize work.
@@ -1227,6 +1234,8 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     protected void DisposeCommonResources()
     {
         DisposeRenderImages();
+        sceneSettingsUploadBuffer?.Dispose();
+        sceneSettingsUploadBuffer = null;
         sceneSettingsBuffer?.Dispose();
         sceneSettingsBuffer = null;
     }

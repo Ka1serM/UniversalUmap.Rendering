@@ -10,7 +10,7 @@ internal sealed unsafe class Accel : IDisposable
 {
     private readonly Context context;
     private readonly KhrAccelerationStructure ext;
-    private GpuBuffer? storageBuffer;
+    private VulkanBuffer? storageBuffer;
 
     public AccelerationStructureKHR Handle { get; private set; }
     public AccelerationStructureTypeKHR Type { get; private set; }
@@ -20,9 +20,9 @@ internal sealed unsafe class Accel : IDisposable
         private readonly Context context;
         private readonly KhrAccelerationStructure ext;
         private readonly AccelerationStructureKHR handle;
-        private readonly GpuBuffer? storage;
+        private readonly VulkanBuffer? storage;
 
-        public DeferredAccelResources(Context context, KhrAccelerationStructure ext, AccelerationStructureKHR handle, GpuBuffer? storage)
+        public DeferredAccelResources(Context context, KhrAccelerationStructure ext, AccelerationStructureKHR handle, VulkanBuffer? storage)
         {
             this.context = context;
             this.ext = ext;
@@ -99,7 +99,7 @@ internal sealed unsafe class Accel : IDisposable
             &primitiveCount,
             &sizeInfo);
 
-        storageBuffer = new GpuBuffer(
+        storageBuffer = new VulkanBuffer(
             context,
             sizeInfo.AccelerationStructureSize,
             BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -119,7 +119,7 @@ internal sealed unsafe class Accel : IDisposable
         if (previousHandle.Handle != default || previousStorage is not null)
             context.RetainForExecution(commandBuffer, new DeferredAccelResources(context, ext, previousHandle, previousStorage));
 
-        var scratch = new GpuBuffer(
+        var scratch = new VulkanBuffer(
             context,
             sizeInfo.BuildScratchSize,
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -218,7 +218,7 @@ internal sealed unsafe class Accel : IDisposable
             &primitiveCount,
             &sizeInfo);
 
-        storageBuffer = new GpuBuffer(
+        storageBuffer = new VulkanBuffer(
             context,
             sizeInfo.AccelerationStructureSize,
             BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
@@ -238,7 +238,7 @@ internal sealed unsafe class Accel : IDisposable
         if (previousHandle.Handle != default || previousStorage is not null)
             context.RetainForExecution(commandBuffer, new DeferredAccelResources(context, ext, previousHandle, previousStorage));
 
-        var scratch = new GpuBuffer(
+        var scratch = new VulkanBuffer(
             context,
             sizeInfo.BuildScratchSize,
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,

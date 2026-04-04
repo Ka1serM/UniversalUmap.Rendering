@@ -1,10 +1,10 @@
 using System;
+using System.Collections.Generic;
 using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
-using UniversalUmap.Rendering.Vulkan;
 
-namespace UniversalUmap.Rendering.Controls;
+namespace UniversalUmap.Rendering.Vulkan;
 
 internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 {
@@ -12,8 +12,10 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
     private readonly ShaderStageFlags pushConstantStages;
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
+    private readonly RenderPass renderPass;
     private readonly bool hasVertexInput;
     private readonly DescriptorSet externalDescriptorSet;
+    private readonly Dictionary<ulong, Framebuffer> framebuffersByTargetViewHandle = [];
 
     public VulkanRasterShaderProgram(
         Context context,
@@ -66,6 +68,44 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         }
 
         PushConstantRange pushRange = default;
+        var colorAttachment = new AttachmentDescription
+        {
+            Format = Format.R8G8B8A8Unorm,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.Clear,
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.ColorAttachmentOptimal,
+            FinalLayout = ImageLayout.ColorAttachmentOptimal
+        };
+        var colorAttachmentReference = new AttachmentReference(0, ImageLayout.ColorAttachmentOptimal);
+        var subpass = new SubpassDescription
+        {
+            PipelineBindPoint = PipelineBindPoint.Graphics,
+            ColorAttachmentCount = 1,
+            PColorAttachments = &colorAttachmentReference
+        };
+        var subpassDependency = new SubpassDependency
+        {
+            SrcSubpass = Vk.SubpassExternal,
+            DstSubpass = 0,
+            SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstAccessMask = AccessFlags.ColorAttachmentWriteBit
+        };
+        var renderPassInfo = new RenderPassCreateInfo
+        {
+            SType = StructureType.RenderPassCreateInfo,
+            AttachmentCount = 1,
+            PAttachments = &colorAttachment,
+            SubpassCount = 1,
+            PSubpasses = &subpass,
+            DependencyCount = 1,
+            PDependencies = &subpassDependency
+        };
+        context.Api.CreateRenderPass(context.Device, in renderPassInfo, default, out renderPass).ThrowOnError();
+
         var layoutInfo = new PipelineLayoutCreateInfo
         {
             SType = StructureType.PipelineLayoutCreateInfo
@@ -148,7 +188,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 DepthBoundsTestEnable = false,
                 StencilTestEnable = false
             };
-            var colorAttachment = new PipelineColorBlendAttachmentState
+            var colorBlendAttachment = new PipelineColorBlendAttachmentState
             {
                 BlendEnable = enableAlphaBlending,
                 SrcColorBlendFactor = BlendFactor.SrcAlpha,
@@ -163,7 +203,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
             {
                 SType = StructureType.PipelineColorBlendStateCreateInfo,
                 AttachmentCount = 1,
-                PAttachments = &colorAttachment
+                PAttachments = &colorBlendAttachment
             };
 
             var dynamicStates = stackalloc DynamicState[2];
@@ -174,14 +214,6 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 SType = StructureType.PipelineDynamicStateCreateInfo,
                 DynamicStateCount = 2,
                 PDynamicStates = dynamicStates
-            };
-
-            var colorFormat = Format.R8G8B8A8Unorm;
-            var renderingInfo = new PipelineRenderingCreateInfo
-            {
-                SType = StructureType.PipelineRenderingCreateInfo,
-                ColorAttachmentCount = 1,
-                PColorAttachmentFormats = &colorFormat
             };
 
             var pipelineInfo = new GraphicsPipelineCreateInfo
@@ -198,9 +230,9 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 PColorBlendState = &colorBlend,
                 PDynamicState = &dynamicState,
                 Layout = pipelineLayout,
-                RenderPass = default,
+                RenderPass = renderPass,
                 Subpass = 0,
-                PNext = &renderingInfo
+                PNext = null
             };
             context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pipelineInfo, default, out pipeline).ThrowOnError();
         }
@@ -210,9 +242,9 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
     }
 
     public void Draw<TPushConstants>(
-        ImageResource target,
+        VulkanImage target,
         uint vertexCount,
-        GpuBuffer? vertexBuffer,
+        VulkanBuffer? vertexBuffer,
         uint firstVertex,
         in TPushConstants pushConstants)
         where TPushConstants : unmanaged
@@ -246,10 +278,10 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
     }
 
     public void DrawIndexed<TPushConstants>(
-        ImageResource target,
+        VulkanImage target,
         uint indexCount,
-        GpuBuffer vertexBuffer,
-        GpuBuffer indexBuffer,
+        VulkanBuffer vertexBuffer,
+        VulkanBuffer indexBuffer,
         IndexType indexType,
         in TPushConstants pushConstants)
         where TPushConstants : unmanaged
@@ -280,31 +312,24 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         context.SubmitAndWait(commandBuffer);
     }
 
-    private void BeginRenderPass(Context.CommandBuffer commandBuffer, ImageResource target)
+    private void BeginRenderPass(Context.CommandBuffer commandBuffer, VulkanImage target)
     {
         target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
 
-        var clear = new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) };
-        var colorAttachment = new RenderingAttachmentInfo
-        {
-            SType = StructureType.RenderingAttachmentInfo,
-            ImageView = new ImageView(target.ViewHandle),
-            ImageLayout = ImageLayout.ColorAttachmentOptimal,
-            LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.Store,
-            ClearValue = clear
-        };
         var renderArea = new Rect2D(new Offset2D(0, 0), new Extent2D((uint)Math.Max(1, target.Size.Width), (uint)Math.Max(1, target.Size.Height)));
-        var renderingInfo = new RenderingInfo
+        var clearValue = new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) };
+        var framebuffer = GetOrCreateFramebuffer(target);
+        var beginInfo = new RenderPassBeginInfo
         {
-            SType = StructureType.RenderingInfo,
+            SType = StructureType.RenderPassBeginInfo,
+            RenderPass = renderPass,
+            Framebuffer = framebuffer,
             RenderArea = renderArea,
-            LayerCount = 1,
-            ColorAttachmentCount = 1,
-            PColorAttachments = &colorAttachment
+            ClearValueCount = 1,
+            PClearValues = &clearValue
         };
 
-        context.Api.CmdBeginRendering(commandBuffer.InternalHandle, in renderingInfo);
+        context.Api.CmdBeginRenderPass(commandBuffer.InternalHandle, in beginInfo, SubpassContents.Inline);
 
         var viewport = new Viewport(0, 0, target.Size.Width, target.Size.Height, 0f, 1f);
         var scissor = renderArea;
@@ -315,17 +340,50 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
             context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, pipelineLayout, 0, 1, in externalDescriptorSet, 0, null);
     }
 
-    private void EndRenderPass(Context.CommandBuffer commandBuffer, ImageResource target)
+    private void EndRenderPass(Context.CommandBuffer commandBuffer, VulkanImage target)
     {
-        context.Api.CmdEndRendering(commandBuffer.InternalHandle);
-        target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.MemoryReadBit);
+        context.Api.CmdEndRenderPass(commandBuffer.InternalHandle);
+        target.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
+    }
+
+    private Framebuffer GetOrCreateFramebuffer(VulkanImage target)
+    {
+        if (framebuffersByTargetViewHandle.TryGetValue(target.ViewHandle, out var framebuffer))
+            return framebuffer;
+
+        unsafe
+        {
+            var imageView = new ImageView(target.ViewHandle);
+            var framebufferInfo = new FramebufferCreateInfo
+            {
+                SType = StructureType.FramebufferCreateInfo,
+                RenderPass = renderPass,
+                AttachmentCount = 1,
+                PAttachments = &imageView,
+                Width = (uint)Math.Max(1, target.Size.Width),
+                Height = (uint)Math.Max(1, target.Size.Height),
+                Layers = 1
+            };
+            context.Api.CreateFramebuffer(context.Device, in framebufferInfo, default, out framebuffer).ThrowOnError();
+        }
+
+        framebuffersByTargetViewHandle[target.ViewHandle] = framebuffer;
+        return framebuffer;
     }
 
     public void Dispose()
     {
+        foreach (var framebuffer in framebuffersByTargetViewHandle.Values)
+        {
+            if (framebuffer.Handle != default)
+                context.Api.DestroyFramebuffer(context.Device, framebuffer, default);
+        }
+        framebuffersByTargetViewHandle.Clear();
         if (pipeline.Handle != default)
             context.Api.DestroyPipeline(context.Device, pipeline, default);
         if (pipelineLayout.Handle != default)
             context.Api.DestroyPipelineLayout(context.Device, pipelineLayout, default);
+        if (renderPass.Handle != default)
+            context.Api.DestroyRenderPass(context.Device, renderPass, default);
     }
 }
