@@ -1006,7 +1006,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         var queueCapacity = ComputeWavefrontQueueCapacity(image.Size, pushConstants);
         var workerCount = ComputeWavefrontWorkerCount(image.Size, pushConstants);
         var maxBounces = ComputeWavefrontDispatchBounceCount(pushConstants);
-        var usesQueuedShadowRays = EffectiveRenderMode == RenderMode.DirectLighting;
+        var usesQueuedShadowRays = EffectiveRenderMode is RenderMode.DirectLighting or RenderMode.PathTracing;
         if (FrameIndex < 3)
         {
             Log.Debug(

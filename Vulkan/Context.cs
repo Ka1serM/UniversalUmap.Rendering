@@ -11,6 +11,10 @@ using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Scenes;
 using AvaloniaCompositor = Avalonia.Rendering.Composition.Compositor;
 
+#if OS_WINDOWS
+using D3DDevice = SharpDX.Direct3D11.Device;
+#endif
+
 namespace UniversalUmap.Rendering.Vulkan;
 
 public sealed class Context : IDisposable
@@ -25,6 +29,10 @@ public sealed class Context : IDisposable
     private DescriptorPool descriptorPool;
     private ExtDebugUtils? debugUtils;
     private DebugUtilsMessengerEXT debugMessenger;
+    internal readonly bool UsesD3D11Interop;
+#if OS_WINDOWS
+    internal readonly D3DDevice? D3DDevice;
+#endif
 
     internal sealed class ThreadCommandPool
     {
@@ -67,40 +75,111 @@ public sealed class Context : IDisposable
         commandBuffer.Retain(resource);
     }
 
+    public record KeyedMutexSubmitInfo
+    {
+        public ulong? AcquireKey { get; init; }
+        public ulong? ReleaseKey { get; init; }
+        public DeviceMemory DeviceMemory { get; init; }
+    }
+
     public unsafe void SubmitCommandBuffer(
         CommandBuffer commandBuffer,
         ReadOnlySpan<Silk.NET.Vulkan.Semaphore> waitSemaphores = default,
         ReadOnlySpan<PipelineStageFlags> waitDstStageMask = default,
-        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores = default)
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores = default,
+        KeyedMutexSubmitInfo? keyedMutex = null)
     {
         ArgumentNullException.ThrowIfNull(commandBuffer);
         commandBuffer.EndRecording();
 
-        if (!waitSemaphores.IsEmpty && !waitDstStageMask.IsEmpty && waitSemaphores.Length != waitDstStageMask.Length)
-            throw new ArgumentException("waitDstStageMask length must match waitSemaphores length.");
-
-        if (!waitSemaphores.IsEmpty && waitDstStageMask.IsEmpty)
+        if (keyedMutex != null)
         {
-            Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
-            for (var i = 0; i < defaultWaitStages.Length; i++)
-                defaultWaitStages[i] = PipelineStageFlags.AllCommandsBit;
-
-            fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
-            fixed (PipelineStageFlags* pWaitStages = defaultWaitStages)
-            {
-                SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
-            }
+            SubmitCommandBufferWithKeyedMutex(commandBuffer, waitSemaphores, waitDstStageMask, signalSemaphores, keyedMutex);
         }
         else
         {
-            fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
-            fixed (PipelineStageFlags* pWaitStages = waitDstStageMask)
+            if (!waitSemaphores.IsEmpty && !waitDstStageMask.IsEmpty && waitSemaphores.Length != waitDstStageMask.Length)
+                throw new ArgumentException("waitDstStageMask length must match waitSemaphores length.");
+
+            if (!waitSemaphores.IsEmpty && waitDstStageMask.IsEmpty)
             {
-                SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+                Span<PipelineStageFlags> defaultWaitStages = stackalloc PipelineStageFlags[waitSemaphores.Length];
+                for (var i = 0; i < defaultWaitStages.Length; i++)
+                    defaultWaitStages[i] = PipelineStageFlags.AllCommandsBit;
+
+                fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+                fixed (PipelineStageFlags* pWaitStages = defaultWaitStages)
+                {
+                    SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+                }
+            }
+            else
+            {
+                fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+                fixed (PipelineStageFlags* pWaitStages = waitDstStageMask)
+                {
+                    SubmitCommandBufferInternal(commandBuffer, pWaitSemaphores, pWaitStages, pSignalSemaphores, waitSemaphores.Length, signalSemaphores.Length);
+                }
             }
         }
 
         MoveToUsed(commandBuffer);
+    }
+
+    private unsafe void SubmitCommandBufferWithKeyedMutex(
+        CommandBuffer commandBuffer,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> waitSemaphores,
+        ReadOnlySpan<PipelineStageFlags> waitDstStageMask,
+        ReadOnlySpan<Silk.NET.Vulkan.Semaphore> signalSemaphores,
+        KeyedMutexSubmitInfo keyedMutexInfo)
+    {
+        var cmd = commandBuffer.InternalHandle;
+        var fenceValue = commandBuffer.Fence;
+
+        ulong acquireKey = keyedMutexInfo.AcquireKey ?? 0;
+        ulong releaseKey = keyedMutexInfo.ReleaseKey ?? 0;
+        DeviceMemory devMem = keyedMutexInfo.DeviceMemory;
+        uint timeout = uint.MaxValue;
+
+        var mutexInfo = new Win32KeyedMutexAcquireReleaseInfoKHR
+        {
+            SType = StructureType.Win32KeyedMutexAcquireReleaseInfoKhr,
+            AcquireCount = keyedMutexInfo.AcquireKey.HasValue ? 1u : 0u,
+            ReleaseCount = keyedMutexInfo.ReleaseKey.HasValue ? 1u : 0u,
+            PAcquireKeys = &acquireKey,
+            PReleaseKeys = &releaseKey,
+            PAcquireSyncs = &devMem,
+            PReleaseSyncs = &devMem,
+            PAcquireTimeouts = &timeout
+        };
+
+        var hasWaitSemaphores = waitSemaphores.Length > 0;
+        var waitStages = hasWaitSemaphores ? (waitDstStageMask.IsEmpty
+            ? new PipelineStageFlags[waitSemaphores.Length].Select(_ => PipelineStageFlags.AllCommandsBit).ToArray()
+            : waitDstStageMask.ToArray()) : Array.Empty<PipelineStageFlags>();
+
+        fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphores = waitSemaphores, pSignalSemaphores = signalSemaphores)
+        fixed (PipelineStageFlags* pWaitStages = waitStages)
+        {
+            var submitInfo = new SubmitInfo
+            {
+                SType = StructureType.SubmitInfo,
+                PNext = &mutexInfo,
+                WaitSemaphoreCount = hasWaitSemaphores ? (uint)waitSemaphores.Length : 0u,
+                PWaitSemaphores = pWaitSemaphores,
+                PWaitDstStageMask = hasWaitSemaphores ? pWaitStages : null,
+                CommandBufferCount = 1,
+                PCommandBuffers = &cmd,
+                SignalSemaphoreCount = signalSemaphores.Length > 0 ? (uint)signalSemaphores.Length : 0u,
+                PSignalSemaphores = pSignalSemaphores
+            };
+
+            lock (sync)
+            {
+                Api.ResetFences(Device, 1, in fenceValue).ThrowOnError();
+                Api.QueueSubmit(Queue, 1, in submitInfo, fenceValue).ThrowOnError();
+            }
+        }
     }
 
     public void SubmitAndWait(
@@ -137,9 +216,50 @@ public sealed class Context : IDisposable
         if (interop is null)
             return null;
 
+        // Determine interop mode following GpuInterop sample pattern
+        bool useD3D11Interop = false;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            var supportsVulkanNt = interop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle)
+                && interop.SupportedSemaphoreTypes.Contains(KnownPlatformGraphicsExternalSemaphoreHandleTypes.VulkanOpaqueNtHandle);
+            var supportsD3D11 = interop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.D3D11TextureNtHandle)
+                || interop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.D3D11TextureGlobalSharedHandle);
+
+            if (!supportsVulkanNt && !supportsD3D11)
+            {
+                Log.Warning("Compositor does not support Vulkan or D3D11 external handles on Windows. Image types: {Types}",
+                    string.Join(", ", interop.SupportedImageHandleTypes));
+                return null;
+            }
+
+            useD3D11Interop = !supportsVulkanNt && supportsD3D11;
+            if (useD3D11Interop)
+                Log.Information("Using Vulkan-to-D3D11 interop mode (compositor uses D3D11 rendering)");
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            if (!interop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaquePosixFileDescriptor))
+            {
+                Log.Warning("Compositor does not support Vulkan Opaque FD image handles on Linux. Supported: {Types}",
+                    string.Join(", ", interop.SupportedImageHandleTypes));
+                return null;
+            }
+            if (!interop.SupportedSemaphoreTypes.Contains(KnownPlatformGraphicsExternalSemaphoreHandleTypes.VulkanOpaquePosixFileDescriptor))
+            {
+                Log.Warning("Compositor does not support Vulkan Opaque FD semaphore handles on Linux. Supported: {Types}",
+                    string.Join(", ", interop.SupportedSemaphoreTypes));
+                return null;
+            }
+        }
+        else
+        {
+            Log.Warning("Unsupported platform for Vulkan GPU interop");
+            return null;
+        }
+
         lock (SharedSync)
         {
-            shared ??= new Context(interop);
+            shared ??= new Context(interop, useD3D11Interop);
             return shared;
         }
     }
@@ -153,15 +273,24 @@ public sealed class Context : IDisposable
         }
     }
 
-    public unsafe Context(ICompositionGpuInterop gpuInterop)
+    public unsafe Context(ICompositionGpuInterop gpuInterop, bool useD3D11Interop = false)
     {
         ConfigureValidationLayerPath();
+        UsesD3D11Interop = useD3D11Interop;
+
+#if OS_WINDOWS
+        if (useD3D11Interop && gpuInterop.DeviceLuid is { Length: 8 } luid)
+        {
+            D3DDevice = D3DMemoryHelper.CreateDeviceByLuid(luid.AsSpan());
+            Log.Information("Created D3D11 device for Vulkan interop (LUID-matched)");
+        }
+#endif
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            if (!gpuInterop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle))
+            if (!useD3D11Interop && !gpuInterop.SupportedImageHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle))
                 throw new InvalidOperationException("Compositor backend does not support Vulkan Opaque NT image handles");
-            if (!gpuInterop.SupportedSemaphoreTypes.Contains(KnownPlatformGraphicsExternalSemaphoreHandleTypes.VulkanOpaqueNtHandle))
+            if (!useD3D11Interop && !gpuInterop.SupportedSemaphoreTypes.Contains(KnownPlatformGraphicsExternalSemaphoreHandleTypes.VulkanOpaqueNtHandle))
                 throw new InvalidOperationException("Compositor backend does not support Vulkan Opaque NT semaphore handles");
         }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
@@ -900,6 +1029,10 @@ public sealed class Context : IDisposable
         if (debugUtils is not null && debugMessenger.Handle != default && Instance.Handle != default)
             debugUtils.DestroyDebugUtilsMessenger(Instance, debugMessenger, default);
         Api.DestroyInstance(Instance, default);
+
+#if OS_WINDOWS
+        D3DDevice?.Dispose();
+#endif
 
         lock (SharedSync)
         {

@@ -6,6 +6,7 @@
     <RootNamespace>UniversalUmap.Rendering</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <UsedAvaloniaProducts></UsedAvaloniaProducts>
     <!-- Exclude generated SharedStructs.cs - types are defined in Vulkan/Shared.cs -->
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
@@ -17,6 +18,10 @@
 
   <PropertyGroup>
     <DisableRtx Condition="'$(DisableRtx)' == ''">false</DisableRtx>
+    <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
+    <IsWindows Condition="'$(IsWindows)' == ''">false</IsWindows>
+    <DefineConstants Condition="'$(IsWindows)' == 'true'">$(DefineConstants);OS_WINDOWS</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform(Linux))">$(DefineConstants);OS_LINUX</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DisableRtx)' == 'true'">
@@ -35,11 +40,11 @@
   <PropertyGroup>
     <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('$(VULKAN_SDK)\Bin\slangc.exe')">$(VULKAN_SDK)\Bin\slangc.exe</SlangcPath>
     <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('$(VULKAN_SDK)/bin/slangc')">$(VULKAN_SDK)/bin/slangc</SlangcPath>
-    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc</SlangcPath>
-    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/var/home/$([System.Environment]::GetEnvironmentVariable("USER"))/Programs/Vulkan/$([System.IO.Path]::GetFileName("$(VULKAN_SDK)"))/x86_64/bin/slangc</SlangcPath>
+    <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/home/$([System.Environment]::GetEnvironmentVariable("USER"))/Programs/Vulkan/$([System.IO.Path]::GetFileName("$(VULKAN_SDK)"))/x86_64/bin/slangc</SlangcPath>
     <SlangcPath Condition="'$(SlangcPath)' == ''">slangc</SlangcPath>
-    <SlangBinDir>$([System.IO.Path]::GetDirectoryName(&quot;$(SlangcPath)&quot;))</SlangBinDir>
-    <SlangLibDir>$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine(&quot;$(SlangBinDir)&quot;, &quot;..&quot;, &quot;lib&quot;))))</SlangLibDir>
+    <SlangBinDir>$([System.IO.Path]::GetDirectoryName("$(SlangcPath)"))</SlangBinDir>
+    <SlangLibDir>$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine("$(SlangBinDir)", "..", "lib"))))</SlangLibDir>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -57,6 +62,8 @@
     <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
     <PackageReference Include="StbImageSharp" Version="2.30.15" />
+    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
+    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -75,18 +82,9 @@
     </Reference>
   </ItemGroup>
 
-  <Target Name="BuildLocalProjectDependencies"
-          BeforeTargets="ResolveReferences">
-    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj"
-             Targets="Build"
-             Properties="Configuration=$(Configuration)"
-             RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir"
-             BuildInParallel="false" />
-    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj"
-             Targets="Build"
-             Properties="Configuration=$(Configuration)"
-             RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir"
-             BuildInParallel="false" />
+  <Target Name="BuildLocalProjectDependencies" BeforeTargets="ResolveReferences">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir" BuildInParallel="false" />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir" BuildInParallel="false" />
   </Target>
 
   <ItemGroup>
@@ -158,43 +156,33 @@
     </ShaderSource>
   </ItemGroup>
 
-  <Target Name="CompileShaders"
-          BeforeTargets="PrepareResources"
-          Inputs="@(ShaderSource);@(ShaderInclude)"
-          Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv">
+  <Target Name="CompileShaders" BeforeTargets="PrepareResources" Inputs="@(ShaderSource);@(ShaderInclude)" Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv">
 
-    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -version'
-          IgnoreExitCode="true">
+    <Exec Condition="'$(IsWindows)' == 'true'" Command="&quot;$(SlangcPath)&quot; -version" IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="SlangcVersionExitCode" />
     </Exec>
-    <Error Condition="'$(SlangcVersionExitCode)' != '0'"
-           Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
+    <Exec Condition="'$(IsWindows)' != 'true'" Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -version" IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="SlangcVersionExitCode" />
+    </Exec>
+    <Error Condition="'$(SlangcVersionExitCode)' != '0'" Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
 
-    <Message Text='Compiling shaders via "$(SlangcPath)"...' Importance="High" />
-    <Message Condition="'$(ShaderCompileExtraArgs)' != ''"
-             Text='Extra shader compiler args: $(ShaderCompileExtraArgs)'
-             Importance="High" />
+    <Message Text="Compiling shaders via &quot;$(SlangcPath)&quot;..." Importance="High" />
+    <Message Condition="'$(ShaderCompileExtraArgs)' != ''" Text="Extra shader compiler args: $(ShaderCompileExtraArgs)" Importance="High" />
 
-    <Exec Command='env LD_LIBRARY_PATH="$(SlangLibDir):$$LD_LIBRARY_PATH" PATH="$(SlangBinDir):$$PATH" "$(SlangcPath)" -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) "%(ShaderSource.Identity)" -o "%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv"'
-          LogStandardErrorAsError="true" />
+    <Exec Condition="'$(IsWindows)' == 'true'" Command="&quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;" LogStandardErrorAsError="true" />
+    <Exec Condition="'$(IsWindows)' != 'true'" Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;" LogStandardErrorAsError="true" />
 
   </Target>
 
-  <Target Name="GeneratePrecompiledEnvironmentMaps"
-          BeforeTargets="PrepareResources"
-          Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
-          Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin')">
+  <Target Name="GeneratePrecompiledEnvironmentMaps" BeforeTargets="PrepareResources" Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin')">
     <MakeDir Directories="@(EnvironmentPrecompile -> '$([System.IO.Path]::GetDirectoryName(&quot;%(OutputPrefix)&quot;))')" />
     <Message Text="Generating precompiled environment maps..." Importance="High" />
-    <Exec Command='dotnet run --project "$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" -- "%(EnvironmentPrecompile.Identity)" "%(EnvironmentPrecompile.OutputPrefix)"' />
+    <Exec Command="dotnet run --project &quot;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj&quot; -- &quot;%(EnvironmentPrecompile.Identity)&quot; &quot;%(EnvironmentPrecompile.OutputPrefix)&quot;" />
   </Target>
 
-  <Target Name="IncludeCompiledShadersAsResources"
-          DependsOnTargets="CompileShaders;GeneratePrecompiledEnvironmentMaps"
-          BeforeTargets="CoreCompile">
+  <Target Name="IncludeCompiledShadersAsResources" DependsOnTargets="CompileShaders;GeneratePrecompiledEnvironmentMaps" BeforeTargets="PrepareResources">
     <ItemGroup>
-      <EmbeddedResource Include="Assets\Shaders\**\*.spv"
-                        Exclude="@(EmbeddedResource)">
+      <EmbeddedResource Include="Assets\Shaders\**\*.spv" Exclude="@(EmbeddedResource)">
         <LogicalName>$([System.String]::Copy('Assets\Shaders\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
@@ -212,17 +200,13 @@
   </Target>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets\**"
-                      Exclude="Assets\Source\**;@(EmbeddedResource)">
+    <EmbeddedResource Include="Assets\**" Exclude="Assets\Source\**;@(EmbeddedResource)">
       <LogicalName>$([System.String]::Copy('Assets\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
-  <Target Name="GenerateSharedSlang"
-          BeforeTargets="CompileShaders"
-          Inputs="$(ProjectDir)Vulkan\Shared.cs;$(ProjectDir)Tools\SlangGenerator\Program.cs;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj"
-          Outputs="$(ProjectDir)Assets\Shaders\Shared.slang">
+  <Target Name="GenerateSharedSlang" BeforeTargets="CompileShaders" Inputs="$(ProjectDir)Vulkan\Shared.cs;$(ProjectDir)Tools\SlangGenerator\Program.cs;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj" Outputs="$(ProjectDir)Assets\Shaders\Shared.slang">
     <Message Text="Generating Shared.slang from Vulkan/Shared.cs..." Importance="High" />
-    <Exec Command='dotnet run --project "$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj" -- "$(ProjectDir)Vulkan\Shared.cs" "$(ProjectDir)Assets\Shaders\Shared.slang"' />
+    <Exec Command="dotnet run --project &quot;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj&quot; -- &quot;$(ProjectDir)Vulkan\Shared.cs&quot; &quot;$(ProjectDir)Assets\Shaders\Shared.slang&quot;" />
   </Target>
 </Project>

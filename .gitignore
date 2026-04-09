@@ -7,3 +7,6 @@
 *.dds binary
 *.hdr binary
 *.png binary
+/Assets/Precomputed
+/Tools/EnvMapPrecompute/obj
+/Tools/SlangGenerator/bin
