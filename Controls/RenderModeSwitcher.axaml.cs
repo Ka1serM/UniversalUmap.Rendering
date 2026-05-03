@@ -36,7 +36,7 @@ public partial class RenderModeSwitcher : UserControl
     private void UpdateSelectionClasses()
     {
         AoButton.Classes.Set("selected", SelectedMode == RenderMode.AmbientOcclusion);
-        DirectLightingButton.Classes.Set("selected", SelectedMode == RenderMode.DirectLighting);
+        RasterButton.Classes.Set("selected", SelectedMode == RenderMode.Rasterized);
         PathTracingButton.Classes.Set("selected", SelectedMode == RenderMode.PathTracing);
     }
 
@@ -45,9 +45,9 @@ public partial class RenderModeSwitcher : UserControl
         SelectedMode = RenderMode.AmbientOcclusion;
     }
 
-    private void DirectLightingButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void RasterButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        SelectedMode = RenderMode.DirectLighting;
+        SelectedMode = RenderMode.Rasterized;
     }
 
     private void PathTracingButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

@@ -1,15 +1,3 @@
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.csproj.AssemblyReference.cache
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.GeneratedMSBuildEditorConfig.editorconfig
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.AssemblyInfoInputs.cache
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.AssemblyInfo.cs
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.csproj.CoreCompileInputs.cache
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.sourcelink.json
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.dll
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/refint/EnvMapPrecompute.dll
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/obj/Debug/net10.0/EnvMapPrecompute.pdb
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute.dll
-/run/host/var/home/marcel/Documents/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute.pdb
 /home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute
 /home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute.deps.json
 /home/marcel/GitRepositories/UniversalUmap/UniversalUmap.Rendering/Tools/EnvMapPrecompute/bin/Debug/net10.0/EnvMapPrecompute.runtimeconfig.json

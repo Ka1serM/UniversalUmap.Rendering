@@ -72,7 +72,8 @@ float3 evaluateEnvironmentVisibleRadiance(in float3 worldRayDirection, in Enviro
         return float3(1.0);
 
     float2 uv = directionToEnvironmentUv(worldRayDirection, environmentData);
-    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, 0.0).rgb * environmentData.VisibleExposureScale;
+    float visibleLod = min(max(environmentData.MaxTextureLod, 0.0), 2.0);
+    return textureSamplers[environmentData.TextureIndex].SampleLevel(uv, visibleLod).rgb * environmentData.VisibleExposureScale;
 }
 
 int binarySearchMarginalCdf(int cdfTextureIndex, int height, float xi)

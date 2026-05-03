@@ -48,13 +48,14 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
     private readonly DescriptorSet accelDescriptorSet;
     private readonly PipelineLayout pipelineLayout;
     private readonly PipelineBundle aoPipelines;
-    private readonly PipelineBundle directLightingPipelines;
     private readonly PipelineBundle pathTracingPipelines;
     private readonly TlasResourceSlot[] tlasSlots;
 
     private int activeTlasSlotIndex;
     private VulkanBuffer instancesBuffer;
     private VulkanBuffer meshBuffer;
+    private ulong uploadedMeshesRevision = ulong.MaxValue;
+    private ulong uploadedTlasRevision = ulong.MaxValue;
 
     public RtxRaytracer(Context context, Scene scene)
         : base(context, scene)
@@ -72,7 +73,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             out var localWavefrontReverseDescriptorSet);
         CreateAccelDescriptorSet(out var localAccelDescriptorSetLayout, out var localAccelDescriptorSet);
 
-        var setLayouts = stackalloc DescriptorSetLayout[3];
+        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[3];
         setLayouts[0] = primaryDescriptorSetLayout;
         setLayouts[1] = localWavefrontDescriptorSetLayout;
         setLayouts[2] = localAccelDescriptorSetLayout;
@@ -83,18 +84,9 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             Offset = 0,
             Size = (uint)sizeof(PushDataGpu)
         };
-        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
-        {
-            SType = StructureType.PipelineLayoutCreateInfo,
-            SetLayoutCount = 3,
-            PSetLayouts = setLayouts,
-            PushConstantRangeCount = 1,
-            PPushConstantRanges = &pushConstantRange
-        };
-        Context.Api.CreatePipelineLayout(Context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
+        var pipelineLayoutLocal = DeviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(Context, setLayouts, pushConstantRange));
 
         aoPipelines = CreatePipelineBundle("Ao", "Rtx", pipelineLayoutLocal, mainName);
-        directLightingPipelines = CreatePipelineBundle("Direct", "Rtx", pipelineLayoutLocal, mainName);
         pathTracingPipelines = CreatePipelineBundle("Path", "Rtx", pipelineLayoutLocal, mainName);
 
         instancesBuffer = CreateDeviceLocalBuffer(16, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
@@ -124,15 +116,16 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     protected override void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
     {
-        var meshesDirty = force || Scene.IsDirty(SceneDirtyFlags.Meshes);
-        var tlasDirty = force || Scene.IsDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Meshes);
+        var revisions = Scene.GetResourceRevisions();
+        var meshesDirty = force || uploadedMeshesRevision != revisions.Meshes;
+        var tlasDirty = force || uploadedTlasRevision != revisions.Tlas || uploadedMeshesRevision != revisions.Meshes;
         if (!meshesDirty && !tlasDirty)
             return;
 
         if (meshesDirty)
         {
             UpdateMeshSceneBuffers(commandBuffer, ref instancesBuffer, ref meshBuffer, descriptorSet);
-            Scene.ClearDirty(SceneDirtyFlags.Meshes);
+            uploadedMeshesRevision = revisions.Meshes;
         }
 
         if (tlasDirty)
@@ -140,7 +133,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             var nextTlasSlotIndex = force ? activeTlasSlotIndex : (activeTlasSlotIndex + 1) % tlasSlots.Length;
             UpdateTlas(commandBuffer, tlasSlots[nextTlasSlotIndex], nextTlasSlotIndex);
             activeTlasSlotIndex = nextTlasSlotIndex;
-            Scene.ClearDirty(SceneDirtyFlags.Tlas);
+            uploadedTlasRevision = revisions.Tlas;
         }
     }
 
@@ -170,24 +163,10 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
 
     private void CreateAccelDescriptorSet(out DescriptorSetLayout layout, out DescriptorSet set)
     {
-        var binding = new DescriptorSetLayoutBinding(0, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.ComputeBit);
-        var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 1,
-            PBindings = &binding
-        };
-        Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out layout).ThrowOnError();
-
-        var layoutLocal = layout;
-        var allocInfo = new DescriptorSetAllocateInfo
-        {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = Context.DescriptorPool,
-            DescriptorSetCount = 1,
-            PSetLayouts = &layoutLocal
-        };
-        Context.Api.AllocateDescriptorSets(Context.Device, in allocInfo, out set).ThrowOnError();
+        layout = DeviceResources.Track(new VulkanDescriptorSetBuilder()
+            .Add(0, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.ComputeBit)
+            .BuildLayout(Context));
+        set = VulkanDescriptorSet.Allocate(Context, layout);
     }
 
     private PipelineBundle GetPipelineBundle()
@@ -195,9 +174,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         return EffectiveRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipelines,
-            RenderMode.DirectLighting => directLightingPipelines,
             RenderMode.PathTracing => pathTracingPipelines,
-            _ => directLightingPipelines
+            _ => pathTracingPipelines
         };
     }
 
@@ -215,24 +193,7 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var primitiveCount = (uint)Math.Max(1, instanceBytes.Length / Marshal.SizeOf<AccelerationStructureInstanceKHR>());
         slot.Tlas.BuildTopLevel(commandBuffer, primitiveCount, slot.InstancesBuffer.DeviceAddress);
 
-        var accelInfo = new WriteDescriptorSetAccelerationStructureKHR
-        {
-            SType = StructureType.WriteDescriptorSetAccelerationStructureKhr,
-            AccelerationStructureCount = 1
-        };
-        var tlasHandle = slot.Tlas.Handle;
-        accelInfo.PAccelerationStructures = &tlasHandle;
-
-        var accelWrite = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = accelDescriptorSet,
-            DstBinding = 0,
-            DescriptorType = DescriptorType.AccelerationStructureKhr,
-            DescriptorCount = 1,
-            PNext = &accelInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 1, in accelWrite, 0, null);
+        VulkanDescriptorWriter.UpdateAccelerationStructure(Context, accelDescriptorSet, 0, slot.Tlas.Handle);
         Log.Debug(
             "RTX TLAS updated: slot={Slot} handle=0x{Handle:X} instancesBytes={InstanceBytes}",
             slotIndex,
@@ -249,16 +210,6 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         foreach (var slot in tlasSlots)
             slot.Dispose();
 
-        DestroyPipelineBundle(pathTracingPipelines);
-        DestroyPipelineBundle(directLightingPipelines);
-        DestroyPipelineBundle(aoPipelines);
-        if (pipelineLayout.Handle != default)
-            Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
-        if (accelDescriptorSetLayout.Handle != default)
-            Context.Api.DestroyDescriptorSetLayout(Context.Device, accelDescriptorSetLayout, default);
-        if (wavefrontDescriptorSetLayout.Handle != default)
-            Context.Api.DestroyDescriptorSetLayout(Context.Device, wavefrontDescriptorSetLayout, default);
-        if (descriptorSetLayout.Handle != default)
-            Context.Api.DestroyDescriptorSetLayout(Context.Device, descriptorSetLayout, default);
+        DeviceResources.Dispose();
     }
 }

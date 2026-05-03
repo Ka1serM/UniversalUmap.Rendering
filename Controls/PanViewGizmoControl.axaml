@@ -1,0 +1,12 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:FluentIcons.Avalonia;assembly=FluentIcons.Avalonia"
+             x:Class="UniversalUmap.Rendering.Controls.PanViewGizmoControl">
+    <Button x:Name="PART_Button"
+            Classes="size-md lift overlayGizmo"
+            Padding="0"
+            ToolTip.Tip="Pan camera">
+        <icons:SymbolIcon Symbol="HandDraw"
+                          FontSize="19" />
+    </Button>
+</UserControl>

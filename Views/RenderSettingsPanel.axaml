@@ -106,6 +106,24 @@
 
             <CheckBox Content="Sample Albedo in AO Mode" VerticalAlignment="Center"
                       IsChecked="{Binding Model.AoSampleAlbedo, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster RTAO" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterRtAmbientOcclusionEnabled, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster RT Shadows" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterRtShadowsEnabled, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster SSIL" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterSsilEnabled, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster Virtual Shadow Maps" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterVirtualShadowMapsEnabled, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster Contact Shadows" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterScreenSpaceContactShadowsEnabled, Mode=TwoWay}" />
+
+            <CheckBox Content="Raster SSR" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterScreenSpaceReflectionsEnabled, Mode=TwoWay}" />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

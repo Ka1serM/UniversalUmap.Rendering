@@ -25,7 +25,7 @@ public sealed class RotateViewGizmoControl : ContentControl
     private const float AnimationEpsilon = 0.0005f;
     private const double AxisClickMoveThreshold = 6d;
 
-    private const float GizmoFadeFactor = 0.34f;
+    private const float GizmoFadeFactor = 1f;
     private const float GizmoLineWidth = 3.5f;
     private const float GizmoLineHoverWidthBoost = 1.35f;
     private const float GizmoOutlineWidth = 2f;
@@ -35,7 +35,7 @@ public sealed class RotateViewGizmoControl : ContentControl
     private const float GizmoBigCircleRadius = 66f;
     private const float GizmoAxisLineLength = GizmoBigCircleRadius - GizmoCircleRadius;
 
-    private static readonly Color LabelColor = Color.FromArgb(230, 14, 18, 24);
+    private static readonly Color LabelColor = Color.FromArgb(255, 14, 18, 24);
     private static readonly Color[] AxisColors =
     [
         Color.FromArgb(255, 233, 62, 85),
@@ -117,8 +117,8 @@ public sealed class RotateViewGizmoControl : ContentControl
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
         DetachObservedScene();
         DetachTopLevel();
         animationTimer.Stop();
@@ -224,7 +224,7 @@ public sealed class RotateViewGizmoControl : ContentControl
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
+        if (PointerCapture.IsOwnedBy(this))
             return;
 
         ClearHoverState();
@@ -247,7 +247,7 @@ public sealed class RotateViewGizmoControl : ContentControl
                 activeRenderer.Scene!.SetArcballPivot(GetDefaultArcballPivot(activeRenderer));
 
             snapAnimating = false;
-            if (!PointerCaptureCoordinator.TryBegin(this, e.Pointer, localPointer))
+            if (!PointerCapture.TryBegin(this, e.Pointer, localPointer))
                 return;
 
             rotating = true;
@@ -265,7 +265,7 @@ public sealed class RotateViewGizmoControl : ContentControl
             pressedPointer = localPointer;
             pressedAxisWorldDirection = AxisDirections[pressedAxisId];
             orbitCaptureMode = false;
-            if (!PointerCaptureCoordinator.TryBegin(this, e.Pointer, localPointer))
+            if (!PointerCapture.TryBegin(this, e.Pointer, localPointer))
                 return;
             e.Handled = true;
         }
@@ -277,20 +277,17 @@ public sealed class RotateViewGizmoControl : ContentControl
         localPointer = e.GetPosition(this);
         hasTrackedPointer = true;
 
-        if (!PointerCaptureCoordinator.IsOwnedBy(this))
+        if (!PointerCapture.IsOwnedBy(this))
         {
             RecomputeHover(localPointer, startAnimations: true);
             return;
         }
 
-        if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
+        if (!TryGetActiveRenderer(out var activeRenderer))
         {
             e.Handled = true;
             return;
         }
-
-        if (!TryGetActiveRenderer(out var activeRenderer))
-            return;
 
         if (!orbitCaptureMode)
         {
@@ -298,7 +295,7 @@ public sealed class RotateViewGizmoControl : ContentControl
             return;
         }
 
-        var delta = PointerCaptureCoordinator.GetDelta(this, localPointer);
+        var delta = PointerCapture.UpdateMove(this, localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
             activeRenderer.Scene!.OrbitAroundPivot((float)(-delta.X * 0.01), (float)(-delta.Y * 0.01));
@@ -307,7 +304,6 @@ public sealed class RotateViewGizmoControl : ContentControl
             InvalidateVisual();
         }
 
-        PointerCaptureCoordinator.TryWrapAround(this, localPointer);
         e.Handled = true;
     }
 
@@ -315,9 +311,9 @@ public sealed class RotateViewGizmoControl : ContentControl
     {
         base.OnPointerReleased(e);
 
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
+        if (PointerCapture.IsOwnedBy(this))
         {
-            PointerCaptureCoordinator.End(this, e.Pointer);
+            PointerCapture.End(this, e.Pointer);
             var wasOrbitCapture = orbitCaptureMode;
             orbitCaptureMode = false;
             rotating = false;
@@ -354,11 +350,12 @@ public sealed class RotateViewGizmoControl : ContentControl
         }
     }
 
-    protected override void OnLostFocus(RoutedEventArgs e)
+    protected override void OnLostFocus(FocusChangedEventArgs e)
     {
         base.OnLostFocus(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
+
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
@@ -367,25 +364,25 @@ public sealed class RotateViewGizmoControl : ContentControl
 
     private void OnAnimationTick()
     {
-        if (this.GetVisualRoot() is null)
+        if (VisualRoot is null)
         {
             animationTimer.Stop();
             return;
         }
 
-        if (!PointerCaptureCoordinator.IsOwnedBy(this) && hasTrackedPointer)
+        if (!PointerCapture.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
 
         var deltaSeconds = GetTickDeltaSeconds();
         var changed = AdvanceAnimations(deltaSeconds);
 
-        if (changed || rotating || PointerCaptureCoordinator.IsOwnedBy(this))
+        if (changed || rotating || PointerCapture.IsOwnedBy(this))
             InvalidateVisual();
     }
 
     private bool NeedsAnimation()
     {
-        if (rotating || PointerCaptureCoordinator.IsOwnedBy(this) || snapAnimating)
+        if (rotating || PointerCapture.IsOwnedBy(this) || snapAnimating)
             return true;
 
         if (Math.Abs(centerFadeCurrent - centerFadeTarget) > AnimationEpsilon)
@@ -461,12 +458,12 @@ public sealed class RotateViewGizmoControl : ContentControl
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
-        if (!PointerCaptureCoordinator.IsOwnedBy(this) && hasTrackedPointer)
+        if (!PointerCapture.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
         InvalidateVisual();
     }
@@ -660,10 +657,10 @@ public sealed class RotateViewGizmoControl : ContentControl
     {
         Dispatcher.UIThread.Post(() =>
         {
-            if (this.GetVisualRoot() is null)
+            if (VisualRoot is null)
                 return;
 
-            if (IsPointerOver && !PointerCaptureCoordinator.IsOwnedBy(this))
+            if (IsPointerOver && !PointerCapture.IsOwnedBy(this))
                 RecomputeHover(localPointer, startAnimations: true);
             else
                 InvalidateVisual();
@@ -695,7 +692,7 @@ public sealed class RotateViewGizmoControl : ContentControl
 
     private void OnTopLevelPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (this.GetVisualRoot() is null || PointerCaptureCoordinator.IsOwnedBy(this))
+        if (VisualRoot is null || PointerCapture.IsOwnedBy(this))
             return;
 
         localPointer = e.GetPosition(this);

@@ -1,4 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.props"
+          Condition="'$(UniversalUmapAvaloniaVersion)' == '' and Exists('$(MSBuildThisFileDirectory)..\Directory.Build.props')" />
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -7,7 +10,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <UsedAvaloniaProducts></UsedAvaloniaProducts>
-    <!-- Exclude generated SharedStructs.cs - types are defined in Vulkan/Shared.cs -->
+    <EnableDefaultAvaloniaResourceItems>false</EnableDefaultAvaloniaResourceItems>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
 
@@ -18,10 +21,13 @@
 
   <PropertyGroup>
     <DisableRtx Condition="'$(DisableRtx)' == ''">false</DisableRtx>
-    <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
+
+    <IsWindows Condition="'$(RuntimeIdentifier)' == '' and '$(OS)' == 'Windows_NT'">true</IsWindows>
+    <IsWindows Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">true</IsWindows>
     <IsWindows Condition="'$(IsWindows)' == ''">false</IsWindows>
+
     <DefineConstants Condition="'$(IsWindows)' == 'true'">$(DefineConstants);OS_WINDOWS</DefineConstants>
-    <DefineConstants Condition="$([MSBuild]::IsOSPlatform(Linux))">$(DefineConstants);OS_LINUX</DefineConstants>
+    <DefineConstants Condition="('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform(Linux))) or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux'))">$(DefineConstants);OS_LINUX</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DisableRtx)' == 'true'">
@@ -32,7 +38,7 @@
     <AppendRuntimeIdentifierToOutputPath>true</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
-  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <PlatformTarget>x64</PlatformTarget>
     <DebugType>none</DebugType>
   </PropertyGroup>
@@ -43,49 +49,45 @@
     <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/var/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/var/home/$([System.Environment]::GetEnvironmentVariable("USER"))/Programs/Vulkan/$([System.IO.Path]::GetFileName("$(VULKAN_SDK)"))/x86_64/bin/slangc</SlangcPath>
     <SlangcPath Condition="'$(SlangcPath)' == '' and '$(VULKAN_SDK)' != '' and Exists('/home/$([System.Environment]::GetEnvironmentVariable(&quot;USER&quot;))/Programs/Vulkan/$([System.IO.Path]::GetFileName(&quot;$(VULKAN_SDK)&quot;))/x86_64/bin/slangc')">/home/$([System.Environment]::GetEnvironmentVariable("USER"))/Programs/Vulkan/$([System.IO.Path]::GetFileName("$(VULKAN_SDK)"))/x86_64/bin/slangc</SlangcPath>
     <SlangcPath Condition="'$(SlangcPath)' == ''">slangc</SlangcPath>
+
     <SlangBinDir>$([System.IO.Path]::GetDirectoryName("$(SlangcPath)"))</SlangBinDir>
     <SlangLibDir>$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine("$(SlangBinDir)", "..", "lib"))))</SlangLibDir>
   </PropertyGroup>
 
   <PropertyGroup>
     <ShaderCompileExtraArgs></ShaderCompileExtraArgs>
-    <ShaderCompileExtraArgs Condition="'$(UVUMAP_VULKAN_DEBUG)' != '' or '$(UVUMAP_SHADER_PRINTF)' != ''">-g3</ShaderCompileExtraArgs>
+    <ShaderCompileExtraArgs Condition="'$(Configuration)' == 'Debug'">-g3</ShaderCompileExtraArgs>
+    <DefaultEnvironmentMapName Condition="'$(DefaultEnvironmentMapName)' == ''">default_hdri</DefaultEnvironmentMapName>
+    <DefaultEnvironmentMaxTextureResolution Condition="'$(DefaultEnvironmentMaxTextureResolution)' == ''">512</DefaultEnvironmentMaxTextureResolution>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.3.12" />
-    <PackageReference Include="Avalonia.Skia" Version="11.3.12" />
+    <PackageReference Include="Avalonia" Version="$(UniversalUmapAvaloniaVersion)" />
+
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="FluentIcons.Avalonia.Fluent" Version="2.0.318" />
+    <PackageReference Include="FluentIcons.Avalonia" Version="$(UniversalUmapFluentIconsAvaloniaVersion)" />
     <PackageReference Include="Serilog" Version="4.3.1" />
+
     <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
-    <PackageReference Include="StbImageSharp" Version="2.30.15" />
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
-  </ItemGroup>
 
-  <PropertyGroup>
-    <CUE4ParseOutput>$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\bin\$(Configuration)\net8.0\CUE4Parse.dll</CUE4ParseOutput>
-    <CUE4ParseConversionOutput>$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\bin\$(Configuration)\net8.0\CUE4Parse-Conversion.dll</CUE4ParseConversionOutput>
-  </PropertyGroup>
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
+
+    <!-- Windows-only D3D interop packages. Do not restore these on Linux. -->
+    <PackageReference Include="SharpDX.Direct3D11"
+                      Version="4.2.0"
+                      Condition="'$(RuntimeIdentifier)' == '' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))" />
+
+    <PackageReference Include="SharpDX.DXGI"
+                      Version="4.2.0"
+                      Condition="'$(RuntimeIdentifier)' == '' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))" />
+  </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="CUE4Parse">
-      <HintPath>$(CUE4ParseOutput)</HintPath>
-      <Private>true</Private>
-    </Reference>
-    <Reference Include="CUE4Parse-Conversion">
-      <HintPath>$(CUE4ParseConversionOutput)</HintPath>
-      <Private>true</Private>
-    </Reference>
+    <ProjectReference Include="..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
+    <ProjectReference Include="..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
   </ItemGroup>
-
-  <Target Name="BuildLocalProjectDependencies" BeforeTargets="ResolveReferences">
-    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir" BuildInParallel="false" />
-    <MSBuild Projects="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="TargetFramework;RuntimeIdentifier;SelfContained;PublishDir" BuildInParallel="false" />
-  </Target>
 
   <ItemGroup>
     <ShaderInclude Include="$(ProjectDir)Assets\Shaders\**\*.slang" />
@@ -96,11 +98,7 @@
       <VariantPrefix>Ao</VariantPrefix>
       <VariantSuffix>Compute</VariantSuffix>
     </AoComputeShader>
-    <DirectComputeShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
-      <Arguments>-DINTEGRATOR_DIRECT_LIGHTING</Arguments>
-      <VariantPrefix>Direct</VariantPrefix>
-      <VariantSuffix>Compute</VariantSuffix>
-    </DirectComputeShader>
+
     <PathComputeShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
       <Arguments>-DINTEGRATOR_PATH_TRACING</Arguments>
       <VariantPrefix>Path</VariantPrefix>
@@ -113,12 +111,7 @@
       <VariantSuffix>Rtx</VariantSuffix>
       <Profile>glsl_460+spvRayQueryKHR</Profile>
     </AoRtxShader>
-    <DirectRtxShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
-      <Arguments>-DUSE_RTX -DUSE_RAY_QUERY -DINTEGRATOR_DIRECT_LIGHTING</Arguments>
-      <VariantPrefix>Direct</VariantPrefix>
-      <VariantSuffix>Rtx</VariantSuffix>
-      <Profile>glsl_460+spvRayQueryKHR</Profile>
-    </DirectRtxShader>
+
     <PathRtxShader Include="$(ProjectDir)Assets/Shaders/RayTracing/GenerateCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ExtendCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ShadeCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/ConnectCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/AdvanceCompute.slang;$(ProjectDir)Assets/Shaders/RayTracing/FinalizeCompute.slang">
       <Arguments>-DUSE_RTX -DUSE_RAY_QUERY -DINTEGRATOR_PATH_TRACING</Arguments>
       <VariantPrefix>Path</VariantPrefix>
@@ -127,23 +120,21 @@
     </PathRtxShader>
 
     <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
-    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/CullReset.slang;$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang;$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang;$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang" />
+    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/CullReset.slang;$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang;$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang;$(ProjectDir)Assets/Shaders/Raster/DeferredLighting.slang;$(ProjectDir)Assets/Shaders/Raster/HdriBackground.slang;$(ProjectDir)Assets/Shaders/Raster/RtAmbientOcclusion.slang;$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang" />
     <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/*VS.slang;$(ProjectDir)Assets/Shaders/Raster/*FS.slang" />
     <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang;$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
 
     <EnvironmentPrecompile Include="$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr">
-      <OutputPrefix>$(ProjectDir)Assets\Precomputed\kiara_1_dawn_4k</OutputPrefix>
+      <OutputPrefix>$(ProjectDir)Assets\Precomputed\$(DefaultEnvironmentMapName)</OutputPrefix>
+      <MaxTextureResolution>$(DefaultEnvironmentMaxTextureResolution)</MaxTextureResolution>
     </EnvironmentPrecompile>
-
   </ItemGroup>
 
   <ItemGroup>
     <ShaderSource Include="@(AoComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
-    <ShaderSource Include="@(DirectComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
     <ShaderSource Include="@(PathComputeShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
 
     <ShaderSource Include="@(AoRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
-    <ShaderSource Include="@(DirectRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
     <ShaderSource Include="@(PathRtxShader)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
 
     <ShaderSource Include="@(ShaderVariant)" KeepMetadata="Arguments;VariantPrefix;VariantSuffix;Profile" />
@@ -156,35 +147,71 @@
     </ShaderSource>
   </ItemGroup>
 
-  <Target Name="CompileShaders" BeforeTargets="PrepareResources" Inputs="@(ShaderSource);@(ShaderInclude)" Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv">
+  <Target Name="CompileShaders"
+          BeforeTargets="PrepareResources"
+          Inputs="@(ShaderSource);@(ShaderInclude)"
+          Outputs="%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv">
 
-    <Exec Condition="'$(IsWindows)' == 'true'" Command="&quot;$(SlangcPath)&quot; -version" IgnoreExitCode="true">
+    <Exec Condition="'$(IsWindows)' == 'true'"
+          Command="&quot;$(SlangcPath)&quot; -version"
+          IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="SlangcVersionExitCode" />
     </Exec>
-    <Exec Condition="'$(IsWindows)' != 'true'" Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -version" IgnoreExitCode="true">
+
+    <Exec Condition="'$(IsWindows)' != 'true'"
+          Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -version"
+          IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="SlangcVersionExitCode" />
     </Exec>
-    <Error Condition="'$(SlangcVersionExitCode)' != '0'" Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
+
+    <Error Condition="'$(SlangcVersionExitCode)' != '0'"
+           Text="Could not execute slangc. Set SlangcPath explicitly or install it in VULKAN_SDK/bin." />
 
     <Message Text="Compiling shaders via &quot;$(SlangcPath)&quot;..." Importance="High" />
-    <Message Condition="'$(ShaderCompileExtraArgs)' != ''" Text="Extra shader compiler args: $(ShaderCompileExtraArgs)" Importance="High" />
 
-    <Exec Condition="'$(IsWindows)' == 'true'" Command="&quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;" LogStandardErrorAsError="true" />
-    <Exec Condition="'$(IsWindows)' != 'true'" Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;" LogStandardErrorAsError="true" />
+    <Message Condition="'$(ShaderCompileExtraArgs)' != ''"
+             Text="Extra shader compiler args: $(ShaderCompileExtraArgs)"
+             Importance="High" />
 
+    <Exec Condition="'$(IsWindows)' == 'true'"
+          Command="&quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;"
+          LogStandardErrorAsError="true" />
+
+    <Exec Condition="'$(IsWindows)' != 'true'"
+          Command="env LD_LIBRARY_PATH=&quot;$(SlangLibDir):$$LD_LIBRARY_PATH&quot; PATH=&quot;$(SlangBinDir):$$PATH&quot; &quot;$(SlangcPath)&quot; -target spirv -profile %(ShaderSource.Profile) -entry main $(ShaderCompileExtraArgs) %(ShaderSource.Arguments) &quot;%(ShaderSource.Identity)&quot; -o &quot;%(ShaderSource.RootDir)%(ShaderSource.Directory)%(ShaderSource.OutputName).spv&quot;"
+          LogStandardErrorAsError="true" />
   </Target>
 
-  <Target Name="GeneratePrecompiledEnvironmentMaps" BeforeTargets="PrepareResources" Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj" Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin')">
+  <Target Name="GeneratePrecompiledEnvironmentMaps"
+          BeforeTargets="PrepareResources"
+          Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
+          Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin.br');@(EnvironmentPrecompile -> '$(ProjectDir)Assets\Precomputed\$(DefaultEnvironmentMapName)_$(DefaultEnvironmentMaxTextureResolution)_%(Filename).stamp')">
+
     <MakeDir Directories="@(EnvironmentPrecompile -> '$([System.IO.Path]::GetDirectoryName(&quot;%(OutputPrefix)&quot;))')" />
+
     <Message Text="Generating precompiled environment maps..." Importance="High" />
-    <Exec Command="dotnet run --project &quot;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj&quot; -- &quot;%(EnvironmentPrecompile.Identity)&quot; &quot;%(EnvironmentPrecompile.OutputPrefix)&quot;" />
+
+    <Exec Command="dotnet run --configuration Release --project &quot;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj&quot; -- &quot;%(EnvironmentPrecompile.Identity)&quot; &quot;%(EnvironmentPrecompile.OutputPrefix)&quot; &quot;%(EnvironmentPrecompile.MaxTextureResolution)&quot;" />
+    <Touch Files="@(EnvironmentPrecompile -> '$(ProjectDir)Assets\Precomputed\$(DefaultEnvironmentMapName)_$(DefaultEnvironmentMaxTextureResolution)_%(Filename).stamp')" AlwaysCreate="true" />
   </Target>
 
-  <Target Name="IncludeCompiledShadersAsResources" DependsOnTargets="CompileShaders;GeneratePrecompiledEnvironmentMaps" BeforeTargets="PrepareResources">
+  <Target Name="IncludeCompiledShadersAsResources"
+          DependsOnTargets="CompileShaders;GeneratePrecompiledEnvironmentMaps"
+          BeforeTargets="AssignTargetPaths">
+
     <ItemGroup>
-      <EmbeddedResource Include="Assets\Shaders\**\*.spv" Exclude="@(EmbeddedResource)">
-        <LogicalName>$([System.String]::Copy('Assets\Shaders\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
-      </EmbeddedResource>
+      <CompiledShaderResource Include="$(ProjectDir)Assets\Shaders\**\*.spv" />
+      <CompiledEnvironmentResource Include="$(ProjectDir)Assets\Precomputed\**\*.bin.br" />
+
+      <CompiledShaderResource Update="@(CompiledShaderResource)">
+        <LogicalName>$([System.String]::Copy('Assets\Shaders\%(CompiledShaderResource.RecursiveDir)%(CompiledShaderResource.Filename)%(CompiledShaderResource.Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+      </CompiledShaderResource>
+      <CompiledEnvironmentResource Update="@(CompiledEnvironmentResource)">
+        <LogicalName>$([System.String]::Copy('Assets\Precomputed\%(CompiledEnvironmentResource.RecursiveDir)%(CompiledEnvironmentResource.Filename)%(CompiledEnvironmentResource.Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
+      </CompiledEnvironmentResource>
+
+      <EmbeddedResource Include="@(CompiledShaderResource)" />
+      <EmbeddedResource Include="@(CompiledEnvironmentResource)" />
     </ItemGroup>
   </Target>
 
@@ -192,21 +219,24 @@
     <ItemGroup>
       <CompiledSpv Include="$(ProjectDir)Assets\Shaders\**\*.spv" />
       <CompiledEnvironment Include="$(ProjectDir)Assets\Precomputed\**\*.bin" />
+      <CompiledEnvironment Include="$(ProjectDir)Assets\Precomputed\**\*.bin.br" />
+      <CompiledEnvironment Include="$(ProjectDir)Assets\Precomputed\**\*.stamp" />
     </ItemGroup>
+
     <Message Text="Removing compiled shader binaries (*.spv)..." Importance="High" />
     <Delete Files="@(CompiledSpv)" />
-    <Message Text="Removing precompiled environment maps (*.bin)..." Importance="High" />
+
+    <Message Text="Removing precompiled environment maps..." Importance="High" />
     <Delete Files="@(CompiledEnvironment)" />
   </Target>
 
-  <ItemGroup>
-    <EmbeddedResource Include="Assets\**" Exclude="Assets\Source\**;@(EmbeddedResource)">
-      <LogicalName>$([System.String]::Copy('Assets\%(RecursiveDir)%(Filename)%(Extension)').Replace('\','.').Replace('/','.'))</LogicalName>
-    </EmbeddedResource>
-  </ItemGroup>
+  <Target Name="GenerateSharedSlang"
+          BeforeTargets="CompileShaders"
+          Inputs="$(ProjectDir)Vulkan\Shared.cs;$(ProjectDir)Tools\SlangGenerator\Program.cs;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj"
+          Outputs="$(ProjectDir)Assets\Shaders\Shared.slang">
 
-  <Target Name="GenerateSharedSlang" BeforeTargets="CompileShaders" Inputs="$(ProjectDir)Vulkan\Shared.cs;$(ProjectDir)Tools\SlangGenerator\Program.cs;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj" Outputs="$(ProjectDir)Assets\Shaders\Shared.slang">
     <Message Text="Generating Shared.slang from Vulkan/Shared.cs..." Importance="High" />
-    <Exec Command="dotnet run --project &quot;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj&quot; -- &quot;$(ProjectDir)Vulkan\Shared.cs&quot; &quot;$(ProjectDir)Assets\Shaders\Shared.slang&quot;" />
+
+    <Exec Command="dotnet run --configuration Release --project &quot;$(ProjectDir)Tools\SlangGenerator\SlangGenerator.csproj&quot; -- &quot;$(ProjectDir)Vulkan\Shared.cs&quot; &quot;$(ProjectDir)Assets\Shaders\Shared.slang&quot;" />
   </Target>
 </Project>

@@ -70,30 +70,15 @@ internal sealed unsafe class VulkanDepthImage : IDisposable
 
     public void TransitionLayout(CommandBuffer commandBuffer, ImageLayout destinationLayout, AccessFlags destinationAccessFlags)
     {
-        var barrier = new ImageMemoryBarrier
-        {
-            SType = StructureType.ImageMemoryBarrier,
-            SrcAccessMask = currentAccessFlags,
-            DstAccessMask = destinationAccessFlags,
-            OldLayout = currentLayout,
-            NewLayout = destinationLayout,
-            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Image = Handle,
-            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.DepthBit, 0, 1, 0, 1)
-        };
-
-        context.Api.CmdPipelineBarrier(
+        VulkanBarriers.Image(
+            context.Api,
             commandBuffer,
-            PipelineStageFlags.AllCommandsBit,
-            PipelineStageFlags.AllCommandsBit,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            in barrier);
+            Handle,
+            ImageAspectFlags.DepthBit,
+            currentLayout,
+            currentAccessFlags,
+            destinationLayout,
+            destinationAccessFlags);
 
         currentLayout = destinationLayout;
         currentAccessFlags = destinationAccessFlags;

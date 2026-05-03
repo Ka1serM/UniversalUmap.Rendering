@@ -23,6 +23,7 @@ public sealed unsafe class Compositor : IDisposable
     }
 
     private readonly Context context;
+    private readonly VulkanDeviceResources deviceResources;
     private readonly DescriptorSetLayout descriptorSetLayout;
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
@@ -38,69 +39,27 @@ public sealed unsafe class Compositor : IDisposable
     public Compositor(Context context)
     {
         this.context = context;
-        var shaderBytes = EmbeddedAssets.ReadByFileName("Assets/Shaders/Compositing/Compositor.spv");
-        using var mainName = new ByteString("main");
+        deviceResources = new VulkanDeviceResources(context);
+        var descriptorSetLayoutLocal = deviceResources.Track(new VulkanDescriptorSetBuilder()
+            .Add(0, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .BuildLayout(context));
 
-        ShaderModule computeModule;
-        fixed (byte* pShader = shaderBytes)
-        {
-            var shaderInfo = new ShaderModuleCreateInfo
-            {
-                SType = StructureType.ShaderModuleCreateInfo,
-                CodeSize = (nuint)shaderBytes.Length,
-                PCode = (uint*)pShader
-            };
-            context.Api.CreateShaderModule(context.Device, in shaderInfo, default, out computeModule).ThrowOnError();
-        }
-
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[7];
-        layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-
-        var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 7,
-            PBindings = layoutBindings
-        };
-        context.Api.CreateDescriptorSetLayout(context.Device, in descriptorSetLayoutInfo, default, out var descriptorSetLayoutLocal).ThrowOnError();
-
-        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
-        {
-            SType = StructureType.PipelineLayoutCreateInfo,
-            SetLayoutCount = 1,
-            PSetLayouts = &descriptorSetLayoutLocal
-        };
         var pushConstantRange = new PushConstantRange
         {
             StageFlags = ShaderStageFlags.ComputeBit,
             Offset = 0,
             Size = (uint)sizeof(CompositePushConstants)
         };
-        pipelineLayoutInfo.PushConstantRangeCount = 1;
-        pipelineLayoutInfo.PPushConstantRanges = &pushConstantRange;
-        context.Api.CreatePipelineLayout(context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
-
-        var stageInfo = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.ComputeBit,
-            Module = computeModule,
-            PName = mainName
-        };
-        var pipelineInfo = new ComputePipelineCreateInfo
-        {
-            SType = StructureType.ComputePipelineCreateInfo,
-            Stage = stageInfo,
-            Layout = pipelineLayoutLocal
-        };
-        context.Api.CreateComputePipelines(context.Device, default, 1, in pipelineInfo, default, out var pipelineLocal).ThrowOnError();
-        context.Api.DestroyShaderModule(context.Device, computeModule, default);
+        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[1];
+        setLayouts[0] = descriptorSetLayoutLocal;
+        var pipelineLayoutLocal = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, setLayouts, pushConstantRange));
+        var pipelineLocal = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, pipelineLayoutLocal, "Assets/Shaders/Compositing/Compositor.spv"));
 
         descriptorSetLayout = descriptorSetLayoutLocal;
         pipelineLayout = pipelineLayoutLocal;
@@ -198,102 +157,19 @@ public sealed unsafe class Compositor : IDisposable
         if (descriptorSetsByOutputViewHandle.TryGetValue(outputImage.ViewHandle, out var cachedDescriptorSet))
             return cachedDescriptorSet;
 
-        var descriptorSet = AllocateDescriptorSet();
-
-        var colorInputInfo = new DescriptorImageInfo(default, new ImageView(colorInputImage.ViewHandle), ImageLayout.General);
-        var albedoInputInfo = new DescriptorImageInfo(default, new ImageView(albedoInputImage.ViewHandle), ImageLayout.General);
-        var normalInputInfo = new DescriptorImageInfo(default, new ImageView(normalInputImage.ViewHandle), ImageLayout.General);
-        var cryptoInputInfo = new DescriptorImageInfo(default, new ImageView(cryptoInputImage.ViewHandle), ImageLayout.General);
-        var positionInputInfo = new DescriptorImageInfo(default, new ImageView(positionInputImage.ViewHandle), ImageLayout.General);
-        var adaptiveInputInfo = new DescriptorImageInfo(default, new ImageView(adaptiveInputImage.ViewHandle), ImageLayout.General);
-        var outputInfo = new DescriptorImageInfo(default, new ImageView(outputImage.ViewHandle), ImageLayout.General);
-        var writes = stackalloc WriteDescriptorSet[7];
-        writes[0] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &colorInputInfo
-        };
-        writes[1] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 1,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &albedoInputInfo
-        };
-        writes[2] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 2,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &normalInputInfo
-        };
-        writes[3] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 3,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &cryptoInputInfo
-        };
-        writes[4] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 4,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &positionInputInfo
-        };
-        writes[5] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 5,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &adaptiveInputInfo
-        };
-        writes[6] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 6,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &outputInfo
-        };
-
-        context.Api.UpdateDescriptorSets(context.Device, 7, writes, 0, null);
+        var descriptorSet = VulkanDescriptorSet.Allocate(context, descriptorSetLayout);
+        new VulkanDescriptorWriter()
+            .StorageImage(0, colorInputImage)
+            .StorageImage(1, albedoInputImage)
+            .StorageImage(2, normalInputImage)
+            .StorageImage(3, cryptoInputImage)
+            .StorageImage(4, positionInputImage)
+            .StorageImage(5, adaptiveInputImage)
+            .StorageImage(6, outputImage)
+            .Update(context, descriptorSet);
         descriptorSetsByOutputViewHandle[outputImage.ViewHandle] = descriptorSet;
         Log.Debug("Compositor descriptor set created for output view {OutputViewHandle}.", outputImage.ViewHandle);
         return descriptorSet;
-    }
-
-    private DescriptorSet AllocateDescriptorSet()
-    {
-        unsafe
-        {
-            var descriptorSetLayoutLocal = descriptorSetLayout;
-            var allocInfo = new DescriptorSetAllocateInfo
-            {
-                SType = StructureType.DescriptorSetAllocateInfo,
-                DescriptorPool = context.DescriptorPool,
-                DescriptorSetCount = 1,
-                PSetLayouts = &descriptorSetLayoutLocal
-            };
-
-            context.Api.AllocateDescriptorSets(context.Device, in allocInfo, out var descriptorSet).ThrowOnError();
-            return descriptorSet;
-        }
     }
 
     private void ResetDescriptorCache()
@@ -303,25 +179,13 @@ public sealed unsafe class Compositor : IDisposable
 
         context.WaitForSubmittedCommandBuffers();
         var descriptorSets = descriptorSetsByOutputViewHandle.Values.ToArray();
-        fixed (DescriptorSet* pDescriptorSets = descriptorSets)
-        {
-            context.Api.FreeDescriptorSets(
-                context.Device,
-                context.DescriptorPool,
-                (uint)descriptorSets.Length,
-                pDescriptorSets).ThrowOnError();
-        }
+        VulkanDescriptorSet.Free(context, descriptorSets);
         descriptorSetsByOutputViewHandle.Clear();
     }
 
     public void Dispose()
     {
         ResetDescriptorCache();
-        if (pipeline.Handle != default)
-            context.Api.DestroyPipeline(context.Device, pipeline, default);
-        if (pipelineLayout.Handle != default)
-            context.Api.DestroyPipelineLayout(context.Device, pipelineLayout, default);
-        if (descriptorSetLayout.Handle != default)
-            context.Api.DestroyDescriptorSetLayout(context.Device, descriptorSetLayout, default);
+        deviceResources.Dispose();
     }
 }

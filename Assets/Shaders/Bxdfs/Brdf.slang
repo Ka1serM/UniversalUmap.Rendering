@@ -163,7 +163,10 @@ float3 envBrdfApprox(float3 specularColor, float roughness, float nDotV) {
 }
 
 float computeSpecularOcclusion(float nDotV, float ao, float roughness) {
-    return clamp(pow(max(nDotV + ao, EPSILON), exp2(-16.0 * max(roughness, EPSILON) - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    float clampedAo = saturate(ao);
+    float clampedNdotV = saturate(nDotV);
+    float clampedRoughness = saturate(roughness);
+    return clamp(pow(max(clampedNdotV + clampedAo, EPSILON), exp2(-16.0 * clampedRoughness - 1.0)) - 1.0 + clampedAo, 0.0, 1.0);
 }
 
 float pdfDiffuse(float3 N, float3 L) {

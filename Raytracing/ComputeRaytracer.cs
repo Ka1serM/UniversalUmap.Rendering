@@ -17,11 +17,12 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     private readonly DescriptorSet wavefrontReverseDescriptorSet;
     private readonly PipelineLayout pipelineLayout;
     private readonly PipelineBundle aoPipelines;
-    private readonly PipelineBundle directLightingPipelines;
     private readonly PipelineBundle pathTracingPipelines;
 
     private VulkanBuffer instancesBuffer;
     private VulkanBuffer meshBuffer;
+    private ulong uploadedMeshesRevision = ulong.MaxValue;
+    private ulong uploadedTlasRevision = ulong.MaxValue;
 
     public ComputeRaytracer(Context context, Scene scene)
         : base(context, scene)
@@ -35,7 +36,7 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             out var localWavefrontForwardDescriptorSet,
             out var localWavefrontReverseDescriptorSet);
 
-        var setLayouts = stackalloc DescriptorSetLayout[2];
+        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[2];
         setLayouts[0] = primaryDescriptorSetLayout;
         setLayouts[1] = localWavefrontDescriptorSetLayout;
 
@@ -45,18 +46,9 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
             Offset = 0,
             Size = (uint)sizeof(PushDataGpu)
         };
-        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
-        {
-            SType = StructureType.PipelineLayoutCreateInfo,
-            SetLayoutCount = 2,
-            PSetLayouts = setLayouts,
-            PushConstantRangeCount = 1,
-            PPushConstantRanges = &pushConstantRange
-        };
-        Context.Api.CreatePipelineLayout(Context.Device, in pipelineLayoutInfo, default, out var pipelineLayoutLocal).ThrowOnError();
+        var pipelineLayoutLocal = DeviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(Context, setLayouts, pushConstantRange));
 
         var aoPipelineBundle = CreatePipelineBundle("Ao", "Compute", pipelineLayoutLocal, mainName);
-        var directLightingPipelineBundle = CreatePipelineBundle("Direct", "Compute", pipelineLayoutLocal, mainName);
         var pathTracingPipelineBundle = CreatePipelineBundle("Path", "Compute", pipelineLayoutLocal, mainName);
 
         instancesBuffer = CreateDeviceLocalBuffer(16, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
@@ -71,9 +63,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         wavefrontReverseDescriptorSet = localWavefrontReverseDescriptorSet;
         pipelineLayout = pipelineLayoutLocal;
         aoPipelines = aoPipelineBundle;
-        directLightingPipelines = directLightingPipelineBundle;
         pathTracingPipelines = pathTracingPipelineBundle;
-        Log.Information("Compute raytracer pipelines and descriptors created for AO, Direct Lighting, and Path Tracing.");
+        Log.Information("Compute raytracer pipelines and descriptors created for AO and Path Tracing.");
 
         var initCommandBuffer = Context.CreateCommandBuffer();
         Context.BeginCommandBuffer(initCommandBuffer);
@@ -83,12 +74,16 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
 
     protected override void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
     {
-        if (!force && !Scene.IsDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas))
+        var revisions = Scene.GetResourceRevisions();
+        if (!force &&
+            uploadedMeshesRevision == revisions.Meshes &&
+            uploadedTlasRevision == revisions.Tlas)
             return;
 
         UpdateMeshSceneBuffers(commandBuffer, ref instancesBuffer, ref meshBuffer, descriptorSet);
 
-        Scene.ClearDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas);
+        uploadedMeshesRevision = revisions.Meshes;
+        uploadedTlasRevision = revisions.Tlas;
         Log.Information(
             "Compute scene resources updated: instancesBytes={InstancesBytes}, meshBytes={MeshBytes}.",
             instancesBuffer.Size,
@@ -123,9 +118,8 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         return EffectiveRenderMode switch
         {
             RenderMode.AmbientOcclusion => aoPipelines,
-            RenderMode.DirectLighting => directLightingPipelines,
             RenderMode.PathTracing => pathTracingPipelines,
-            _ => directLightingPipelines
+            _ => pathTracingPipelines
         };
     }
 
@@ -136,14 +130,6 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
         meshBuffer.Dispose();
         instancesBuffer.Dispose();
 
-        DestroyPipelineBundle(pathTracingPipelines);
-        DestroyPipelineBundle(directLightingPipelines);
-        DestroyPipelineBundle(aoPipelines);
-        if (pipelineLayout.Handle != default)
-            Context.Api.DestroyPipelineLayout(Context.Device, pipelineLayout, default);
-        if (wavefrontDescriptorSetLayout.Handle != default)
-            Context.Api.DestroyDescriptorSetLayout(Context.Device, wavefrontDescriptorSetLayout, default);
-        if (descriptorSetLayout.Handle != default)
-            Context.Api.DestroyDescriptorSetLayout(Context.Device, descriptorSetLayout, default);
+        DeviceResources.Dispose();
     }
 }

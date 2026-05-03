@@ -2,12 +2,14 @@ using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 
 namespace UniversalUmap.Rendering.Controls;
 
-public sealed class DollyViewGizmoControl : Button
+public sealed partial class DollyViewGizmoControl : UserControl
 {
     private VulkanViewerControl? viewer;
+    private Button? button;
 
     public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
         AvaloniaProperty.Register<DollyViewGizmoControl, VulkanViewerControl?>(nameof(Source));
@@ -20,91 +22,71 @@ public sealed class DollyViewGizmoControl : Button
 
     public DollyViewGizmoControl()
     {
-        Classes.Add("iconSquare");
-        Classes.Add("lift");
-        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
-        VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top;
-        Margin = new Thickness(0, 148, 15, 0);
-        Content = new FluentIcons.Avalonia.Fluent.SymbolIcon
+        InitializeComponent();
+
+        button = this.FindControl<Button>("PART_Button");
+        if (button is not null)
         {
-            Symbol = FluentIcons.Common.Symbol.Search,
-            FontSize = 19
-        };
+            button.AddHandler(InputElement.PointerPressedEvent, OnButtonPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+            button.AddHandler(InputElement.PointerMovedEvent, OnButtonPointerMoved, RoutingStrategies.Tunnel, handledEventsToo: true);
+            button.AddHandler(InputElement.PointerReleasedEvent, OnButtonPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
+            button.AddHandler(InputElement.PointerCaptureLostEvent, OnButtonPointerCaptureLost, RoutingStrategies.Tunnel, handledEventsToo: true);
+            button.LostFocus += OnButtonLostFocus;
+        }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        EndCapture();
         base.OnDetachedFromVisualTree(e);
     }
 
-    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    private void OnButtonPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        var props = e.GetCurrentPoint(this).Properties;
+        if (button is null)
+            return;
+
+        var props = e.GetCurrentPoint(button).Properties;
         if (props.IsLeftButtonPressed || props.IsRightButtonPressed)
-        {
-            if (PointerCaptureCoordinator.TryBegin(this, e.Pointer, e.GetPosition(this)))
-            {
-                e.Handled = true;
-                return;
-            }
-        }
-
-        base.OnPointerPressed(e);
+            PointerCapture.TryBegin(button, e.Pointer, e.GetPosition(button));
     }
 
-    protected override void OnPointerMoved(PointerEventArgs e)
+    private void OnButtonPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-        {
-            if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
-            {
-                e.Handled = true;
-                return;
-            }
-
-            if (TryGetActiveRenderer(out var activeRenderer))
-            {
-                var position = e.GetPosition(this);
-                var delta = PointerCaptureCoordinator.GetDelta(this, position);
-                if (Math.Abs(delta.Y) > double.Epsilon)
-                    activeRenderer.Scene!.DollyCamera((float)(-delta.Y * 0.05));
-
-                PointerCaptureCoordinator.TryWrapAround(this, position);
-            }
-
-            e.Handled = true;
+        if (button is null || !PointerCapture.IsOwnedBy(button))
             return;
-        }
 
-        base.OnPointerMoved(e);
-    }
-
-    protected override void OnPointerReleased(PointerReleasedEventArgs e)
-    {
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
+        var position = e.GetPosition(button);
+        if (TryGetActiveRenderer(out var activeRenderer))
         {
-            PointerCaptureCoordinator.End(this, e.Pointer);
-            e.Handled = true;
-            return;
+            var delta = PointerCapture.UpdateMove(button, position);
+            if (Math.Abs(delta.Y) > double.Epsilon)
+                activeRenderer.Scene!.DollyCamera((float)(-delta.Y * 0.05));
         }
 
-        base.OnPointerReleased(e);
+        e.Handled = true;
     }
 
-    protected override void OnLostFocus(Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnButtonPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        base.OnLostFocus(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (button is not null && PointerCapture.IsOwnedBy(button))
+            PointerCapture.End(button, e.Pointer);
     }
 
-    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    private void OnButtonLostFocus(object? sender, RoutedEventArgs e)
     {
-        base.OnPointerCaptureLost(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        EndCapture();
+    }
+
+    private void OnButtonPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
+    {
+        EndCapture();
+    }
+
+    private void EndCapture()
+    {
+        if (button is not null && PointerCapture.IsOwnedBy(button))
+            PointerCapture.End(button);
     }
 
     private bool TryGetActiveRenderer(out VulkanViewerControl activeViewer)

@@ -171,8 +171,8 @@ public abstract class VulkanShaderControl : ContentControl
     void UpdateFrame()
     {
         updateQueued = false;
-        var root = this.GetVisualRoot();
-        if (root is null)
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is null)
             return;
 
         if (visual is null || swapchain is null || context is null)
@@ -181,7 +181,7 @@ public abstract class VulkanShaderControl : ContentControl
             return;
 
         visual.Size = new(Bounds.Width, Bounds.Height);
-        var pixelSize = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
+        var pixelSize = PixelSize.FromSize(Bounds.Size, topLevel.RenderScaling);
         if (pixelSize.Width <= 0 || pixelSize.Height <= 0)
             return;
 

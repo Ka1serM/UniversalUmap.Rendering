@@ -201,7 +201,14 @@ internal struct RenderSettingsDataGpu
     public int TransparentBackground;
     public int RenderMode;
     public int AoSampleAlbedo;
-    public int Pad0;  // Struct padding to 16 bytes
+    public int RasterRtAmbientOcclusionEnabled;
+    public int RasterRtShadowsEnabled;
+    public int RasterSsilEnabled;
+    public int RasterVirtualShadowMapsEnabled;
+    public int RasterScreenSpaceContactShadowsEnabled;
+    public int RasterScreenSpaceReflectionsEnabled;
+    public int Pad1;
+    public int Pad2;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -256,7 +263,30 @@ internal struct RasterCameraDataGpu
     public float Pad0;  // Vector3 padding
     public Vector3 Direction;
     public float Pad1;  // Vector3 padding
+    public Vector3 Horizontal;
+    public float Pad2;  // Vector3 padding
+    public Vector3 Vertical;
+    public float Pad3;  // Vector3 padding
+    public float FocalLength;
+    public float NearPlane;
+    public float FarPlane;
+    public float Pad4;  // Struct padding to 16 bytes
     public Matrix4x4 WorldToClip;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct RasterShadowDataGpu
+{
+    public Matrix4x4 WorldToClip0;
+    public Matrix4x4 WorldToClip1;
+    public Matrix4x4 WorldToClip2;
+    public Matrix4x4 WorldToClip3;
+    public Vector4 UvScaleOffset0;
+    public Vector4 UvScaleOffset1;
+    public Vector4 UvScaleOffset2;
+    public Vector4 UvScaleOffset3;
+    public Vector4 CascadeFarDistances;
+    public Vector4 AtlasSizePageSizeCascadeCountEnabled;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -265,6 +295,7 @@ internal struct SceneSettingsDataGpu
     public RenderSettingsDataGpu RenderSettings;
     public EnvironmentDataGpu Environment;
     public RasterCameraDataGpu RasterCamera;
+    public RasterShadowDataGpu RasterShadow;
 }
 
 internal static class StructPacking

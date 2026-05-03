@@ -21,14 +21,17 @@ public sealed class Context : IDisposable
 {
     private static readonly object SharedSync = new();
     private static Context? shared;
-    private static readonly bool VulkanDebugEnabled = GetEnvironmentFlag("UVUMAP_VULKAN_DEBUG");
+#if DEBUG
     private static readonly PfnDebugUtilsMessengerCallbackEXT DebugMessengerCallbackDelegate = CreateDebugMessengerCallbackDelegate();
+#endif
     private readonly List<CommandBuffer> usedCommandBuffers = [];
     private readonly object sync = new();
     private readonly ConcurrentDictionary<int, ThreadCommandPool> threadCommandPools = new();
     private DescriptorPool descriptorPool;
+#if DEBUG
     private ExtDebugUtils? debugUtils;
     private DebugUtilsMessengerEXT debugMessenger;
+#endif
     internal readonly bool UsesD3D11Interop;
 #if OS_WINDOWS
     internal readonly D3DDevice? D3DDevice;
@@ -275,7 +278,6 @@ public sealed class Context : IDisposable
 
     public unsafe Context(ICompositionGpuInterop gpuInterop, bool useD3D11Interop = false)
     {
-        ConfigureValidationLayerPath();
         UsesD3D11Interop = useD3D11Interop;
 
 #if OS_WINDOWS
@@ -311,7 +313,7 @@ public sealed class Context : IDisposable
         {
             SType = StructureType.ApplicationInfo,
             PApplicationName = appName,
-            ApiVersion = Vk.MakeVersion(1u, 1u, 0u),
+            ApiVersion = Vk.MakeVersion(1u, 2u, 0u),
             PEngineName = appName,
             EngineVersion = Vk.MakeVersion(1u, 0u, 0u),
             ApplicationVersion = Vk.MakeVersion(1u, 0u, 0u)
@@ -324,47 +326,43 @@ public sealed class Context : IDisposable
             "VK_KHR_external_semaphore_capabilities"
         };
 
-        var validationEnabled = IsValidationEnabled();
-        var shaderPrintfRequested = GetEnvironmentFlag("UVUMAP_SHADER_PRINTF");
-        var availableLayers = EnumerateInstanceLayers(api);
-        var availableInstanceExtensions = EnumerateInstanceExtensions(api);
         var enabledLayers = new List<string>();
         var enabledValidationFeatures = new List<ValidationFeatureEnableEXT>();
-        if (validationEnabled && availableLayers.Contains("VK_LAYER_KHRONOS_validation"))
+#if DEBUG
+        var availableLayers = EnumerateInstanceLayers(api);
+        var availableInstanceExtensions = EnumerateInstanceExtensions(api);
+
+        if (availableLayers.Contains("VK_LAYER_KHRONOS_validation"))
         {
             enabledLayers.Add("VK_LAYER_KHRONOS_validation");
             Log.Information("Vulkan validation layer enabled: VK_LAYER_KHRONOS_validation");
         }
-        else if (validationEnabled)
+        else
         {
-            Log.Warning("Vulkan validation requested, but VK_LAYER_KHRONOS_validation was not found.");
+            Log.Warning("Vulkan validation requested by DEBUG build, but VK_LAYER_KHRONOS_validation was not found.");
             if (availableLayers.Count > 0)
                 Log.Warning("Available Vulkan instance layers: {Layers}", string.Join(", ", availableLayers.OrderBy(x => x, StringComparer.Ordinal)));
         }
 
-        var debugUtilsRequested = validationEnabled || GetEnvironmentFlag("UVUMAP_ENABLE_DEBUG_UTILS") || VulkanDebugEnabled;
-        var validationFeaturesRequested = validationEnabled && shaderPrintfRequested;
-        if (validationFeaturesRequested && availableInstanceExtensions.Contains("VK_EXT_validation_features"))
+        if (availableInstanceExtensions.Contains("VK_EXT_validation_features"))
         {
             instanceExtensions.Add("VK_EXT_validation_features");
             enabledValidationFeatures.Add(ValidationFeatureEnableEXT.DebugPrintfExt);
         }
-        else if (validationFeaturesRequested)
+        else
         {
-            Log.Warning("Shader printf requested, but VK_EXT_validation_features is not available.");
+            Log.Warning("Shader printf requested by DEBUG build, but VK_EXT_validation_features is not available.");
         }
 
-        if (api.TryGetInstanceExtension(default(Instance), out ExtDebugUtils _) && debugUtilsRequested)
+        if (api.TryGetInstanceExtension(default(Instance), out ExtDebugUtils _))
             instanceExtensions.Add("VK_EXT_debug_utils");
-        else if (debugUtilsRequested)
-            Log.Warning("Vulkan debug utils requested, but VK_EXT_debug_utils is not available.");
+        else
+            Log.Warning("Vulkan debug utils requested by DEBUG build, but VK_EXT_debug_utils is not available.");
 
-        Log.Information(
-            "Vulkan startup config: validationRequested={ValidationRequested}, shaderPrintfRequested={ShaderPrintfRequested}, debugUtilsRequested={DebugUtilsRequested}, vkLayerPath={LayerPath}",
-            validationEnabled,
-            shaderPrintfRequested,
-            debugUtilsRequested,
-            System.Environment.GetEnvironmentVariable("VK_LAYER_PATH") ?? "<unset>");
+        Log.Information("Vulkan debug features enabled by DEBUG build.");
+#else
+        Log.Information("Vulkan debug features disabled by Release build.");
+#endif
         Log.Information("Requested Vulkan instance extensions: {Extensions}", string.Join(", ", instanceExtensions.OrderBy(x => x, StringComparer.Ordinal)));
         Log.Information(
             "Requested Vulkan instance layers: {Layers}",
@@ -411,12 +409,14 @@ public sealed class Context : IDisposable
 
         try
         {
-            if (debugUtilsRequested && api.TryGetInstanceExtension(vkInstance, out ExtDebugUtils createdDebugUtils))
+#if DEBUG
+            if (api.TryGetInstanceExtension(vkInstance, out ExtDebugUtils createdDebugUtils))
             {
                 debugUtils = createdDebugUtils;
                 CreateDebugMessenger(vkInstance, createdDebugUtils);
             }
 
+#endif
             uint physicalCount = 0;
             api.EnumeratePhysicalDevices(vkInstance, ref physicalCount, default).ThrowOnError();
             var devices = stackalloc PhysicalDevice[(int)physicalCount];
@@ -462,17 +462,15 @@ public sealed class Context : IDisposable
                 var deviceExtensions = new List<string>
                 {
                     "VK_KHR_external_memory",
-                    "VK_KHR_external_semaphore"
+                    "VK_KHR_external_semaphore",
+                    "VK_KHR_buffer_device_address",
+                    "VK_EXT_descriptor_indexing"
                 };
                 var rayTracingExtensions = new[]
                 {
-                    "VK_KHR_buffer_device_address",
-                    "VK_EXT_descriptor_indexing",
                     "VK_KHR_deferred_host_operations",
                     "VK_KHR_acceleration_structure",
-                    "VK_KHR_ray_query",
-                    "VK_KHR_spirv_1_4",
-                    "VK_KHR_shader_float_controls"
+                    "VK_KHR_ray_query"
                 };
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
@@ -504,11 +502,16 @@ public sealed class Context : IDisposable
                     deviceExtensions.Add("VK_KHR_dynamic_rendering");
                 if (api.IsDeviceExtensionPresent(physical, "VK_EXT_scalar_block_layout"))
                     deviceExtensions.Add("VK_EXT_scalar_block_layout");
+                if (api.IsDeviceExtensionPresent(physical, "VK_KHR_spirv_1_4"))
+                    deviceExtensions.Add("VK_KHR_spirv_1_4");
+                if (api.IsDeviceExtensionPresent(physical, "VK_KHR_shader_float_controls"))
+                    deviceExtensions.Add("VK_KHR_shader_float_controls");
 
                 var rayTracingExtensionsPresent = rayTracingExtensions.All(x => api.IsDeviceExtensionPresent(physical, x));
                 var rayTracingFeaturesSupported = false;
                 var dynamicRenderingSupported = false;
                 var scalarBlockLayoutSupported = false;
+                var rendererFeaturesSupported = false;
 
                 {
                     var feature2 = new PhysicalDeviceFeatures2
@@ -523,47 +526,49 @@ public sealed class Context : IDisposable
                     {
                         SType = StructureType.PhysicalDeviceScalarBlockLayoutFeatures
                     };
+                    var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
+                    };
+                    var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
+                    };
+                    var accelerationStructureFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
+                    {
+                        SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
+                    };
+                    var rayQueryFeatures = new PhysicalDeviceRayQueryFeaturesKHR
+                    {
+                        SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
+                    };
+
                     feature2.PNext = &dynamicRenderingFeatures;
                     dynamicRenderingFeatures.PNext = &scalarBlockLayoutFeatures;
+                    scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
+                    descriptorIndexingFeatures.PNext = &bufferDeviceAddressFeatures;
 
                     if (rayTracingExtensionsPresent)
                     {
-                        var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
-                        {
-                            SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
-                        };
-                        var accelerationStructureFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
-                        {
-                            SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
-                        };
-                        var rayQueryFeatures = new PhysicalDeviceRayQueryFeaturesKHR
-                        {
-                            SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
-                        };
-                        var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
-                        {
-                            SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
-                        };
-
-                        scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
-                        descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
+                        bufferDeviceAddressFeatures.PNext = &accelerationStructureFeatures;
                         accelerationStructureFeatures.PNext = &rayQueryFeatures;
-                        rayQueryFeatures.PNext = &bufferDeviceAddressFeatures;
-                        api.GetPhysicalDeviceFeatures2(physical, &feature2);
+                    }
 
-                        rayTracingFeaturesSupported =
-                            descriptorIndexingFeatures.RuntimeDescriptorArray &&
-                            accelerationStructureFeatures.AccelerationStructure &&
-                            rayQueryFeatures.RayQuery &&
-                            bufferDeviceAddressFeatures.BufferDeviceAddress;
-                    }
-                    else
-                    {
-                        api.GetPhysicalDeviceFeatures2(physical, &feature2);
-                    }
+                    api.GetPhysicalDeviceFeatures2(physical, &feature2);
 
                     dynamicRenderingSupported = dynamicRenderingFeatures.DynamicRendering;
                     scalarBlockLayoutSupported = scalarBlockLayoutFeatures.ScalarBlockLayout;
+                    rendererFeaturesSupported =
+                        descriptorIndexingFeatures.RuntimeDescriptorArray &&
+                        descriptorIndexingFeatures.ShaderSampledImageArrayNonUniformIndexing &&
+                        descriptorIndexingFeatures.DescriptorBindingSampledImageUpdateAfterBind &&
+                        descriptorIndexingFeatures.DescriptorBindingPartiallyBound &&
+                        descriptorIndexingFeatures.DescriptorBindingVariableDescriptorCount &&
+                        bufferDeviceAddressFeatures.BufferDeviceAddress;
+                    rayTracingFeaturesSupported =
+                        rayTracingExtensionsPresent &&
+                        accelerationStructureFeatures.AccelerationStructure &&
+                        rayQueryFeatures.RayQuery;
                 }
 
                 if (!dynamicRenderingSupported)
@@ -573,10 +578,10 @@ public sealed class Context : IDisposable
                     Log.Information("Skipping GPU {GpuName}: scalarBlockLayout feature is not supported.", name);
                     continue;
                 }
-
-                if (rayTracingExtensionsPresent)
+                if (!rendererFeaturesSupported)
                 {
-                    // already queried above
+                    Log.Information("Skipping GPU {GpuName}: required descriptor indexing or buffer device address features are not supported.", name);
+                    continue;
                 }
 
                 var rayTracingEnabled = rayTracingExtensionsPresent && rayTracingFeaturesSupported;
@@ -674,7 +679,17 @@ public sealed class Context : IDisposable
                     };
                     var descriptorIndexingFeatures = new PhysicalDeviceDescriptorIndexingFeatures
                     {
-                        SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures
+                        SType = StructureType.PhysicalDeviceDescriptorIndexingFeatures,
+                        RuntimeDescriptorArray = true,
+                        ShaderSampledImageArrayNonUniformIndexing = true,
+                        DescriptorBindingSampledImageUpdateAfterBind = true,
+                        DescriptorBindingPartiallyBound = true,
+                        DescriptorBindingVariableDescriptorCount = true
+                    };
+                    var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
+                    {
+                        SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures,
+                        BufferDeviceAddress = true
                     };
                     var accelerationStructureFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
                     {
@@ -684,28 +699,19 @@ public sealed class Context : IDisposable
                     {
                         SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
                     };
-                    var bufferDeviceAddressFeatures = new PhysicalDeviceBufferDeviceAddressFeatures
-                    {
-                        SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
-                    };
 
                     feature2.PNext = &dynamicRenderingFeatures;
                     dynamicRenderingFeatures.PNext = &scalarBlockLayoutFeatures;
+                    scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
+                    descriptorIndexingFeatures.PNext = &bufferDeviceAddressFeatures;
 
                     if (candidate.RayTracingEnabled)
                     {
-                        descriptorIndexingFeatures.RuntimeDescriptorArray = true;
-                        descriptorIndexingFeatures.ShaderSampledImageArrayNonUniformIndexing = true;
-                        descriptorIndexingFeatures.DescriptorBindingPartiallyBound = true;
-
                         accelerationStructureFeatures.AccelerationStructure = true;
                         rayQueryFeatures.RayQuery = true;
-                        bufferDeviceAddressFeatures.BufferDeviceAddress = true;
 
-                        scalarBlockLayoutFeatures.PNext = &descriptorIndexingFeatures;
-                        descriptorIndexingFeatures.PNext = &accelerationStructureFeatures;
+                        bufferDeviceAddressFeatures.PNext = &accelerationStructureFeatures;
                         accelerationStructureFeatures.PNext = &rayQueryFeatures;
-                        rayQueryFeatures.PNext = &bufferDeviceAddressFeatures;
                     }
 
                     deviceInfo.PNext = &feature2;
@@ -715,7 +721,7 @@ public sealed class Context : IDisposable
 
                     // Create a global descriptor pool large enough for all raytracing and compositing needs
                     var poolSizes = stackalloc DescriptorPoolSize[5];
-                    poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 10);
+                    poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 40);
                     poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 30);
                     poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 20_000); // 2 * MaxTextures
                     poolSizes[3] = new DescriptorPoolSize(DescriptorType.AccelerationStructureKhr, 2);
@@ -824,27 +830,7 @@ public sealed class Context : IDisposable
         return Vk.GetApi();
     }
 
-    private static bool IsValidationEnabled()
-    {
-        if (GetEnvironmentFlag("UVUMAP_VULKAN_VALIDATION") || VulkanDebugEnabled)
-            return true;
-
-#if RELEASE
-        return false;
-#else
-        return true;
-#endif
-    }
-
-    private static bool GetEnvironmentFlag(string name)
-    {
-        var value = System.Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(value))
-            return false;
-
-        return value is "1" or "true" or "TRUE" or "True" or "yes" or "YES" or "Yes" or "on" or "ON" or "On";
-    }
-
+#if DEBUG
     private static unsafe PfnDebugUtilsMessengerCallbackEXT CreateDebugMessengerCallbackDelegate()
         => new(new DebugUtilsMessengerCallbackFunctionEXT(DebugMessengerCallback));
 
@@ -926,6 +912,8 @@ public sealed class Context : IDisposable
         return builder.ToString();
     }
 
+#endif
+
     private static unsafe HashSet<string> EnumerateInstanceLayers(Vk api)
     {
         uint layerCount = 0;
@@ -973,46 +961,6 @@ public sealed class Context : IDisposable
         return result;
     }
 
-    private static void ConfigureValidationLayerPath()
-    {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            return;
-        if (!string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("VK_LAYER_PATH")))
-            return;
-
-        var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
-        var candidates = new[]
-        {
-            System.Environment.GetEnvironmentVariable("VULKAN_SDK"),
-            "/home/marcel/Programs/Vulkan/1.4.335.0",
-            "/var/home/marcel/Programs/Vulkan/1.4.335.0",
-            Path.Combine(home, "Programs/Vulkan/1.4.335.0"),
-            Path.Combine(home, "Programs", "Vulkan", "1.4.335.0")
-        };
-
-        foreach (var sdkPath in candidates.Where(path => !string.IsNullOrWhiteSpace(path)))
-        {
-            var basePath = sdkPath!;
-            var explicitLayerCandidates = new[]
-            {
-                Path.Combine(basePath, "share", "vulkan", "explicit_layer.d"),
-                Path.Combine(basePath, "etc", "vulkan", "explicit_layer.d"),
-                Path.Combine(basePath, "x86_64", "share", "vulkan", "explicit_layer.d"),
-                Path.Combine(basePath, "x86_64", "etc", "vulkan", "explicit_layer.d")
-            };
-
-            foreach (var explicitLayers in explicitLayerCandidates.Distinct(StringComparer.Ordinal))
-            {
-                if (!Directory.Exists(explicitLayers))
-                    continue;
-
-                System.Environment.SetEnvironmentVariable("VK_LAYER_PATH", explicitLayers);
-                Log.Information("Configured VK_LAYER_PATH for validation layers: {LayerPath}", explicitLayers);
-                return;
-            }
-        }
-    }
-
     public unsafe void Dispose()
     {
         TextureAsset.DisposeSharedStagingRing();
@@ -1026,8 +974,10 @@ public sealed class Context : IDisposable
             Api.DestroyCommandPool(Device, threadCommandPool.Handle, default);
         threadCommandPools.Clear();
         Api.DestroyDevice(Device, default);
+#if DEBUG
         if (debugUtils is not null && debugMessenger.Handle != default && Instance.Handle != default)
             debugUtils.DestroyDebugUtilsMessenger(Instance, debugMessenger, default);
+#endif
         Api.DestroyInstance(Instance, default);
 
 #if OS_WINDOWS

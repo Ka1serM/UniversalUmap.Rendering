@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("EnvMapPrecompute")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5905dbf10eec3e91c42ddaab364e167606b5a35c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+23407000311f2b410772d27bc8354071a202c9a1")]
 [assembly: System.Reflection.AssemblyProductAttribute("EnvMapPrecompute")]
 [assembly: System.Reflection.AssemblyTitleAttribute("EnvMapPrecompute")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

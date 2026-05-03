@@ -1,4 +1,5 @@
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Core;
 
@@ -31,30 +32,15 @@ internal static class MemoryHelper
         AccessFlags destinationAccessMask,
         uint mipLevels)
     {
-        var subresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, mipLevels, 0, 1);
-        var barrier = new ImageMemoryBarrier
-        {
-            SType = StructureType.ImageMemoryBarrier,
-            SrcAccessMask = sourceAccessMask,
-            DstAccessMask = destinationAccessMask,
-            OldLayout = sourceLayout,
-            NewLayout = destinationLayout,
-            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Image = image,
-            SubresourceRange = subresourceRange
-        };
-
-        api.CmdPipelineBarrier(
+        VulkanBarriers.Image(
+            api,
             commandBuffer,
-            PipelineStageFlags.AllCommandsBit,
-            PipelineStageFlags.AllCommandsBit,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            in barrier);
+            image,
+            ImageAspectFlags.ColorBit,
+            sourceLayout,
+            sourceAccessMask,
+            destinationLayout,
+            destinationAccessMask,
+            mipLevels: mipLevels);
     }
 }

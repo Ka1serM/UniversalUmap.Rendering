@@ -14,8 +14,10 @@ namespace UniversalUmap.Rendering.Scenes;
 public sealed unsafe class TextureAsset : IDisposable
 {
     public readonly record struct HdrTextureSet(TextureAsset Environment, TextureAsset Cdf, TextureAsset IrradianceMap, TextureAsset RadianceMap);
+    private readonly record struct MipUploadData(byte[] PixelBytes, uint Width, uint Height);
 
     private readonly Context context;
+    private readonly VulkanDeviceResources deviceResources;
 
     public string Name { get; }
     public string SourcePath { get; }
@@ -33,23 +35,68 @@ public sealed unsafe class TextureAsset : IDisposable
         uint height,
         Format format,
         bool generateMipmaps = false)
+        : this(
+            context,
+            name,
+            sourcePath,
+            [new MipUploadData(pixelBytes.ToArray(), width, height)],
+            format,
+            generateMipmaps)
     {
+    }
+
+    private TextureAsset(
+        Context context,
+        string name,
+        string sourcePath,
+        MipUploadData[] mipUploads,
+        Format format,
+        bool generateMipmaps = false)
+    {
+        if (mipUploads.Length == 0)
+            throw new ArgumentException("At least one mip level is required.", nameof(mipUploads));
+
         this.context = context;
+        deviceResources = new VulkanDeviceResources(context);
         Name = name;
         SourcePath = sourcePath;
-        var mipLevels = generateMipmaps ? CalculateMipLevels(width, height) : 1u;
+        var baseMip = mipUploads[0];
+        var mipLevels = generateMipmaps ? CalculateMipLevels(baseMip.Width, baseMip.Height) : (uint)mipUploads.Length;
+
+        var stagingBytesLength = 0;
+        foreach (var mip in mipUploads)
+            stagingBytesLength = checked(stagingBytesLength + mip.PixelBytes.Length);
+
+        var stagingBytes = new byte[stagingBytesLength];
+        var stagingOffset = 0;
+        var copies = new BufferImageCopy[mipUploads.Length];
+        for (var i = 0; i < mipUploads.Length; i++)
+        {
+            var mip = mipUploads[i];
+            mip.PixelBytes.CopyTo(stagingBytes.AsSpan(stagingOffset));
+            copies[i] = new BufferImageCopy
+            {
+                BufferOffset = (ulong)stagingOffset,
+                BufferRowLength = 0,
+                BufferImageHeight = 0,
+                ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, (uint)i, 0, 1),
+                ImageOffset = new Offset3D(0, 0, 0),
+                ImageExtent = new Extent3D(mip.Width, mip.Height, 1)
+            };
+            stagingOffset += mip.PixelBytes.Length;
+        }
 
         var staging = new VulkanBuffer(
             context,
-            (ulong)pixelBytes.Length,
+            (ulong)stagingBytes.Length,
             BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        staging.Upload(pixelBytes);
+        staging.Upload(stagingBytes);
 
         Image = new VulkanImage(
             context,
             (uint)format,
-            new PixelSize((int)width, (int)height),
+            new PixelSize((int)baseMip.Width, (int)baseMip.Height),
             exportable: false,
             supportedHandleTypes: Array.Empty<string>(),
             mipLevels: mipLevels);
@@ -68,7 +115,7 @@ public sealed unsafe class TextureAsset : IDisposable
             MaxLod = mipLevels - 1
         };
         context.Api.CreateSampler(context.Device, in samplerInfo, default, out var sampler).ThrowOnError();
-        Sampler = sampler;
+        Sampler = deviceResources.Track(sampler);
 
         var commandBuffer = context.CreateCommandBuffer();
         context.BeginCommandBuffer(commandBuffer);
@@ -77,26 +124,20 @@ public sealed unsafe class TextureAsset : IDisposable
             ImageLayout.TransferDstOptimal,
             AccessFlags.TransferWriteBit);
 
-        var copy = new BufferImageCopy
+        fixed (BufferImageCopy* pCopies = copies)
         {
-            BufferOffset = 0,
-            BufferRowLength = 0,
-            BufferImageHeight = 0,
-            ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-            ImageOffset = new Offset3D(0, 0, 0),
-            ImageExtent = new Extent3D(width, height, 1)
-        };
-        context.Api.CmdCopyBufferToImage(
-            commandBuffer.InternalHandle,
-            staging.Handle,
-            Image.InternalHandle,
-            ImageLayout.TransferDstOptimal,
-            1,
-            in copy);
+            context.Api.CmdCopyBufferToImage(
+                commandBuffer.InternalHandle,
+                staging.Handle,
+                Image.InternalHandle,
+                ImageLayout.TransferDstOptimal,
+                (uint)copies.Length,
+                pCopies);
+        }
 
         if (generateMipmaps && mipLevels > 1)
         {
-            GenerateMipmaps(commandBuffer.InternalHandle, width, height, mipLevels);
+            GenerateMipmaps(commandBuffer.InternalHandle, baseMip.Width, baseMip.Height, mipLevels);
         }
         else
         {
@@ -107,7 +148,7 @@ public sealed unsafe class TextureAsset : IDisposable
         }
         context.RetainForExecution(commandBuffer, staging);
         context.SubmitCommandBuffer(commandBuffer);
-        Log.Debug("Uploaded texture '{TextureName}' ({Width}x{Height}, format={Format}).", Name, width, height, format);
+        Log.Debug("Uploaded texture '{TextureName}' ({Width}x{Height}, mips={MipLevels}, format={Format}).", Name, baseMip.Width, baseMip.Height, mipLevels, format);
     }
 
     internal DescriptorImageInfo GetDescriptorImageInfo()
@@ -221,6 +262,71 @@ public sealed unsafe class TextureAsset : IDisposable
             generateMipmaps);
     }
 
+    public static TextureAsset CreateRgba16Float(
+        Context context,
+        string name,
+        string sourcePath,
+        ReadOnlySpan<byte> rgba16fBytes,
+        uint width,
+        uint height,
+        bool generateMipmaps = false)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Texture name is empty", nameof(name));
+        if (width == 0 || height == 0)
+            throw new ArgumentException("Texture dimensions must be > 0.");
+        if (rgba16fBytes.Length != width * height * 4 * sizeof(ushort))
+            throw new ArgumentException("RGBA16F byte payload size does not match width*height*4*sizeof(ushort).");
+
+        return new TextureAsset(
+            context,
+            name,
+            sourcePath,
+            rgba16fBytes,
+            width,
+            height,
+            Format.R16G16B16A16Sfloat,
+            generateMipmaps);
+    }
+
+    public static TextureAsset CreateRgba16FloatMipChain(
+        Context context,
+        string name,
+        string sourcePath,
+        byte[][] rgba16fMipBytes,
+        uint width,
+        uint height)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Texture name is empty", nameof(name));
+        if (width == 0 || height == 0)
+            throw new ArgumentException("Texture dimensions must be > 0.");
+        if (rgba16fMipBytes.Length == 0)
+            throw new ArgumentException("At least one mip level is required.", nameof(rgba16fMipBytes));
+
+        var mipUploads = new MipUploadData[rgba16fMipBytes.Length];
+        var mipWidth = width;
+        var mipHeight = height;
+        for (var i = 0; i < rgba16fMipBytes.Length; i++)
+        {
+            var mipBytes = rgba16fMipBytes[i];
+            var expectedByteLength = checked((int)(mipWidth * mipHeight * 4u * sizeof(ushort)));
+            if (mipBytes.Length != expectedByteLength)
+                throw new ArgumentException($"RGBA16F mip {i} payload size does not match width*height*4*sizeof(ushort).", nameof(rgba16fMipBytes));
+
+            mipUploads[i] = new MipUploadData(mipBytes, mipWidth, mipHeight);
+            mipWidth = Math.Max(1u, mipWidth / 2u);
+            mipHeight = Math.Max(1u, mipHeight / 2u);
+        }
+
+        return new TextureAsset(
+            context,
+            name,
+            sourcePath,
+            mipUploads,
+            Format.R16G16B16A16Sfloat);
+    }
+
     public static bool TryCreateFromUTexture(
         Context context,
         UTexture texture,
@@ -267,8 +373,7 @@ public sealed unsafe class TextureAsset : IDisposable
 
     public void Dispose()
     {
-        if (Sampler.Handle != default)
-            context.Api.DestroySampler(context.Device, Sampler, default);
+        deviceResources.Dispose();
         Image.Dispose();
     }
 
@@ -416,30 +521,16 @@ public sealed unsafe class TextureAsset : IDisposable
         ImageLayout destinationLayout,
         AccessFlags destinationAccessMask)
     {
-        var barrier = new ImageMemoryBarrier
-        {
-            SType = StructureType.ImageMemoryBarrier,
-            SrcAccessMask = sourceAccessMask,
-            DstAccessMask = destinationAccessMask,
-            OldLayout = sourceLayout,
-            NewLayout = destinationLayout,
-            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Image = Image.InternalHandle,
-            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, mipLevel, 1, 0, 1)
-        };
-
-        api.CmdPipelineBarrier(
+        VulkanBarriers.Image(
+            api,
             commandBuffer,
-            PipelineStageFlags.AllCommandsBit,
-            PipelineStageFlags.AllCommandsBit,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            in barrier);
+            Image.InternalHandle,
+            ImageAspectFlags.ColorBit,
+            sourceLayout,
+            sourceAccessMask,
+            destinationLayout,
+            destinationAccessMask,
+            mipLevel);
     }
 
     private static bool TryMapUnrealToVulkanFormat(EPixelFormat format, out Format vkFormat)

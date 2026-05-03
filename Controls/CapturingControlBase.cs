@@ -1,333 +1,106 @@
 using System;
-using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Interactivity;
 using Avalonia.Threading;
-using Serilog;
+using Avalonia.VisualTree;
 
 namespace UniversalUmap.Rendering.Controls;
 
-internal static class PointerCaptureCoordinator
+internal static class PointerCapture
 {
     private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
-    private static readonly Cursor DefaultCursor = new(StandardCursorType.Arrow);
-    private const double WrapThresholdPixels = 1d;
-    private const double WrapInsetPixels = 2d;
-    private const int SuppressedMovesAfterWarp = 3;
-    private const int RestoreDelayMs = 16;
 
     private static Control? owner;
-    private static bool active;
-    private static bool canWarpPointer;
-    private static int suppressedWarpMoveCount;
-    private static Point lastPointerLocal;
-    private static PixelPoint? restoreScreenPoint;
+    private static IPointer? pointer;
+    private static TopLevel? topLevel;
+    private static Cursor? previousOwnerCursor;
+    private static Cursor? previousTopLevelCursor;
+    private static Point lastPosition;
 
     public static bool IsOwnedBy(Control control)
-    {
-        if (!active)
-            owner = null;
+        => ReferenceEquals(owner, control);
 
-        return ReferenceEquals(owner, control) && active;
-    }
-
-    public static bool TryBegin(Control control, IPointer pointer, Point initialPointerPosition)
+    public static bool TryBegin(Control control, IPointer targetPointer, Point initialPosition)
     {
         if (IsOwnedBy(control))
-        {
-            Log.Information("Capture.TryBegin already owned by {OwnerType}.", control.GetType().Name);
             return true;
-        }
-        if (active)
+
+        if (owner is not null)
         {
-            Log.Information(
-                "Capture.TryBegin denied for {RequesterType}; active owner is {OwnerType}.",
-                control.GetType().Name,
-                owner?.GetType().Name ?? "<null>");
-            return false;
+            if (ReferenceEquals(pointer?.Captured, owner))
+                return false;
+
+            End(owner);
         }
 
-        pointer.Capture(control);
+        targetPointer.Capture(control);
+        if (!ReferenceEquals(targetPointer.Captured, control))
+            return false;
+
         owner = control;
-        active = true;
-        canWarpPointer = SystemPointerWarp.IsSupported;
-        suppressedWarpMoveCount = 0;
-        control.Cursor = HiddenCursor;
+        pointer = targetPointer;
+        topLevel = TopLevel.GetTopLevel(control);
+        previousOwnerCursor = control.Cursor;
+        previousTopLevelCursor = topLevel?.Cursor;
+        lastPosition = CoerceFinite(initialPosition, default);
 
-        var clampedInitial = ClampToBounds(control, initialPointerPosition);
-        // Use Avalonia's control-local coordinates as the canonical restore source.
-        restoreScreenPoint = control.PointToScreen(clampedInitial);
-        lastPointerLocal = clampedInitial;
-        Log.Information("Capture.TryBegin success owner={OwnerType} Pos={Pos}", control.GetType().Name, clampedInitial);
+        HideCursor(control);
         return true;
     }
 
-    public static void End(Control control, IPointer? pointer = null)
-    {
-        if (!ReferenceEquals(owner, control) || !active)
-        {
-            Log.Information(
-                "Capture.End ignored for {RequesterType}; active={Active} owner={OwnerType}.",
-                control.GetType().Name,
-                active,
-                owner?.GetType().Name ?? "<null>");
-            return;
-        }
-
-        var restorePoint = restoreScreenPoint;
-        var warpWasEnabled = canWarpPointer;
-
-        active = false;
-        owner = null;
-        suppressedWarpMoveCount = 0;
-        control.Cursor = DefaultCursor;
-        pointer?.Capture(null);
-
-        if (restorePoint is not null && warpWasEnabled)
-        {
-            if (RestoreDelayMs > 0)
-                Thread.Sleep(RestoreDelayMs);
-            if (!SystemPointerWarp.TryWarp(restorePoint.Value.X, restorePoint.Value.Y))
-                Log.Warning("Pointer restore warp failed at capture end.");
-        }
-
-        canWarpPointer = false;
-        restoreScreenPoint = null;
-        Log.Information("Capture.End success owner={OwnerType}", control.GetType().Name);
-    }
-
-    public static bool TryConsumeWarpSuppressedMove(Control control)
-    {
-        if (!IsOwnedBy(control) || suppressedWarpMoveCount <= 0)
-            return false;
-
-        suppressedWarpMoveCount--;
-        return true;
-    }
-
-    public static Vector GetDelta(Control control, Point pointerPosition)
+    public static Vector UpdateMove(Control control, Point position)
     {
         if (!IsOwnedBy(control))
             return default;
 
-        var delta = new Vector(pointerPosition.X - lastPointerLocal.X, pointerPosition.Y - lastPointerLocal.Y);
-        lastPointerLocal = pointerPosition;
+        var current = CoerceFinite(position, lastPosition);
+        var delta = current - lastPosition;
+        lastPosition = current;
         return delta;
     }
 
-    public static bool TryWrapAround(Control control, Point pointerPosition)
+    public static void End(Control control, IPointer? targetPointer = null)
     {
-        if (!IsOwnedBy(control) || !canWarpPointer)
-            return false;
-        if (!TryGetWrappedPosition(control, pointerPosition, out var wrappedLocal))
-            return false;
+        if (!IsOwnedBy(control))
+            return;
 
-        if (!TryWarpPointerToPosition(control, wrappedLocal))
-        {
-            Log.Warning("Pointer warp failed during wrap-around; disabling warp for current capture.");
-            canWarpPointer = false;
-            return false;
-        }
+        RestoreCursor(control, previousOwnerCursor);
+        if (topLevel is not null)
+            RestoreCursor(topLevel, previousTopLevelCursor);
 
-        suppressedWarpMoveCount = SuppressedMovesAfterWarp;
-        lastPointerLocal = wrappedLocal;
-        return true;
+        var capturedPointer = targetPointer ?? pointer;
+        if (capturedPointer is not null && ReferenceEquals(capturedPointer.Captured, control))
+            capturedPointer.Capture(null);
+
+        owner = null;
+        pointer = null;
+        topLevel = null;
+        previousOwnerCursor = null;
+        previousTopLevelCursor = null;
+        lastPosition = default;
     }
 
-    private static Point ClampToBounds(Control control, Point localPoint)
+    private static void HideCursor(Control control)
     {
-        var bounds = control.Bounds;
-        var maxX = Math.Max(0d, bounds.Width - 1d);
-        var maxY = Math.Max(0d, bounds.Height - 1d);
-        var x = Math.Clamp(localPoint.X, 0d, maxX);
-        var y = Math.Clamp(localPoint.Y, 0d, maxY);
+        control.Cursor = HiddenCursor;
+        if (topLevel is not null)
+            topLevel.Cursor = HiddenCursor;
+    }
+
+    private static void RestoreCursor(InputElement element, Cursor? cursor)
+    {
+        if (cursor is null)
+            element.ClearValue(InputElement.CursorProperty);
+        else
+            element.Cursor = cursor;
+    }
+
+    private static Point CoerceFinite(Point point, Point fallback)
+    {
+        var x = double.IsFinite(point.X) ? point.X : fallback.X;
+        var y = double.IsFinite(point.Y) ? point.Y : fallback.Y;
         return new Point(x, y);
-    }
-
-    private static bool TryGetWrappedPosition(Control control, Point pointerPosition, out Point wrappedPosition)
-    {
-        var bounds = control.Bounds;
-        if (bounds.Width <= 0d || bounds.Height <= 0d)
-        {
-            wrappedPosition = pointerPosition;
-            return false;
-        }
-
-        var maxX = Math.Max(0d, bounds.Width - 1d);
-        var maxY = Math.Max(0d, bounds.Height - 1d);
-        var wrappedX = pointerPosition.X;
-        var wrappedY = pointerPosition.Y;
-        var wrapped = false;
-        var edgeInsetX = Math.Min(WrapInsetPixels, maxX);
-        var edgeInsetY = Math.Min(WrapInsetPixels, maxY);
-
-        if (wrappedX <= WrapThresholdPixels)
-        {
-            wrappedX = maxX - edgeInsetX;
-            wrapped = true;
-        }
-        else if (wrappedX >= maxX - WrapThresholdPixels)
-        {
-            wrappedX = edgeInsetX;
-            wrapped = true;
-        }
-
-        if (wrappedY <= WrapThresholdPixels)
-        {
-            wrappedY = maxY - edgeInsetY;
-            wrapped = true;
-        }
-        else if (wrappedY >= maxY - WrapThresholdPixels)
-        {
-            wrappedY = edgeInsetY;
-            wrapped = true;
-        }
-
-        wrappedPosition = new Point(wrappedX, wrappedY);
-        return wrapped;
-    }
-
-    private static bool TryWarpPointerToPosition(Control control, Point localPosition)
-    {
-        var screenPoint = control.PointToScreen(localPosition);
-        return SystemPointerWarp.TryWarp(screenPoint.X, screenPoint.Y);
-    }
-
-    private static class SystemPointerWarp
-    {
-        public static bool IsSupported
-        {
-            get
-            {
-                if (OperatingSystem.IsWindows())
-                    return true;
-                if (!OperatingSystem.IsLinux())
-                    return false;
-
-                var display = System.Environment.GetEnvironmentVariable("DISPLAY");
-                return !string.IsNullOrEmpty(display);
-            }
-        }
-
-        public static bool TryWarp(int screenX, int screenY)
-        {
-            try
-            {
-                if (OperatingSystem.IsWindows())
-                    return Win32PointerWarp.TryWarp(screenX, screenY);
-                if (OperatingSystem.IsLinux())
-                    return X11PointerWarp.TryWarp(screenX, screenY);
-            }
-            catch (DllNotFoundException ex)
-            {
-                Log.Error(ex, "Pointer warp failed: required native library not found.");
-                return false;
-            }
-            catch (EntryPointNotFoundException ex)
-            {
-                Log.Error(ex, "Pointer warp failed: required native function not found.");
-                return false;
-            }
-            catch (BadImageFormatException ex)
-            {
-                Log.Error(ex, "Pointer warp failed: native library architecture mismatch.");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Pointer warp failed with unexpected native interop error.");
-                return false;
-            }
-
-            return false;
-        }
-    }
-
-    private static class Win32PointerWarp
-    {
-        public static bool TryWarp(int screenX, int screenY) => SetCursorPos(screenX, screenY);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SetCursorPos(int x, int y);
-    }
-
-    private static class X11PointerWarp
-    {
-        private static readonly object Sync = new();
-        private static IntPtr display = IntPtr.Zero;
-        private static IntPtr rootWindow = IntPtr.Zero;
-        private static bool loggedOpenDisplayFailure;
-
-        public static bool TryWarp(int screenX, int screenY)
-        {
-            lock (Sync)
-            {
-                if (!EnsureDisplay())
-                    return false;
-
-                XWarpPointer(display, IntPtr.Zero, rootWindow, 0, 0, 0, 0, screenX, screenY);
-                XFlush(display);
-                return true;
-            }
-        }
-
-        private static bool EnsureDisplay()
-        {
-            if (display != IntPtr.Zero && rootWindow != IntPtr.Zero)
-                return true;
-
-            display = XOpenDisplay(IntPtr.Zero);
-            if (display == IntPtr.Zero)
-            {
-                if (!loggedOpenDisplayFailure)
-                {
-                    loggedOpenDisplayFailure = true;
-                    Log.Warning(
-                        "XOpenDisplay failed; X11 pointer warp unavailable. DISPLAY={Display} WAYLAND_DISPLAY={WaylandDisplay} XDG_SESSION_TYPE={SessionType}",
-                        System.Environment.GetEnvironmentVariable("DISPLAY") ?? "<null>",
-                        System.Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") ?? "<null>",
-                        System.Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? "<null>");
-                }
-                return false;
-            }
-
-            var screen = XDefaultScreen(display);
-            rootWindow = XRootWindow(display, screen);
-            if (rootWindow == IntPtr.Zero)
-            {
-                Log.Warning("XRootWindow returned null; X11 pointer warp unavailable.");
-                return false;
-            }
-
-            return true;
-        }
-
-        [DllImport("libX11.so.6")]
-        private static extern IntPtr XOpenDisplay(IntPtr displayName);
-
-        [DllImport("libX11.so.6")]
-        private static extern int XDefaultScreen(IntPtr x11Display);
-
-        [DllImport("libX11.so.6")]
-        private static extern IntPtr XRootWindow(IntPtr x11Display, int screenNumber);
-
-        [DllImport("libX11.so.6")]
-        private static extern int XWarpPointer(
-            IntPtr x11Display,
-            IntPtr srcWindow,
-            IntPtr dstWindow,
-            int srcX,
-            int srcY,
-            uint srcWidth,
-            uint srcHeight,
-            int destX,
-            int destY);
-
-        [DllImport("libX11.so.6")]
-        private static extern int XFlush(IntPtr x11Display);
     }
 }
 
@@ -354,22 +127,16 @@ public abstract class CapturingControlBase : ContentControl
     }
 
     protected virtual bool UseTimedHoldCapture => false;
-    protected bool IsCaptureActive => PointerCaptureCoordinator.IsOwnedBy(this);
+    protected bool IsCaptureActive => PointerCapture.IsOwnedBy(this);
 
     protected bool BeginCapture(IPointer pointer, Point position)
-        => PointerCaptureCoordinator.TryBegin(this, pointer, position);
+        => PointerCapture.TryBegin(this, pointer, position);
 
     protected void EndCapture(IPointer? pointer = null)
-        => PointerCaptureCoordinator.End(this, pointer);
-
-    protected bool TryConsumeCaptureWarpMove()
-        => PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this);
+        => PointerCapture.End(this, pointer);
 
     protected Vector GetCaptureDelta(Point position)
-        => PointerCaptureCoordinator.GetDelta(this, position);
-
-    protected bool TryWrapCapture(Point position)
-        => PointerCaptureCoordinator.TryWrapAround(this, position);
+        => PointerCapture.UpdateMove(this, position);
 
     protected bool CaptureStartedDuringPress => holdCaptureStartedDuringPress;
     protected bool PressStartedWithOnlyLeft => holdPressStartedLeft && !holdPressStartedRight;
@@ -411,7 +178,7 @@ public abstract class CapturingControlBase : ContentControl
 
         holdPressActive = true;
         holdCaptureStartedDuringPress = false;
-        holdPressStartMs = System.Environment.TickCount64;
+        holdPressStartMs = Environment.TickCount64;
         holdPointer = e.Pointer;
         holdPosition = e.GetPosition(this);
         holdLeftPressed = leftPressed;
@@ -455,12 +222,6 @@ public abstract class CapturingControlBase : ContentControl
             }
         }
 
-        if (IsCaptureActive && TryConsumeCaptureWarpMove())
-        {
-            e.Handled = true;
-            return;
-        }
-
         if (!IsCaptureActive)
         {
             OnHoldPointerMoved(e, position, leftPressed, rightPressed);
@@ -476,10 +237,6 @@ public abstract class CapturingControlBase : ContentControl
             EndCapture(e.Pointer);
             OnHoldCaptureEnded();
         }
-        else
-        {
-            TryWrapCapture(position);
-        }
 
         e.Handled = true;
     }
@@ -491,6 +248,7 @@ public abstract class CapturingControlBase : ContentControl
             return;
 
         var releasePosition = e.GetPosition(this);
+        var handled = IsCaptureActive;
         var props = e.GetCurrentPoint(this).Properties;
         var leftPressed = props.IsLeftButtonPressed;
         var rightPressed = props.IsRightButtonPressed;
@@ -514,27 +272,25 @@ public abstract class CapturingControlBase : ContentControl
             }
         }
 
-        var elapsedMs = System.Environment.TickCount64 - holdPressStartMs;
+        var elapsedMs = Environment.TickCount64 - holdPressStartMs;
         if (holdPressActive && !holdCaptureStartedDuringPress && elapsedMs < HoldCaptureDelayMs)
+        {
             OnHoldQuickClick(e, releasePosition);
+            handled = true;
+        }
 
         ResetTimedHoldCapture();
-        e.Handled = IsCaptureActive;
+        e.Handled = e.Handled || handled;
     }
 
-    protected override void OnLostFocus(RoutedEventArgs e)
+    protected override void OnLostFocus(FocusChangedEventArgs e)
     {
         base.OnLostFocus(e);
         if (!UseTimedHoldCapture)
             return;
 
+        EndActiveHoldCapture();
         ResetTimedHoldCapture();
-        if (IsCaptureActive)
-        {
-            ReleaseHeldCaptureButtons();
-            EndCapture();
-            OnHoldCaptureEnded();
-        }
     }
 
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
@@ -543,13 +299,10 @@ public abstract class CapturingControlBase : ContentControl
         if (!UseTimedHoldCapture)
             return;
 
+        var handled = IsCaptureActive;
+        EndActiveHoldCapture();
         ResetTimedHoldCapture();
-        if (IsCaptureActive)
-        {
-            ReleaseHeldCaptureButtons();
-            EndCapture();
-            OnHoldCaptureEnded();
-        }
+        e.Handled = e.Handled || handled;
     }
 
     private void TryBeginHoldCapture()
@@ -564,6 +317,16 @@ public abstract class CapturingControlBase : ContentControl
         holdCaptureStartedDuringPress = true;
         OnHoldCaptureStarted(holdPosition, holdLeftPressed, holdRightPressed);
         SyncHeldCaptureButtons(holdPosition, holdLeftPressed, holdRightPressed);
+    }
+
+    private void EndActiveHoldCapture()
+    {
+        if (!IsCaptureActive)
+            return;
+
+        ReleaseHeldCaptureButtons();
+        EndCapture();
+        OnHoldCaptureEnded();
     }
 
     private void SyncHeldCaptureButtons(Point position, bool leftPressed, bool rightPressed)

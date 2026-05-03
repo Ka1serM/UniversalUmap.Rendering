@@ -32,9 +32,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     private VulkanRasterShaderProgram? shaderProgram;
     private Context? shaderContext;
     private VulkanViewerControl? subscribedSource;
-    private DescriptorPool descriptorPool;
-    private DescriptorSetLayout descriptorSetLayout;
-    private DescriptorSet descriptorSet;
+    private VulkanDescriptorSet? textureDescriptorSet;
     private TextureAsset? fallbackTexture;
     private int boundTextureIndex = int.MinValue;
 
@@ -78,8 +76,8 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         UnsubscribeFromSource(subscribedSource);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
         hasRotationFromSource = false;
         base.OnDetachedFromVisualTree(e);
     }
@@ -88,17 +86,8 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     {
         shaderProgram?.Dispose();
         shaderProgram = null;
-        if (shaderContext is not null && descriptorSetLayout.Handle != default)
-        {
-            shaderContext.Api.DestroyDescriptorSetLayout(shaderContext.Device, descriptorSetLayout, default);
-            descriptorSetLayout = default;
-        }
-        if (shaderContext is not null && descriptorPool.Handle != default)
-        {
-            shaderContext.Api.DestroyDescriptorPool(shaderContext.Device, descriptorPool, default);
-            descriptorPool = default;
-        }
-        descriptorSet = default;
+        textureDescriptorSet?.Dispose();
+        textureDescriptorSet = null;
         boundTextureIndex = int.MinValue;
         fallbackTexture?.Dispose();
         fallbackTexture = null;
@@ -184,23 +173,17 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         if (!IsPointInsideDisk(local))
             return;
 
-        if (PointerCaptureCoordinator.TryBegin(this, e.Pointer, local))
+        if (PointerCapture.TryBegin(this, e.Pointer, local))
             e.Handled = true;
     }
 
     private void OnPointerMovedRouted(object? sender, PointerEventArgs e)
     {
-        if (!PointerCaptureCoordinator.IsOwnedBy(this))
+        if (!PointerCapture.IsOwnedBy(this))
             return;
-
-        if (PointerCaptureCoordinator.TryConsumeWarpSuppressedMove(this))
-        {
-            e.Handled = true;
-            return;
-        }
 
         var p = e.GetPosition(this);
-        var delta = PointerCaptureCoordinator.GetDelta(this, p);
+        var delta = PointerCapture.UpdateMove(this, p);
         if (Math.Abs(delta.X) > double.Epsilon)
         {
             rotationDegrees = WrapDegrees(rotationDegrees + (float)(delta.X * 0.35));
@@ -215,30 +198,29 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             }
         }
 
-        PointerCaptureCoordinator.TryWrapAround(this, p);
         e.Handled = true;
     }
 
     private void OnPointerReleasedRouted(object? sender, PointerReleasedEventArgs e)
     {
-        if (!PointerCaptureCoordinator.IsOwnedBy(this))
+        if (!PointerCapture.IsOwnedBy(this))
             return;
 
-        PointerCaptureCoordinator.End(this, e.Pointer);
+        PointerCapture.End(this, e.Pointer);
         e.Handled = true;
     }
 
-    protected override void OnLostFocus(RoutedEventArgs e)
+    protected override void OnLostFocus(FocusChangedEventArgs e)
     {
         base.OnLostFocus(e);
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
     }
 
     private void OnPointerCaptureLostRouted(object? sender, PointerCaptureLostEventArgs e)
     {
-        if (PointerCaptureCoordinator.IsOwnedBy(this))
-            PointerCaptureCoordinator.End(this);
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
     }
 
     private bool IsPointInsideDisk(Point p)
@@ -282,52 +264,23 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
             ShaderStageFlags.FragmentBit,
             (uint)Marshal.SizeOf<PushConstants>(),
             enableAlphaBlending: true,
-            externalDescriptorSetLayout: descriptorSetLayout,
-            externalDescriptorSet: descriptorSet);
+            externalDescriptorSetLayout: textureDescriptorSet!.Layout,
+            externalDescriptorSet: textureDescriptorSet.Set);
     }
 
-    private unsafe void EnsureDescriptorResources(Context context)
+    private void EnsureDescriptorResources(Context context)
     {
-        if (descriptorSetLayout.Handle != default && descriptorPool.Handle != default && descriptorSet.Handle != default)
+        if (textureDescriptorSet is not null)
             return;
 
-        var layoutBinding = new DescriptorSetLayoutBinding(
-            0,
-            DescriptorType.CombinedImageSampler,
-            1,
-            ShaderStageFlags.FragmentBit);
-        var layoutInfo = new DescriptorSetLayoutCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 1,
-            PBindings = &layoutBinding
-        };
-        context.Api.CreateDescriptorSetLayout(context.Device, in layoutInfo, default, out descriptorSetLayout).ThrowOnError();
-
-        var poolSize = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 1);
-        var poolInfo = new DescriptorPoolCreateInfo
-        {
-            SType = StructureType.DescriptorPoolCreateInfo,
-            MaxSets = 1,
-            PoolSizeCount = 1,
-            PPoolSizes = &poolSize
-        };
-        context.Api.CreateDescriptorPool(context.Device, in poolInfo, default, out descriptorPool).ThrowOnError();
-
-        var allocInfo = new DescriptorSetAllocateInfo
-        {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = descriptorPool,
-            DescriptorSetCount = 1
-        };
-        var descriptorSetLayoutLocal = descriptorSetLayout;
-        allocInfo.PSetLayouts = &descriptorSetLayoutLocal;
-        context.Api.AllocateDescriptorSets(context.Device, in allocInfo, out descriptorSet).ThrowOnError();
+        textureDescriptorSet = new VulkanDescriptorSetBuilder()
+            .Add(0, DescriptorType.CombinedImageSampler, 1, ShaderStageFlags.FragmentBit)
+            .Build(context);
     }
 
-    private unsafe void UpdateEnvironmentTextureBinding(Scene scene)
+    private void UpdateEnvironmentTextureBinding(Scene scene)
     {
-        if (shaderContext is null || descriptorSet.Handle == default)
+        if (shaderContext is null || textureDescriptorSet is null)
             return;
 
         if (boundTextureIndex == environmentTextureIndex)
@@ -339,16 +292,9 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
         else
             imageInfo = fallbackTexture?.GetDescriptorImageInfo() ?? default;
 
-        var write = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.CombinedImageSampler,
-            PImageInfo = &imageInfo
-        };
-        shaderContext.Api.UpdateDescriptorSets(shaderContext.Device, 1, in write, 0, null);
+        new VulkanDescriptorWriter()
+            .CombinedImageSampler(0, imageInfo)
+            .Update(shaderContext, textureDescriptorSet.Set);
         boundTextureIndex = environmentTextureIndex;
     }
 

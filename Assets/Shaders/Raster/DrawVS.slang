@@ -1,7 +1,6 @@
 #include "../Shared.slang"
 #include "../Bindings.slang"
 
-[[vk::binding(10, 0)]] StructuredBuffer<MeshRasterMetadataGpu, Std430DataLayout> rasterMeshes;
 [[vk::binding(11, 0)]] StructuredBuffer<uint, Std430DataLayout> visibleInstanceIds;
 
 struct RasterPushConstants

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SlangGenerator")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ac7dd67dcdbfb5209dfe05750287c90adf84ba56")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+23407000311f2b410772d27bc8354071a202c9a1")]
 [assembly: System.Reflection.AssemblyProductAttribute("SlangGenerator")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SlangGenerator")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

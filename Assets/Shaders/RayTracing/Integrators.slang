@@ -91,105 +91,6 @@ struct AoIntegrator : IPathIntegrator
     }
 };
 
-struct DirectLightingIntegrator : IPathIntegrator
-{
-    uint sampleCount()
-    {
-        return 1u;
-    }
-
-    void shadeMiss(float3 worldRayDirection, inout PathState state)
-    {
-        uint missFlags;
-        float3 envColor = evaluateMissRadiance(worldRayDirection, state.Depth, 0.0, missFlags);
-        state.Radiance += envColor;
-        state.Flags = missFlags;
-        setHitAnything(state, (missFlags & uint(BounceType.ENV_TRANSPARENT)) == 0u);
-        state.PrimaryObjectIndex = InvalidInstance;
-        state.PrimaryAlbedo = getHitAnything(state) ? envColor : float3(0.0);
-        state.PrimaryNormal = float3(0.0);
-        state.PrimaryPosition = float3(0.0);
-    }
-
-    void shadeSurface(SurfaceData surface, float3 worldRayDirection, uint sampleIndex, inout PathState state, inout Payload payload)
-    {
-        float3 viewDir = fastNormalize(-worldRayDirection);
-        float3 geometricFacingNormal = computeFacingGeometricNormal(surface.GeometricNormal, viewDir);
-
-        if (rand(payload.RngState) > surface.Opacity) {
-            state.RngState = payload.RngState;
-            state.RayOrigin = surface.WorldPosition + worldRayDirection * computeRayOriginBias(surface.WorldPosition);
-            state.RayDirection = worldRayDirection;
-            state.Flags = uint(BounceType.RAY_TRANSPARENT);
-            enqueueContinuationRay(sampleIndex, state);
-            return;
-        }
-
-        float3 facingNormal = computeFacingShadingNormal(surface.ShadingNormal, viewDir, geometricFacingNormal);
-
-        float3 albedo = surface.Albedo;
-        float metallic = surface.Metallic;
-        float specular = surface.Specular;
-        float roughness = regularizeSecondaryRoughness(surface.Roughness, state.Depth);
-
-        float dielectricF0 = dielectricF0FromSpecular(specular);
-        float3 F0 = lerp(float3(dielectricF0), albedo, metallic);
-        float swSpecular = computeSpecularSamplingWeight(viewDir, facingNormal, albedo, F0, metallic, roughness);
-        float ao = estimateQueueAmbientOcclusion(surface.WorldPosition, geometricFacingNormal, payload.RngState);
-        float3 diffuseEnvironment = sampleDiffuseEnvironment(facingNormal, sceneSettings.Environment);
-        float3 reflectedDir = reflect(-viewDir, facingNormal);
-        float3 specularEnvironment = sampleSpecularEnvironment(reflectedDir, roughness, sceneSettings.Environment);
-        float NdotV = max(dot(facingNormal, viewDir), 0.0);
-        float perceptualRoughness = clamp(roughness, 0.0, 1.0);
-        float3 diffuseColor = albedo * (1.0 - metallic);
-        float3 diffuseAmbient = (diffuseEnvironment * diffuseColor) * (1.0 / PI);
-        float3 specularAmbient = specularEnvironment * envBrdfApprox(F0, perceptualRoughness, NdotV);
-        float specularAo = computeSpecularOcclusion(NdotV, ao, perceptualRoughness);
-        specularAmbient *= specularAo;
-
-        state.Radiance += surface.Emission + (diffuseAmbient * ao) + (specularAmbient * ao);
-
-        queueDirectionalShadowRay(
-            sampleIndex,
-            surface.WorldPosition,
-            facingNormal,
-            geometricFacingNormal,
-            viewDir,
-            albedo,
-            specular,
-            metallic,
-            roughness,
-            swSpecular);
-        queueEnvironmentShadowRay(
-            sampleIndex,
-            surface.WorldShadowPosition,
-            facingNormal,
-            geometricFacingNormal,
-            viewDir,
-            albedo,
-            specular,
-            metallic,
-            roughness,
-            swSpecular,
-            payload.RngState);
-
-        setHitAnything(state, true);
-        state.PrimaryAlbedo = albedo;
-        state.PrimaryNormal = facingNormal * 0.5 + 0.5;
-        state.PrimaryPosition = surface.WorldPosition;
-        state.RngState = payload.RngState;
-        state.Flags = uint(BounceType.RAY_TERMINATED);
-        pathStates[sampleIndex] = state;
-    }
-
-    float3 filterRadiance(PathState state, float3 referenceRadiance)
-    {
-        state = state;
-        referenceRadiance = referenceRadiance;
-        return max(state.Radiance, float3(0.0));
-    }
-};
-
 struct PathTracingIntegrator : IPathIntegrator
 {
     uint sampleCount()
@@ -334,8 +235,6 @@ struct PathTracingIntegrator : IPathIntegrator
 
 #if defined(INTEGRATOR_AO)
 #define ACTIVE_INTEGRATOR AoIntegrator
-#elif defined(INTEGRATOR_DIRECT_LIGHTING)
-#define ACTIVE_INTEGRATOR DirectLightingIntegrator
 #elif defined(INTEGRATOR_PATH_TRACING)
 #define ACTIVE_INTEGRATOR PathTracingIntegrator
 #else

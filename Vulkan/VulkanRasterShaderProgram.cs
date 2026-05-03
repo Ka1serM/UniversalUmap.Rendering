@@ -9,6 +9,7 @@ namespace UniversalUmap.Rendering.Vulkan;
 internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 {
     private readonly Context context;
+    private readonly VulkanDeviceResources deviceResources;
     private readonly ShaderStageFlags pushConstantStages;
     private readonly PipelineLayout pipelineLayout;
     private readonly Pipeline pipeline;
@@ -31,6 +32,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
         DescriptorSet externalDescriptorSet = default)
     {
         this.context = context;
+        deviceResources = new VulkanDeviceResources(context);
         this.pushConstantStages = pushConstantStages;
         hasVertexInput = !vertexBindings.IsEmpty || !vertexAttributes.IsEmpty;
         this.externalDescriptorSet = externalDescriptorSet;
@@ -41,33 +43,9 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
             hasVertexInput,
             externalDescriptorSet.Handle != default);
 
-        var vertBytes = EmbeddedAssets.ReadByFileName(vertexShaderSpvAsset);
-        var fragBytes = EmbeddedAssets.ReadByFileName(fragmentShaderSpvAsset);
+        using var shaderModules = VulkanPipelineFactory.CreateShaderModuleSet(context, vertexShaderSpvAsset, fragmentShaderSpvAsset);
         using var mainName = new ByteString("main");
 
-        ShaderModule vertModule;
-        ShaderModule fragModule;
-        fixed (byte* pVert = vertBytes)
-        fixed (byte* pFrag = fragBytes)
-        {
-            var vertInfo = new ShaderModuleCreateInfo
-            {
-                SType = StructureType.ShaderModuleCreateInfo,
-                CodeSize = (nuint)vertBytes.Length,
-                PCode = (uint*)pVert
-            };
-            context.Api.CreateShaderModule(context.Device, in vertInfo, default, out vertModule).ThrowOnError();
-
-            var fragInfo = new ShaderModuleCreateInfo
-            {
-                SType = StructureType.ShaderModuleCreateInfo,
-                CodeSize = (nuint)fragBytes.Length,
-                PCode = (uint*)pFrag
-            };
-            context.Api.CreateShaderModule(context.Device, in fragInfo, default, out fragModule).ThrowOnError();
-        }
-
-        PushConstantRange pushRange = default;
         var colorAttachment = new AttachmentDescription
         {
             Format = Format.R8G8B8A8Unorm,
@@ -104,17 +82,10 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
             DependencyCount = 1,
             PDependencies = &subpassDependency
         };
-        context.Api.CreateRenderPass(context.Device, in renderPassInfo, default, out renderPass).ThrowOnError();
+        context.Api.CreateRenderPass(context.Device, in renderPassInfo, default, out var renderPassLocal).ThrowOnError();
+        renderPass = deviceResources.Track(renderPassLocal);
 
-        var layoutInfo = new PipelineLayoutCreateInfo
-        {
-            SType = StructureType.PipelineLayoutCreateInfo
-        };
-        if (externalDescriptorSetLayout.Handle != default)
-        {
-            layoutInfo.SetLayoutCount = 1;
-            layoutInfo.PSetLayouts = &externalDescriptorSetLayout;
-        }
+        PushConstantRange? pushRange = null;
         if (pushConstantSize > 0)
         {
             pushRange = new PushConstantRange
@@ -123,24 +94,29 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 Offset = 0,
                 Size = pushConstantSize
             };
-            layoutInfo.PushConstantRangeCount = 1;
-            layoutInfo.PPushConstantRanges = &pushRange;
         }
-        context.Api.CreatePipelineLayout(context.Device, in layoutInfo, default, out pipelineLayout).ThrowOnError();
+
+        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[1];
+        setLayouts[0] = externalDescriptorSetLayout;
+        var setLayoutSpan = externalDescriptorSetLayout.Handle != default
+            ? setLayouts
+            : ReadOnlySpan<DescriptorSetLayout>.Empty;
+        pipelineLayout = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, setLayoutSpan, pushRange));
+        pipeline = default;
 
         var stages = stackalloc PipelineShaderStageCreateInfo[2];
         stages[0] = new PipelineShaderStageCreateInfo
         {
             SType = StructureType.PipelineShaderStageCreateInfo,
             Stage = ShaderStageFlags.VertexBit,
-            Module = vertModule,
+            Module = shaderModules.Vertex,
             PName = mainName
         };
         stages[1] = new PipelineShaderStageCreateInfo
         {
             SType = StructureType.PipelineShaderStageCreateInfo,
             Stage = ShaderStageFlags.FragmentBit,
-            Module = fragModule,
+            Module = shaderModules.Fragment,
             PName = mainName
         };
 
@@ -234,11 +210,9 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 Subpass = 0,
                 PNext = null
             };
-            context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pipelineInfo, default, out pipeline).ThrowOnError();
+            context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pipelineInfo, default, out var pipelineLocal).ThrowOnError();
+            pipeline = deviceResources.Track(pipelineLocal);
         }
-
-        context.Api.DestroyShaderModule(context.Device, vertModule, default);
-        context.Api.DestroyShaderModule(context.Device, fragModule, default);
     }
 
     public void Draw<TPushConstants>(
@@ -365,6 +339,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
                 Layers = 1
             };
             context.Api.CreateFramebuffer(context.Device, in framebufferInfo, default, out framebuffer).ThrowOnError();
+            framebuffer = deviceResources.Track(framebuffer);
         }
 
         framebuffersByTargetViewHandle[target.ViewHandle] = framebuffer;
@@ -373,17 +348,7 @@ internal sealed unsafe class VulkanRasterShaderProgram : IDisposable
 
     public void Dispose()
     {
-        foreach (var framebuffer in framebuffersByTargetViewHandle.Values)
-        {
-            if (framebuffer.Handle != default)
-                context.Api.DestroyFramebuffer(context.Device, framebuffer, default);
-        }
         framebuffersByTargetViewHandle.Clear();
-        if (pipeline.Handle != default)
-            context.Api.DestroyPipeline(context.Device, pipeline, default);
-        if (pipelineLayout.Handle != default)
-            context.Api.DestroyPipelineLayout(context.Device, pipelineLayout, default);
-        if (renderPass.Handle != default)
-            context.Api.DestroyRenderPass(context.Device, renderPass, default);
+        deviceResources.Dispose();
     }
 }

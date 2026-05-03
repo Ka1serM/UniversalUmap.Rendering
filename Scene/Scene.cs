@@ -17,6 +17,12 @@ namespace UniversalUmap.Rendering;
 
 public sealed class Scene : IDisposable, IScene
 {
+    private const int PackedEnvironmentMagic = 0x504D4555; // UEMP
+    private const int PackedEnvironmentMipChainMagic = 0x324D4555; // UEM2
+    private const int PackedEnvironmentHeaderByteLength = 16;
+    private const int PackedEnvironmentMipChainHeaderByteLength = 20;
+    private const ushort HalfFloatAlphaOne = 0x3C00;
+
     private sealed class DeferredUpdateScope : IDisposable
     {
         private readonly Scene owner;
@@ -46,6 +52,10 @@ public sealed class Scene : IDisposable, IScene
     private SceneDirtyFlags dirtyFlags;
     private SceneDirtyFlags deferredDirtyFlags;
     private int deferredUpdateDepth;
+    private ulong meshesRevision;
+    private ulong tlasRevision;
+    private ulong texturesRevision;
+    private ulong settingsRevision;
     private Func<Func<object?>, object?>? gpuDispatcher;
 
     public int SelectedInstanceIndex { get; private set; } = -1;
@@ -72,6 +82,12 @@ public sealed class Scene : IDisposable, IScene
         RenderSettingsDataGpu RenderSettings,
         CameraDataGpu Camera,
         EnvironmentDataGpu Environment);
+
+    internal readonly record struct ResourceRevisions(
+        ulong Meshes,
+        ulong Tlas,
+        ulong Textures,
+        ulong Settings);
 
     internal Scene(Context context, Input input)
     {
@@ -253,8 +269,103 @@ public sealed class Scene : IDisposable, IScene
         {
             Position = Camera.Position,
             Direction = Camera.ToStruct().Direction,
+            Horizontal = Camera.ToStruct().Horizontal,
+            Vertical = Camera.ToStruct().Vertical,
+            FocalLength = Camera.ToStruct().FocalLength,
+            NearPlane = 0.01f,
+            FarPlane = 10_000f,
             WorldToClip = Camera.WorldToClip
         });
+    }
+
+    internal RasterShadowDataGpu CaptureRasterShadowData()
+    {
+        return Synchronize(() =>
+        {
+            const float atlasSize = 4096f;
+            const float pageSize = 256f;
+            const int cascadeCount = 4;
+
+            var environment = Environment.ToStruct();
+            var enabled = RenderSettings.RasterVirtualShadowMapsEnabled &&
+                          environment.DirectionalIntensity > 0.0001f &&
+                          environment.DirectionalDirection.LengthSquared() > 0.0001f;
+            var result = new RasterShadowDataGpu
+            {
+                UvScaleOffset0 = new Vector4(0.5f, 0.5f, 0.0f, 0.0f),
+                UvScaleOffset1 = new Vector4(0.5f, 0.5f, 0.5f, 0.0f),
+                UvScaleOffset2 = new Vector4(0.5f, 0.5f, 0.0f, 0.5f),
+                UvScaleOffset3 = new Vector4(0.5f, 0.5f, 0.5f, 0.5f),
+                CascadeFarDistances = new Vector4(18f, 55f, 160f, 480f),
+                AtlasSizePageSizeCascadeCountEnabled = new Vector4(atlasSize, pageSize, cascadeCount, enabled ? 1f : 0f)
+            };
+
+            if (!enabled)
+                return result;
+
+            var cameraData = Camera.ToStruct();
+            var lightDirection = Vector3.Normalize(environment.DirectionalDirection);
+            var cameraForward = Vector3.Normalize(cameraData.Direction);
+            var cameraHorizontalTan = MathF.Max(0.001f, cameraData.Horizontal.Length());
+            var cameraVerticalTan = MathF.Max(0.001f, cameraData.Vertical.Length());
+            var shadowMatrices = new[]
+            {
+                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 18f, cameraHorizontalTan, cameraVerticalTan),
+                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 55f, cameraHorizontalTan, cameraVerticalTan),
+                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 160f, cameraHorizontalTan, cameraVerticalTan),
+                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 480f, cameraHorizontalTan, cameraVerticalTan)
+            };
+
+            result.WorldToClip0 = shadowMatrices[0];
+            result.WorldToClip1 = shadowMatrices[1];
+            result.WorldToClip2 = shadowMatrices[2];
+            result.WorldToClip3 = shadowMatrices[3];
+            return result;
+        });
+    }
+
+    private static Matrix4x4 BuildDirectionalShadowWorldToClip(
+        Vector3 cameraPosition,
+        Vector3 cameraForward,
+        Vector3 lightDirection,
+        float cascadeFar,
+        float cameraHorizontalTan,
+        float cameraVerticalTan)
+    {
+        var halfDepth = cascadeFar * 0.5f;
+        var center = cameraPosition + cameraForward * halfDepth;
+        var halfExtent = MathF.Max(cascadeFar * cameraHorizontalTan, cascadeFar * cameraVerticalTan);
+        halfExtent = MathF.Max(halfExtent, 4f);
+
+        var lightForward = Vector3.Normalize(-lightDirection);
+        var upCandidate = MathF.Abs(Vector3.Dot(lightForward, Vector3.UnitY)) > 0.95f
+            ? Vector3.UnitZ
+            : Vector3.UnitY;
+        var right = Vector3.Normalize(Vector3.Cross(upCandidate, lightForward));
+        var up = Vector3.Normalize(Vector3.Cross(lightForward, right));
+        var lightDepth = MathF.Max(cascadeFar + halfExtent * 2f, 16f);
+        var lightPosition = center - lightForward * (lightDepth * 0.5f);
+
+        var view = new Matrix4x4(
+            right.X, up.X, lightForward.X, 0f,
+            right.Y, up.Y, lightForward.Y, 0f,
+            right.Z, up.Z, lightForward.Z, 0f,
+            -Vector3.Dot(lightPosition, right),
+            -Vector3.Dot(lightPosition, up),
+            -Vector3.Dot(lightPosition, lightForward),
+            1f);
+
+        var width = halfExtent * 2f;
+        var height = halfExtent * 2f;
+        var nearPlane = 0f;
+        var farPlane = lightDepth;
+        var projection = new Matrix4x4(
+            2f / width, 0f, 0f, 0f,
+            0f, 2f / height, 0f, 0f,
+            0f, 0f, 1f / MathF.Max(0.0001f, farPlane - nearPlane), 0f,
+            0f, 0f, -nearPlane / MathF.Max(0.0001f, farPlane - nearPlane), 1f);
+
+        return Matrix4x4.Transpose(view * projection);
     }
 
     public TextureAsset Add(TextureAsset texture)
@@ -398,26 +509,25 @@ public sealed class Scene : IDisposable, IScene
 
     public void TryLoadDefaultEnvironment()
     {
-        const string hdriFileName = "kiara_1_dawn_4k.hdr";
-        var baseName = Path.GetFileNameWithoutExtension(hdriFileName);
+        const string hdriName = "default_hdri";
 
         try
         {
-            var environment = CreateEnvironmentMapTexture(hdriFileName, $"Assets/Precomputed/{baseName}_env.bin", generateMipmaps: true);
-            var cdf = CreateEnvironmentMapTexture($"{hdriFileName}_cdf", $"Assets/Precomputed/{baseName}_cdf.bin");
-            var irradiance = CreateEnvironmentMapTexture($"{hdriFileName}_irradiance", $"Assets/Precomputed/{baseName}_irradiance.bin");
-            var radiance = CreateEnvironmentMapTexture($"{hdriFileName}_radiance", $"Assets/Precomputed/{baseName}_radiance.bin", generateMipmaps: true);
+            var environment = CreateEnvironmentMapTexture(hdriName, $"Assets/Precomputed/{hdriName}_env.bin", generateMipmaps: true);
+            var cdf = CreateEnvironmentMapTexture($"{hdriName}_cdf", $"Assets/Precomputed/{hdriName}_cdf.bin");
+            var irradiance = CreateEnvironmentMapTexture($"{hdriName}_irradiance", $"Assets/Precomputed/{hdriName}_irradiance.bin");
+            var radiance = CreateEnvironmentMapTexture($"{hdriName}_radiance", $"Assets/Precomputed/{hdriName}_radiance.bin", generateMipmaps: true);
 
             Add(environment);
             Add(cdf);
             Add(irradiance);
             Add(radiance);
             SetEnvironment(environment, cdf, irradiance, radiance);
-            Log.Information("Loaded precompiled default environment '{HdrFileName}'.", hdriFileName);
+            Log.Information("Loaded precompiled default environment '{HdrName}'.", hdriName);
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to load precompiled default environment map '{HdrFileName}'.", hdriFileName);
+            Log.Warning(ex, "Failed to load precompiled default environment map '{HdrName}'.", hdriName);
         }
     }
 
@@ -426,6 +536,10 @@ public sealed class Scene : IDisposable, IScene
         var packed = EmbeddedAssets.ReadByFileName(embeddedFileName);
         if (packed.Length < 8)
             throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+
+        var magic = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(0, 4));
+        if (magic == PackedEnvironmentMagic || magic == PackedEnvironmentMipChainMagic)
+            return CreateEnvironmentMapTextureFromTypedPayload(textureName, embeddedFileName, packed, generateMipmaps);
 
         var width = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(0, 4));
         var height = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(4, 4));
@@ -447,7 +561,233 @@ public sealed class Scene : IDisposable, IScene
             generateMipmaps);
     }
 
+    private TextureAsset CreateEnvironmentMapTextureFromTypedPayload(
+        string textureName,
+        string embeddedFileName,
+        byte[] packed,
+        bool generateMipmaps)
+    {
+        if (packed.Length < PackedEnvironmentHeaderByteLength)
+            throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+
+        var magic = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(0, 4));
+        var width = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(4, 4));
+        var height = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(8, 4));
+        var format = (PackedEnvironmentTextureFormat)BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(12, 4));
+        if (width <= 0 || height <= 0)
+            throw new InvalidDataException($"Invalid environment precompile payload: {embeddedFileName}");
+
+        if (magic == PackedEnvironmentMipChainMagic)
+        {
+            if (packed.Length < PackedEnvironmentMipChainHeaderByteLength)
+                throw new InvalidDataException($"Invalid mip-chain environment precompile payload: {embeddedFileName}");
+
+            var mipCount = BinaryPrimitives.ReadInt32LittleEndian(packed.AsSpan(16, 4));
+            if (mipCount <= 0)
+                throw new InvalidDataException($"Invalid mip count in environment precompile payload: {embeddedFileName}");
+
+            return format switch
+            {
+                PackedEnvironmentTextureFormat.Rgb16Float => CreateRgb16EnvironmentTextureMipChain(
+                    textureName,
+                    embeddedFileName,
+                    packed,
+                    width,
+                    height,
+                    mipCount),
+                PackedEnvironmentTextureFormat.Rgba16Float => CreateRgba16EnvironmentTextureMipChain(
+                    textureName,
+                    embeddedFileName,
+                    packed,
+                    width,
+                    height,
+                    mipCount),
+                _ => throw new InvalidDataException($"Unsupported environment precompile payload format {format}: {embeddedFileName}")
+            };
+        }
+
+        return format switch
+        {
+            PackedEnvironmentTextureFormat.Rgb16Float => CreateRgb16EnvironmentTexture(
+                textureName,
+                embeddedFileName,
+                packed,
+                width,
+                height,
+                generateMipmaps),
+            PackedEnvironmentTextureFormat.Rgba16Float => CreateRgba16EnvironmentTexture(
+                textureName,
+                embeddedFileName,
+                packed,
+                width,
+                height,
+                generateMipmaps),
+            _ => throw new InvalidDataException($"Unsupported environment precompile payload format {format}: {embeddedFileName}")
+        };
+    }
+
+    private static int CalculatePackedMipByteLength(int width, int height, int channelCount, int mipCount)
+    {
+        var total = 0;
+        var mipWidth = width;
+        var mipHeight = height;
+        for (var level = 0; level < mipCount; level++)
+        {
+            total = checked(total + mipWidth * mipHeight * channelCount * sizeof(ushort));
+            mipWidth = Math.Max(1, mipWidth / 2);
+            mipHeight = Math.Max(1, mipHeight / 2);
+        }
+
+        return total;
+    }
+
+    private TextureAsset CreateRgb16EnvironmentTexture(
+        string textureName,
+        string embeddedFileName,
+        byte[] packed,
+        int width,
+        int height,
+        bool generateMipmaps)
+    {
+        var expectedByteLength = checked(width * height * 3 * sizeof(ushort));
+        if (packed.Length != PackedEnvironmentHeaderByteLength + expectedByteLength)
+            throw new InvalidDataException($"Invalid RGB16F environment precompile payload: {embeddedFileName}");
+
+        var source = packed.AsSpan(PackedEnvironmentHeaderByteLength);
+        var rgba16fBytes = new byte[checked(width * height * 4 * sizeof(ushort))];
+        var texelCount = width * height;
+        for (var texel = 0; texel < texelCount; texel++)
+        {
+            var srcOffset = texel * 3 * sizeof(ushort);
+            var dstOffset = texel * 4 * sizeof(ushort);
+            source.Slice(srcOffset, 3 * sizeof(ushort)).CopyTo(rgba16fBytes.AsSpan(dstOffset, 3 * sizeof(ushort)));
+            BinaryPrimitives.WriteUInt16LittleEndian(rgba16fBytes.AsSpan(dstOffset + 3 * sizeof(ushort), sizeof(ushort)), HalfFloatAlphaOne);
+        }
+
+        return TextureAsset.CreateRgba16Float(
+            context,
+            textureName,
+            string.Empty,
+            rgba16fBytes,
+            (uint)width,
+            (uint)height,
+            generateMipmaps);
+    }
+
+    private TextureAsset CreateRgb16EnvironmentTextureMipChain(
+        string textureName,
+        string embeddedFileName,
+        byte[] packed,
+        int width,
+        int height,
+        int mipCount)
+    {
+        var expectedByteLength = CalculatePackedMipByteLength(width, height, 3, mipCount);
+        if (packed.Length != PackedEnvironmentMipChainHeaderByteLength + expectedByteLength)
+            throw new InvalidDataException($"Invalid RGB16F environment mip-chain precompile payload: {embeddedFileName}");
+
+        var source = packed.AsSpan(PackedEnvironmentMipChainHeaderByteLength);
+        var mipBytes = new byte[mipCount][];
+        var sourceOffset = 0;
+        var mipWidth = width;
+        var mipHeight = height;
+        for (var level = 0; level < mipCount; level++)
+        {
+            var texelCount = mipWidth * mipHeight;
+            var sourceByteLength = texelCount * 3 * sizeof(ushort);
+            var rgba16fBytes = new byte[texelCount * 4 * sizeof(ushort)];
+            for (var texel = 0; texel < texelCount; texel++)
+            {
+                var srcOffset = sourceOffset + texel * 3 * sizeof(ushort);
+                var dstOffset = texel * 4 * sizeof(ushort);
+                source.Slice(srcOffset, 3 * sizeof(ushort)).CopyTo(rgba16fBytes.AsSpan(dstOffset, 3 * sizeof(ushort)));
+                BinaryPrimitives.WriteUInt16LittleEndian(rgba16fBytes.AsSpan(dstOffset + 3 * sizeof(ushort), sizeof(ushort)), HalfFloatAlphaOne);
+            }
+
+            mipBytes[level] = rgba16fBytes;
+            sourceOffset += sourceByteLength;
+            mipWidth = Math.Max(1, mipWidth / 2);
+            mipHeight = Math.Max(1, mipHeight / 2);
+        }
+
+        return TextureAsset.CreateRgba16FloatMipChain(
+            context,
+            textureName,
+            string.Empty,
+            mipBytes,
+            (uint)width,
+            (uint)height);
+    }
+
+    private TextureAsset CreateRgba16EnvironmentTexture(
+        string textureName,
+        string embeddedFileName,
+        byte[] packed,
+        int width,
+        int height,
+        bool generateMipmaps)
+    {
+        var expectedByteLength = checked(width * height * 4 * sizeof(ushort));
+        if (packed.Length != PackedEnvironmentHeaderByteLength + expectedByteLength)
+            throw new InvalidDataException($"Invalid RGBA16F environment precompile payload: {embeddedFileName}");
+
+        return TextureAsset.CreateRgba16Float(
+            context,
+            textureName,
+            string.Empty,
+            packed.AsSpan(PackedEnvironmentHeaderByteLength).ToArray(),
+            (uint)width,
+            (uint)height,
+            generateMipmaps);
+    }
+
+    private TextureAsset CreateRgba16EnvironmentTextureMipChain(
+        string textureName,
+        string embeddedFileName,
+        byte[] packed,
+        int width,
+        int height,
+        int mipCount)
+    {
+        var expectedByteLength = CalculatePackedMipByteLength(width, height, 4, mipCount);
+        if (packed.Length != PackedEnvironmentMipChainHeaderByteLength + expectedByteLength)
+            throw new InvalidDataException($"Invalid RGBA16F environment mip-chain precompile payload: {embeddedFileName}");
+
+        var source = packed.AsSpan(PackedEnvironmentMipChainHeaderByteLength);
+        var mipBytes = new byte[mipCount][];
+        var sourceOffset = 0;
+        var mipWidth = width;
+        var mipHeight = height;
+        for (var level = 0; level < mipCount; level++)
+        {
+            var byteLength = mipWidth * mipHeight * 4 * sizeof(ushort);
+            mipBytes[level] = source.Slice(sourceOffset, byteLength).ToArray();
+            sourceOffset += byteLength;
+            mipWidth = Math.Max(1, mipWidth / 2);
+            mipHeight = Math.Max(1, mipHeight / 2);
+        }
+
+        return TextureAsset.CreateRgba16FloatMipChain(
+            context,
+            textureName,
+            string.Empty,
+            mipBytes,
+            (uint)width,
+            (uint)height);
+    }
+
+    private enum PackedEnvironmentTextureFormat
+    {
+        Rgb16Float = 1,
+        Rgba16Float = 2,
+    }
+
     public bool IsDirty(SceneDirtyFlags flags) => Synchronize(() => (dirtyFlags & flags) != 0);
+
+    internal ResourceRevisions GetResourceRevisions()
+    {
+        return Synchronize(() => new ResourceRevisions(meshesRevision, tlasRevision, texturesRevision, settingsRevision));
+    }
 
     public void ClearHierarchy()
     {
@@ -608,6 +948,8 @@ public sealed class Scene : IDisposable, IScene
 
     internal void SetDirty(SceneDirtyFlags flags)
     {
+        IncrementResourceRevisions(flags);
+
         SceneDirtyFlags changedFlags;
         // Camera and settings updates must always be applied immediately to ensure
         // the camera can update every frame regardless of batch updates.
@@ -641,6 +983,18 @@ public sealed class Scene : IDisposable, IScene
 
         if (changedFlags != SceneDirtyFlags.None)
             DirtyStateChanged?.Invoke(changedFlags);
+    }
+
+    private void IncrementResourceRevisions(SceneDirtyFlags flags)
+    {
+        if ((flags & SceneDirtyFlags.Meshes) != 0)
+            meshesRevision++;
+        if ((flags & SceneDirtyFlags.Tlas) != 0)
+            tlasRevision++;
+        if ((flags & SceneDirtyFlags.Textures) != 0)
+            texturesRevision++;
+        if ((flags & SceneDirtyFlags.Settings) != 0)
+            settingsRevision++;
     }
 
     private void EndDeferredUpdates()

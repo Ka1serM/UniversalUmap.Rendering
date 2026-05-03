@@ -346,12 +346,33 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var halfSensorWidthMm = FixedSensorWidthMm * 0.5f;
         var halfSensorHeightMm = halfSensorWidthMm / aspectRatio;
         var halfFocalLengthMm = Math.Max(0.0005f, focalLengthMm * 0.5f);
-        var verticalFov = 2f * MathF.Atan(halfSensorHeightMm / halfFocalLengthMm);
+        var horizontalExtent = Math.Max(0.000001f, halfSensorWidthMm / halfFocalLengthMm);
+        var verticalExtent = Math.Max(0.000001f, halfSensorHeightMm / halfFocalLengthMm);
 
-        var target = cameraPosition + direction;
-        var view = Matrix4x4.CreateLookAt(cameraPosition, target, up);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(verticalFov, aspectRatio, 0.01f, 10_000f);
-        return view * projection;
+        var forward = Vector3.Normalize(direction);
+        var cameraUp = Vector3.Normalize(up);
+        var right = Vector3.Normalize(Vector3.Cross(forward, cameraUp));
+
+        var view = new Matrix4x4(
+            right.X, cameraUp.X, forward.X, 0f,
+            right.Y, cameraUp.Y, forward.Y, 0f,
+            right.Z, cameraUp.Z, forward.Z, 0f,
+            -Vector3.Dot(cameraPosition, right),
+            -Vector3.Dot(cameraPosition, cameraUp),
+            -Vector3.Dot(cameraPosition, forward),
+            1f);
+
+        const float nearPlane = 0.01f;
+        const float farPlane = 10_000f;
+        var projection = new Matrix4x4(
+            2f / horizontalExtent, 0f, 0f, 0f,
+            0f, 2f / verticalExtent, 0f, 0f,
+            0f, 0f, farPlane / (farPlane - nearPlane), 1f,
+            0f, 0f, -(nearPlane * farPlane) / (farPlane - nearPlane), 0f);
+
+        // Slang emits the shared float4x4 operations as matrix * vector in SPIR-V.
+        // Instance transforms are uploaded transposed for the same reason.
+        return Matrix4x4.Transpose(view * projection);
     }
 
 }

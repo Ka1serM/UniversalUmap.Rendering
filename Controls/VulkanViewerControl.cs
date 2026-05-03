@@ -5,14 +5,13 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Rendering.Composition;
-using Avalonia.VisualTree;
 using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Rasterizing;
 using UniversalUmap.Rendering.Raytracing;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
@@ -35,6 +34,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private OffscreenPresentationBuffer? presentationBuffer;
     private VulkanCompositor? vulkanCompositor;
     private GpuRaytracer? raytracer;
+    private GpuRasterizer? rasterizer;
 
     // Scene
     private Scene? scene;
@@ -102,12 +102,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         {
             scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
             vulkanCompositor?.Dispose();
+            rasterizer?.Dispose();
             raytracer?.Dispose();
             scene.Dispose();
         });
         presentationBuffer?.Dispose();
         _ = swapchain?.DisposeAsync();
         vulkanCompositor = null;
+        rasterizer = null;
         raytracer = null;
         picker = null;
         scene = null;
@@ -137,10 +139,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             {
                 scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
                 vulkanCompositor?.Dispose();
+                rasterizer?.Dispose();
                 raytracer?.Dispose();
                 scene.Dispose();
             });
             vulkanCompositor = null;
+            rasterizer = null;
             raytracer = null;
             picker = null;
             scene = null;
@@ -184,8 +188,9 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             try
             {
                 raytracer = GpuRaytracer.Create(context, scene);
+                rasterizer = new GpuRasterizer(context, scene);
                 vulkanCompositor = new VulkanCompositor(context);
-                picker = new GpuScenePicker(scene, raytracer);
+                picker = new GpuScenePicker(scene, ResolveRenderPath(scene.RenderSettings.RenderMode));
                 if (scene.RenderSettings.RenderMode != ToSupportedRenderMode(scene.RenderSettings.RenderMode))
                     scene.SetRenderMode(ToSupportedRenderMode(scene.RenderSettings.RenderMode));
             }
@@ -193,6 +198,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             {
                 Log.Error(ex, "Failed to create Vulkan raytracing renderer.");
                 vulkanCompositor?.Dispose(); vulkanCompositor = null;
+                rasterizer?.Dispose(); rasterizer = null;
                 raytracer?.Dispose(); raytracer = null;
                 picker = null;
             }
@@ -223,17 +229,17 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     void UpdateFrame()
     {
         updateQueued = false;
-        var root = this.GetVisualRoot();
-        if (root is null)
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is null)
             return;
 
         visual!.Size = new Avalonia.Vector(Bounds.Width, Bounds.Height);
-        var size = PixelSize.FromSize(Bounds.Size, root.RenderScaling);
+        var size = PixelSize.FromSize(Bounds.Size, topLevel.RenderScaling);
         if (size.Width <= 0 || size.Height <= 0)
             return;
 
         if (visual is null || swapchain is null || context is null ||
-            scene is null || raytracer is null || vulkanCompositor is null)
+            scene is null || raytracer is null || rasterizer is null || vulkanCompositor is null)
             return;
 
         try
@@ -280,7 +286,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private Context.CommandBuffer? RenderFrame(VulkanImage target)
     {
-        if (scene is null || context is null || raytracer is null || vulkanCompositor is null)
+        if (scene is null || context is null || raytracer is null || rasterizer is null || vulkanCompositor is null)
             return null;
 
         var now = renderTimer.ElapsedTicks;
@@ -303,16 +309,19 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
             var cmd = context.CreateCommandBuffer();
             context.BeginCommandBuffer(cmd);
-            raytracer.ShaderPixelSizePercent = (int)pixelSize;
-            raytracer.Record(target.Size, presentationBuffer.ColorImage, cmd, rd);
+            var renderPath = ResolveRenderPath(scene.RenderSettings.RenderMode);
+            var selectionRenderPath = ResolveSelectionRenderPath(scene.RenderSettings.RenderMode, renderPath);
+            picker!.RenderPath = selectionRenderPath;
+            renderPath.ShaderPixelSizePercent = (int)pixelSize;
+            renderPath.Record(target.Size, presentationBuffer.ColorImage, cmd, rd);
             vulkanCompositor.Record(
                 cmd,
-                raytracer.OutputColor, raytracer.OutputAlbedo, raytracer.OutputNormal,
-                raytracer.OutputCrypto, raytracer.OutputPosition, raytracer.OutputAdaptiveState,
+                renderPath.OutputColor, renderPath.OutputAlbedo, renderPath.OutputNormal,
+                selectionRenderPath.OutputCrypto, selectionRenderPath.OutputPosition, renderPath.OutputAdaptiveState,
                 (int)rd.BufferVisualization,
                 rd.RenderSettings.AdaptiveTargetError, rd.RenderSettings.AdaptiveMinSamples,
                 rd.SelectedInstanceId, presentationBuffer.ColorImage,
-                rd.IsMoving, raytracer.PickBuffersFlippedY);
+                rd.IsMoving, selectionRenderPath.PickBuffersFlippedY);
             presentationBuffer.BlitToPresentedImage(cmd, target);
             result = cmd;
         });
@@ -338,7 +347,11 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     }
 
     protected override void OnPointerEntered(PointerEventArgs e) { base.OnPointerEntered(e); input.SetModifierState(e.KeyModifiers); }
-    protected override void OnLostFocus(RoutedEventArgs e) { base.OnLostFocus(e); input.OnFocusLost(); }
+    protected override void OnLostFocus(FocusChangedEventArgs e)
+    {
+        base.OnLostFocus(e);
+        input.OnFocusLost();
+    }
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e) { base.OnPointerWheelChanged(e); input.SetModifierState(e.KeyModifiers); input.OnPointerWheel((float)e.Delta.Y); e.Handled = true; }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -396,12 +409,17 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private void OnSceneEnvironmentChanged(EnvironmentSettings settings) => EnvironmentSettingsChanged?.Invoke(settings);
 
-    private static RenderMode ToSupportedRenderMode(RenderMode mode) => mode switch
-    {
-        RenderMode.Rasterized => RenderMode.AmbientOcclusion,
-        RenderMode.RasterizedWithRayTracedShadows => RenderMode.AmbientOcclusion,
-        _ => mode
-    };
+    private IGpuRenderPath ResolveRenderPath(RenderMode mode) =>
+        mode is RenderMode.Rasterized
+            ? rasterizer ?? throw new InvalidOperationException("Raster renderer is not initialized.")
+            : raytracer ?? throw new InvalidOperationException("Raytracing renderer is not initialized.");
+
+    private IGpuRenderPath ResolveSelectionRenderPath(RenderMode mode, IGpuRenderPath activeRenderPath) =>
+        mode is RenderMode.Rasterized
+            ? rasterizer ?? throw new InvalidOperationException("Raster renderer is not initialized.")
+            : activeRenderPath;
+
+    private static RenderMode ToSupportedRenderMode(RenderMode mode) => mode;
 
     private static async Task DisposeSwapchainAsync(Task prev, VulkanSwapchain s)
     {

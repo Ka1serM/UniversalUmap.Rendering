@@ -36,10 +36,9 @@ float4 main(float2 vUv : TEXCOORD0) : SV_Target
     float envV = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
 
     float3 env = float3(0.34, 0.47, 0.72);
-    // The environment widget is a small preview. Sampling mip 0 avoids the
-    // visible horizontal seam introduced by wrapped lat-long maps with a
-    // non-seam-aware generated mip chain.
-    float3 hdr = environmentTexture.SampleLevel(float2(u, envV), 0.0).rgb;
+    // The embedded environment carries a seam-aware prefiltered mip chain, so
+    // the small widget can use a blurred level without extra runtime taps.
+    float3 hdr = environmentTexture.SampleLevel(float2(u, envV), 2.0).rgb;
     env = hdr / (hdr + float3(1.0));
     env = pow(env, float3(1.0 / 2.2));
 

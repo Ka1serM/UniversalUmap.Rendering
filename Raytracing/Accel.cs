@@ -291,24 +291,13 @@ internal sealed unsafe class Accel : IDisposable
 
     private void InsertBuildToReadBarrier(CommandBuffer commandBuffer)
     {
-        var barrier = new MemoryBarrier
-        {
-            SType = StructureType.MemoryBarrier,
-            SrcAccessMask = AccessFlags.AccelerationStructureWriteBitKhr,
-            DstAccessMask = AccessFlags.AccelerationStructureReadBitKhr | AccessFlags.ShaderReadBit
-        };
-
-        context.Api.CmdPipelineBarrier(
+        VulkanBarriers.Memory(
+            context.Api,
             commandBuffer,
+            AccessFlags.AccelerationStructureWriteBitKhr,
+            AccessFlags.AccelerationStructureReadBitKhr | AccessFlags.ShaderReadBit,
             PipelineStageFlags.AccelerationStructureBuildBitKhr,
-            PipelineStageFlags.AccelerationStructureBuildBitKhr | PipelineStageFlags.RayTracingShaderBitKhr,
-            0,
-            1,
-            in barrier,
-            0,
-            null,
-            0,
-            null);
+            PipelineStageFlags.AccelerationStructureBuildBitKhr | PipelineStageFlags.RayTracingShaderBitKhr);
     }
 
     public void Dispose()

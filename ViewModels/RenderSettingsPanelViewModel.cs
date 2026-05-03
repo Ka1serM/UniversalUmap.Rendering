@@ -4,7 +4,12 @@ namespace UniversalUmap.Rendering.ViewModels;
 
 public sealed class RenderSettingsPanelViewModel : ScenePanelViewModel<RenderSettings>
 {
-    public IReadOnlyList<RenderMode> RenderModes { get; } = Enum.GetValues<RenderMode>();
+    public IReadOnlyList<RenderMode> RenderModes { get; } =
+    [
+        RenderMode.AmbientOcclusion,
+        RenderMode.Rasterized,
+        RenderMode.PathTracing
+    ];
     public IReadOnlyList<RenderPixelSize> PixelSizes { get; } = Enum.GetValues<RenderPixelSize>();
     public IReadOnlyList<BufferVisualizationMode> BufferVisualizationModes { get; } = Enum.GetValues<BufferVisualizationMode>();
 

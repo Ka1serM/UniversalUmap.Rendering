@@ -12,6 +12,7 @@
 [[vk::binding(8, 0)]] StructuredBuffer<SceneSettingsDataGpu, ScalarDataLayout> sceneSettingsBuffer;
 #define sceneSettings sceneSettingsBuffer[0]
 [[vk::binding(9, 0)]] Sampler2D textureSamplers[];
+[[vk::binding(15, 0)]] [format("rgba16f")] RWTexture2D<float4> rasterShadowMoments;
 
 // Pointer wrappers for device-addressed buffer payloads.
 struct VertexBuffer { Vertex data[]; };

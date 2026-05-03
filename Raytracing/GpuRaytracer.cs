@@ -52,6 +52,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected readonly Context Context;
     protected readonly Scene Scene;
+    protected readonly VulkanDeviceResources DeviceResources;
     protected RenderMode CachedRenderMode;
     private bool hasLoggedCurrentRenderMode;
     private bool settingsDirty;
@@ -67,6 +68,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     private PixelSize renderImageSize;
 
     private ulong lastBoundColorImageViewHandle;
+    private ulong uploadedTexturesRevision = ulong.MaxValue;
     protected uint FrameIndex;
     private bool hasLoggedFirstRender;
     protected VulkanBuffer WavefrontCountersBuffer = null!;
@@ -84,6 +86,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     {
         Context = context;
         Scene = scene;
+        DeviceResources = new VulkanDeviceResources(context);
         CachedRenderMode = scene.RenderSettings.RenderMode;
         settingsDirty = true;
 
@@ -108,7 +111,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         renderMode = renderMode;
         return false;
 #else
-        return context.RayTracingSupported && renderMode is RenderMode.AmbientOcclusion or RenderMode.DirectLighting or RenderMode.PathTracing;
+        return context.RayTracingSupported && renderMode is RenderMode.AmbientOcclusion or RenderMode.PathTracing;
 #endif
     }
 
@@ -227,70 +230,14 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
         var descriptorSet = GetDescriptorSet();
 
-        var colorInfo = new DescriptorImageInfo(default, new ImageView(outputColorImage.ViewHandle), ImageLayout.General);
-        var albedoInfo = new DescriptorImageInfo(default, new ImageView(albedoImage!.ViewHandle), ImageLayout.General);
-        var normalInfo = new DescriptorImageInfo(default, new ImageView(normalImage!.ViewHandle), ImageLayout.General);
-        var cryptoInfo = new DescriptorImageInfo(default, new ImageView(cryptoImage!.ViewHandle), ImageLayout.General);
-        var positionInfo = new DescriptorImageInfo(default, new ImageView(positionImage!.ViewHandle), ImageLayout.General);
-        var adaptiveStateInfo = new DescriptorImageInfo(default, new ImageView(adaptiveStateImage!.ViewHandle), ImageLayout.General);
-
-        var writes = stackalloc WriteDescriptorSet[6];
-        writes[0] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &colorInfo
-        };
-        writes[1] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 1,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &albedoInfo
-        };
-        writes[2] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 2,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &normalInfo
-        };
-        writes[3] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 3,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &cryptoInfo
-        };
-        writes[4] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 4,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &positionInfo
-        };
-        writes[5] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = OutputImageBindingBase + 5,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &adaptiveStateInfo
-        };
-
-        Context.Api.UpdateDescriptorSets(Context.Device, 6, writes, 0, null);
+        new VulkanDescriptorWriter()
+            .StorageImage(OutputImageBindingBase + 0, outputColorImage)
+            .StorageImage(OutputImageBindingBase + 1, albedoImage!)
+            .StorageImage(OutputImageBindingBase + 2, normalImage!)
+            .StorageImage(OutputImageBindingBase + 3, cryptoImage!)
+            .StorageImage(OutputImageBindingBase + 4, positionImage!)
+            .StorageImage(OutputImageBindingBase + 5, adaptiveStateImage!)
+            .Update(Context, descriptorSet);
         lastBoundColorImageViewHandle = outputColorImage.ViewHandle;
         Log.Debug("Updated output image bindings (color/albedo/normal/crypto/position/adaptive-state).");
     }
@@ -306,17 +253,9 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.DeviceLocalBit);
 
-        var settingsInfo = new DescriptorBufferInfo(sceneSettingsBuffer.Handle, 0, sceneSettingsBuffer.Size);
-        var write = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = GetDescriptorSet(),
-            DstBinding = SceneSettingsBinding,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &settingsInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 1, in write, 0, null);
+        new VulkanDescriptorWriter()
+            .StorageBuffer(SceneSettingsBinding, sceneSettingsBuffer)
+            .Update(Context, GetDescriptorSet());
         return true;
     }
 
@@ -352,7 +291,8 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     private void UpdateTextureBindings()
     {
-        if (!Scene.IsDirty(SceneDirtyFlags.Textures))
+        var revisions = Scene.GetResourceRevisions();
+        if (uploadedTexturesRevision == revisions.Textures)
             return;
 
         var textures = Scene.GetTexturesSnapshot();
@@ -362,7 +302,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         if (textures.Length == 0)
         {
             Log.Information("No textures bound for bindless descriptor array.");
-            Scene.ClearDirty(SceneDirtyFlags.Textures);
+            uploadedTexturesRevision = revisions.Textures;
             return;
         }
 
@@ -370,21 +310,11 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         for (var i = 0; i < textures.Length; i++)
             descriptors[i] = textures[i].GetDescriptorImageInfo();
 
-        fixed (DescriptorImageInfo* pDescriptors = descriptors)
-        {
-            var write = new WriteDescriptorSet
-            {
-                SType = StructureType.WriteDescriptorSet,
-                DstSet = GetDescriptorSet(),
-                DstBinding = TextureArrayBinding,
-                DescriptorCount = (uint)descriptors.Length,
-                DescriptorType = DescriptorType.CombinedImageSampler,
-                PImageInfo = pDescriptors
-            };
-            Context.Api.UpdateDescriptorSets(Context.Device, 1, in write, 0, null);
-        }
+        new VulkanDescriptorWriter()
+            .CombinedImageSamplers(TextureArrayBinding, descriptors)
+            .Update(Context, GetDescriptorSet());
 
-        Scene.ClearDirty(SceneDirtyFlags.Textures);
+        uploadedTexturesRevision = revisions.Textures;
         Log.Debug("Updated bindless texture descriptors: count={TextureCount}", descriptors.Length);
     }
 
@@ -512,90 +442,38 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected void CreatePrimaryDescriptorSet(out DescriptorSetLayout layout, out DescriptorSet set)
     {
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[10];
-        layoutBindings[0] = new DescriptorSetLayoutBinding(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[1] = new DescriptorSetLayoutBinding(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[2] = new DescriptorSetLayoutBinding(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[3] = new DescriptorSetLayoutBinding(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[4] = new DescriptorSetLayoutBinding(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[5] = new DescriptorSetLayoutBinding(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[6] = new DescriptorSetLayoutBinding(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[7] = new DescriptorSetLayoutBinding(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[8] = new DescriptorSetLayoutBinding(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        layoutBindings[9] = new DescriptorSetLayoutBinding(9, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit);
-
-        var bindingFlags = stackalloc DescriptorBindingFlags[10];
-        bindingFlags[9] = DescriptorBindingFlags.PartiallyBoundBit |
-                          DescriptorBindingFlags.VariableDescriptorCountBit |
-                          DescriptorBindingFlags.UpdateAfterBindBit;
-
-        var bindingFlagsInfo = new DescriptorSetLayoutBindingFlagsCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutBindingFlagsCreateInfo,
-            BindingCount = 10,
-            PBindingFlags = bindingFlags
-        };
-
-        var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutCreateInfo,
-            Flags = DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit,
-            BindingCount = 10,
-            PBindings = layoutBindings,
-            PNext = &bindingFlagsInfo
-        };
-        Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out layout).ThrowOnError();
-
-        var descriptorCount = MaxTextures;
-        var variableCountInfo = new DescriptorSetVariableDescriptorCountAllocateInfo
-        {
-            SType = StructureType.DescriptorSetVariableDescriptorCountAllocateInfo,
-            DescriptorSetCount = 1,
-            PDescriptorCounts = &descriptorCount
-        };
-
-        var layoutLocal = layout;
-        var allocInfo = new DescriptorSetAllocateInfo
-        {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = Context.DescriptorPool,
-            DescriptorSetCount = 1,
-            PSetLayouts = &layoutLocal,
-            PNext = &variableCountInfo
-        };
-        Context.Api.AllocateDescriptorSets(Context.Device, in allocInfo, out set).ThrowOnError();
+        layout = DeviceResources.Track(new VulkanDescriptorSetBuilder()
+            .Add(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(3, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(5, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(
+                9,
+                DescriptorType.CombinedImageSampler,
+                MaxTextures,
+                ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit,
+                DescriptorBindingFlags.PartiallyBoundBit |
+                DescriptorBindingFlags.VariableDescriptorCountBit |
+                DescriptorBindingFlags.UpdateAfterBindBit)
+            .BuildLayout(Context, DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit));
+        set = VulkanDescriptorSet.Allocate(Context, layout, MaxTextures);
     }
 
     protected void CreateWavefrontDescriptorSets(out DescriptorSetLayout layout, out DescriptorSet bootstrapSet, out DescriptorSet forwardSet, out DescriptorSet reverseSet)
     {
-        var layoutBindings = stackalloc DescriptorSetLayoutBinding[6];
+        var builder = new VulkanDescriptorSetBuilder();
         for (var i = 0; i < 6; i++)
-            layoutBindings[i] = new DescriptorSetLayoutBinding((uint)i, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+            builder.Add((uint)i, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
 
-        var descriptorSetLayoutInfo = new DescriptorSetLayoutCreateInfo
-        {
-            SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 6,
-            PBindings = layoutBindings
-        };
-        Context.Api.CreateDescriptorSetLayout(Context.Device, in descriptorSetLayoutInfo, default, out layout).ThrowOnError();
-
-        var layouts = stackalloc DescriptorSetLayout[3];
-        layouts[0] = layout;
-        layouts[1] = layout;
-        layouts[2] = layout;
-        var allocInfo = new DescriptorSetAllocateInfo
-        {
-            SType = StructureType.DescriptorSetAllocateInfo,
-            DescriptorPool = Context.DescriptorPool,
-            DescriptorSetCount = 3,
-            PSetLayouts = layouts
-        };
-        var sets = stackalloc DescriptorSet[3];
-        Context.Api.AllocateDescriptorSets(Context.Device, in allocInfo, sets).ThrowOnError();
-        bootstrapSet = sets[0];
-        forwardSet = sets[1];
-        reverseSet = sets[2];
+        layout = DeviceResources.Track(builder.BuildLayout(Context));
+        bootstrapSet = VulkanDescriptorSet.Allocate(Context, layout);
+        forwardSet = VulkanDescriptorSet.Allocate(Context, layout);
+        reverseSet = VulkanDescriptorSet.Allocate(Context, layout);
     }
 
     protected VulkanBuffer CreateHostVisibleStorageBuffer(ulong size)
@@ -658,29 +536,10 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         if (previousMeshBuffer.Handle.Handle != default)
             Context.RetainForExecution(commandBuffer, previousMeshBuffer);
 
-        var instancesInfo = new DescriptorBufferInfo(instancesBuffer.Handle, 0, instancesBuffer.Size);
-        var meshInfo = new DescriptorBufferInfo(meshBuffer.Handle, 0, meshBuffer.Size);
-
-        var writes = stackalloc WriteDescriptorSet[2];
-        writes[0] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &instancesInfo
-        };
-        writes[1] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = descriptorSet,
-            DstBinding = 7,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &meshInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 2, writes, 0, null);
+        new VulkanDescriptorWriter()
+            .StorageBuffer(0, instancesBuffer)
+            .StorageBuffer(7, meshBuffer)
+            .Update(Context, descriptorSet);
     }
 
     protected void EnsureWavefrontBuffers(
@@ -738,76 +597,20 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected void UpdateWavefrontFixedBindings(DescriptorSet wavefrontDescriptorSet)
     {
-        var countersInfo = new DescriptorBufferInfo(WavefrontCountersBuffer.Handle, 0, WavefrontCountersBuffer.Size);
-        var pathStateInfo = new DescriptorBufferInfo(PathStateBuffer.Handle, 0, PathStateBuffer.Size);
-        var hitInfo = new DescriptorBufferInfo(HitQueueBuffer.Handle, 0, HitQueueBuffer.Size);
-        var shadowInfo = new DescriptorBufferInfo(ShadowQueueBuffer.Handle, 0, ShadowQueueBuffer.Size);
-
-        var writes = stackalloc WriteDescriptorSet[4];
-        writes[0] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &countersInfo
-        };
-        writes[1] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 1,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &pathStateInfo
-        };
-        writes[2] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 4,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &hitInfo
-        };
-        writes[3] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 5,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &shadowInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 4, writes, 0, null);
+        new VulkanDescriptorWriter()
+            .StorageBuffer(0, WavefrontCountersBuffer)
+            .StorageBuffer(1, PathStateBuffer)
+            .StorageBuffer(4, HitQueueBuffer)
+            .StorageBuffer(5, ShadowQueueBuffer)
+            .Update(Context, wavefrontDescriptorSet);
     }
 
     protected void UpdateWavefrontQueueBindings(DescriptorSet wavefrontDescriptorSet, VulkanBuffer inputQueue, VulkanBuffer outputQueue)
     {
-        var inputInfo = new DescriptorBufferInfo(inputQueue.Handle, 0, inputQueue.Size);
-        var outputInfo = new DescriptorBufferInfo(outputQueue.Handle, 0, outputQueue.Size);
-
-        var writes = stackalloc WriteDescriptorSet[2];
-        writes[0] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 2,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &inputInfo
-        };
-        writes[1] = new WriteDescriptorSet
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = wavefrontDescriptorSet,
-            DstBinding = 3,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &outputInfo
-        };
-        Context.Api.UpdateDescriptorSets(Context.Device, 2, writes, 0, null);
+        new VulkanDescriptorWriter()
+            .StorageBuffer(2, inputQueue)
+            .StorageBuffer(3, outputQueue)
+            .Update(Context, wavefrontDescriptorSet);
     }
 
     protected static PixelSize ComputeWavefrontShadingSize(PixelSize imageSize, PushDataGpu pushConstants)
@@ -847,23 +650,13 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     protected void ResetWavefrontCounters(CommandBuffer commandBuffer)
     {
         Context.Api.CmdFillBuffer(commandBuffer, WavefrontCountersBuffer.Handle, 0, WavefrontCountersBuffer.Size, 0);
-        var barrier = new MemoryBarrier
-        {
-            SType = StructureType.MemoryBarrier,
-            SrcAccessMask = AccessFlags.TransferWriteBit,
-            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
-        };
-        Context.Api.CmdPipelineBarrier(
+        VulkanBarriers.Memory(
+            Context.Api,
             commandBuffer,
+            AccessFlags.TransferWriteBit,
+            AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit,
             PipelineStageFlags.TransferBit,
-            PipelineStageFlags.ComputeShaderBit,
-            0,
-            1,
-            in barrier,
-            0,
-            null,
-            0,
-            null);
+            PipelineStageFlags.ComputeShaderBit);
     }
 
     protected void PushConstants(CommandBuffer commandBuffer, PipelineLayout pipelineLayout, PushDataGpu pushConstants)
@@ -902,83 +695,26 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected void InsertMemoryBarrier(CommandBuffer commandBuffer)
     {
-        var barrier = new MemoryBarrier
-        {
-            SType = StructureType.MemoryBarrier,
-            SrcAccessMask = AccessFlags.ShaderWriteBit,
-            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
-        };
-        Context.Api.CmdPipelineBarrier(
+        VulkanBarriers.Memory(
+            Context.Api,
             commandBuffer,
+            AccessFlags.ShaderWriteBit,
+            AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit,
             PipelineStageFlags.ComputeShaderBit,
-            PipelineStageFlags.ComputeShaderBit,
-            0,
-            1,
-            in barrier,
-            0,
-            null,
-            0,
-            null);
-    }
-
-    protected ShaderModule CreateShaderModule(ReadOnlySpan<byte> shaderBytes)
-    {
-        fixed (byte* pShader = shaderBytes)
-        {
-            var shaderInfo = new ShaderModuleCreateInfo
-            {
-                SType = StructureType.ShaderModuleCreateInfo,
-                CodeSize = (nuint)shaderBytes.Length,
-                PCode = (uint*)pShader
-            };
-            Context.Api.CreateShaderModule(Context.Device, in shaderInfo, default, out var module).ThrowOnError();
-            return module;
-        }
-    }
-
-    protected Pipeline CreateComputePipeline(ShaderModule shaderModule, PipelineLayout layout, ByteString mainName)
-    {
-        var stageInfo = new PipelineShaderStageCreateInfo
-        {
-            SType = StructureType.PipelineShaderStageCreateInfo,
-            Stage = ShaderStageFlags.ComputeBit,
-            Module = shaderModule,
-            PName = mainName
-        };
-        var pipelineInfo = new ComputePipelineCreateInfo
-        {
-            SType = StructureType.ComputePipelineCreateInfo,
-            Stage = stageInfo,
-            Layout = layout
-        };
-        Context.Api.CreateComputePipelines(Context.Device, default, 1, in pipelineInfo, default, out var pipeline).ThrowOnError();
-        return pipeline;
+            PipelineStageFlags.ComputeShaderBit);
     }
 
     protected PipelineBundle CreatePipelineBundle(string prefix, string variantSuffix, PipelineLayout layout, ByteString mainName)
     {
-        var generateModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Generate{variantSuffix}.spv"));
-        var extendModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Extend{variantSuffix}.spv"));
-        var shadeModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Shade{variantSuffix}.spv"));
-        var connectModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Connect{variantSuffix}.spv"));
-        var advanceModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Advance{variantSuffix}.spv"));
-        var finalizeModule = CreateShaderModule(EmbeddedAssets.ReadByFileName($"Assets/Shaders/RayTracing/{prefix}Finalize{variantSuffix}.spv"));
-
-        var bundle = new PipelineBundle(
-            CreateComputePipeline(generateModule, layout, mainName),
-            CreateComputePipeline(extendModule, layout, mainName),
-            CreateComputePipeline(shadeModule, layout, mainName),
-            CreateComputePipeline(connectModule, layout, mainName),
-            CreateComputePipeline(advanceModule, layout, mainName),
-            CreateComputePipeline(finalizeModule, layout, mainName));
-
-        Context.Api.DestroyShaderModule(Context.Device, finalizeModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, advanceModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, connectModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, shadeModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, extendModule, default);
-        Context.Api.DestroyShaderModule(Context.Device, generateModule, default);
-        return bundle;
+        _ = mainName;
+        const string entryPoint = "main";
+        return new PipelineBundle(
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Generate{variantSuffix}.spv", entryPoint)),
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Extend{variantSuffix}.spv", entryPoint)),
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Shade{variantSuffix}.spv", entryPoint)),
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Connect{variantSuffix}.spv", entryPoint)),
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Advance{variantSuffix}.spv", entryPoint)),
+            DeviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(Context, layout, $"Assets/Shaders/RayTracing/{prefix}Finalize{variantSuffix}.spv", entryPoint)));
     }
 
     protected void ExecuteWavefrontPass(
@@ -1006,7 +742,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         var queueCapacity = ComputeWavefrontQueueCapacity(image.Size, pushConstants);
         var workerCount = ComputeWavefrontWorkerCount(image.Size, pushConstants);
         var maxBounces = ComputeWavefrontDispatchBounceCount(pushConstants);
-        var usesQueuedShadowRays = EffectiveRenderMode is RenderMode.DirectLighting or RenderMode.PathTracing;
+        var usesQueuedShadowRays = EffectiveRenderMode is RenderMode.PathTracing;
         if (FrameIndex < 3)
         {
             Log.Debug(
@@ -1076,22 +812,6 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         WavefrontCountersBuffer.Dispose();
     }
 
-    protected void DestroyPipeline(Pipeline pipeline)
-    {
-        if (pipeline.Handle != default)
-            Context.Api.DestroyPipeline(Context.Device, pipeline, default);
-    }
-
-    protected void DestroyPipelineBundle(PipelineBundle bundle)
-    {
-        DestroyPipeline(bundle.Finalize);
-        DestroyPipeline(bundle.Advance);
-        DestroyPipeline(bundle.Connect);
-        DestroyPipeline(bundle.Shade);
-        DestroyPipeline(bundle.Extend);
-        DestroyPipeline(bundle.Generate);
-    }
-
     protected VulkanBuffer UploadDeviceLocalBuffer(Context.CommandBuffer commandBuffer, ReadOnlySpan<byte> data, BufferUsageFlags usage)
     {
         var destinationBuffer = CreateDeviceLocalBuffer((ulong)data.Length, usage);
@@ -1117,23 +837,13 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     protected void InsertTransferToAccelerationStructureReadBarrier(CommandBuffer commandBuffer)
     {
-        var barrier = new MemoryBarrier
-        {
-            SType = StructureType.MemoryBarrier,
-            SrcAccessMask = AccessFlags.TransferWriteBit,
-            DstAccessMask = AccessFlags.AccelerationStructureReadBitKhr
-        };
-        Context.Api.CmdPipelineBarrier(
+        VulkanBarriers.Memory(
+            Context.Api,
             commandBuffer,
+            AccessFlags.TransferWriteBit,
+            AccessFlags.AccelerationStructureReadBitKhr,
             PipelineStageFlags.TransferBit,
-            PipelineStageFlags.AccelerationStructureBuildBitKhr,
-            0,
-            1,
-            in barrier,
-            0,
-            null,
-            0,
-            null);
+            PipelineStageFlags.AccelerationStructureBuildBitKhr);
     }
 
     private uint ReadPixelUInt(VulkanImage image, int pixelX, int pixelY)
