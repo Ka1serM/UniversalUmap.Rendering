@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:icons="clr-namespace:FluentIcons.Avalonia;assembly=FluentIcons.Avalonia"
+             xmlns:scenes="clr-namespace:UniversalUmap.Rendering.Scenes;assembly=UniversalUmap.Rendering"
              xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
              x:Class="UniversalUmap.Rendering.Views.OutlinerPanel"
              x:DataType="viewModels:OutlinerPanelViewModel">
@@ -12,12 +13,13 @@
                   AutoScrollToSelectedItem="True">
             <TreeView.ItemContainerTheme>
                 <ControlTheme TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}"
-                              x:DataType="viewModels:OutlinerItem">
+                              x:DataType="scenes:SceneHierarchyNode">
                     <Setter Property="IsSelected" Value="{Binding IsSelected}" />
                 </ControlTheme>
             </TreeView.ItemContainerTheme>
             <TreeView.ItemTemplate>
-                <TreeDataTemplate x:DataType="viewModels:OutlinerItem">
+                <TreeDataTemplate x:DataType="scenes:SceneHierarchyNode"
+                                  ItemsSource="{Binding Children}">
                     <Grid ColumnDefinitions="Auto,*">
                         <Border Grid.Column="0"
                                 Classes="treeIcon">

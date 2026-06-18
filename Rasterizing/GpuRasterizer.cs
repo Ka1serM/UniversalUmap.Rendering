@@ -1,58 +1,46 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Avalonia;
-using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
+using CmdBuf = UniversalUmap.Rendering.Vulkan.Context.CommandBuffer;
+
 
 namespace UniversalUmap.Rendering.Rasterizing;
 
 internal sealed unsafe class GpuRasterizer : IGpuRenderPath
 {
     public int ShaderPixelSizePercent { get; set; } = 100;
-    private const int ShadowVirtualPagesPerSide = 32;
-    private const int ShadowResidentPagesPerSide = 8;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct CullPushConstants
-    {
-        public int HasHistory;
-        public int IsMoving;
-        public int Pad0;
-        public int Pad1;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RasterPushConstants
-    {
-        public uint MeshId;
-        public uint VisibleOffset;
-        public uint Pad0;
-        public uint Pad1;
-    }
 
     private const uint MaxTextures = 10_000;
     private static readonly Format DepthFormat = Format.D32Sfloat;
+    private const int CascadeCount = 4;
+    private const int ShadowAtlasSize = 4096;
 
     private readonly Context context;
     private readonly Scene scene;
     private readonly VulkanDeviceResources deviceResources;
     private readonly VulkanDescriptorSet descriptorSet;
+
+    // Pipelines
     private readonly PipelineLayout computePipelineLayout;
     private readonly PipelineLayout graphicsPipelineLayout;
-    private readonly Pipeline cullResetPipeline;
     private readonly Pipeline cullInstancesPipeline;
+    private readonly Pipeline copyAllInstancesPipeline;
     private readonly Pipeline buildIndirectPipeline;
     private readonly Pipeline deferredLightingPipeline;
     private readonly Pipeline hdriBackgroundPipeline;
-    private readonly Pipeline rtAmbientOcclusionPipeline;
-    private readonly Pipeline shadowOverlayPipeline;
+    private readonly Pipeline temporalResolvePipeline;
     private readonly Pipeline graphicsPipeline;
     private readonly Pipeline shadowGraphicsPipeline;
-    private readonly Sampler previousPositionSampler;
 
+    // Descriptor-only resources
+    private readonly Sampler nearestSampler;
+    private readonly Sampler linearSampler;
+
+    // GPU buffers
     private VulkanBuffer instancesBuffer;
     private VulkanBuffer meshBuffer;
     private VulkanBuffer meshRasterMetadataBuffer;
@@ -60,123 +48,148 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
     private VulkanBuffer visibleCountsBuffer;
     private VulkanBuffer indirectCommandsBuffer;
     private VulkanBuffer sceneSettingsBuffer;
+    private VulkanBuffer probePlaceholderBuffer;
 
+    // GPU images
     private VulkanImage? outputColorImage;
     private VulkanImage? albedoImage;
     private VulkanImage? normalImage;
     private VulkanImage? cryptoImage;
     private VulkanImage? positionImage;
-    private VulkanImage? previousPositionHistoryImage;
-    private VulkanImage? adaptiveStateImage;
-    private VulkanImage? shadowMomentImage;
+    private VulkanImage? materialImage;
+    private VulkanImage? velocityImage;
+    private VulkanImage? historyImage;
+    private VulkanImage? taaResolveImage;
     private VulkanDepthImage? depthImage;
-    private VulkanDepthImage? shadowDepthImage;
+    private VulkanImage? shadowDepthImage;
+    private VulkanDepthImage? shadowDepthTex;
     private PixelSize renderImageSize;
-    private ulong lastBoundColorImageViewHandle;
+
+    // Light probes
+    private LightProbeSystem? lightProbeSystem;
+
+    // State tracking
+    private ulong lastBoundColorViewHandle;
     private bool settingsDirty = true;
-    private bool hasHistory;
+    private bool descriptorUpdateNeeded = true;
     private uint meshCount;
-    private MeshRasterMetadataGpu[] meshRasterMetadata = [new()];
+    private int frameIndex;
     private ulong uploadedMeshesRevision = ulong.MaxValue;
     private ulong uploadedTlasRevision = ulong.MaxValue;
     private ulong uploadedTexturesRevision = ulong.MaxValue;
 
-    public GpuRasterizer(Context context, Scene scene)
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ShadowPushConstants { public uint CascadeIndex; public uint pad0; public uint pad1; public uint pad2; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TaaPushConstants { public int Frame; public int Enabled; public float BlendFactor; public int IsMoving; }
+
+    public GpuRasterizer(Context context, Scene scene, LightProbeSystem? lightProbeSystem = null)
     {
         this.context = context;
         this.scene = scene;
+        this.lightProbeSystem = lightProbeSystem;
         deviceResources = new VulkanDeviceResources(context);
+
         descriptorSet = CreateDescriptorSet();
-
-        CreateComputeLayoutAndPipelines(out computePipelineLayout, out cullResetPipeline, out cullInstancesPipeline, out buildIndirectPipeline, out deferredLightingPipeline, out hdriBackgroundPipeline, out rtAmbientOcclusionPipeline, out shadowOverlayPipeline);
+        CreateComputeLayoutAndPipelines(out computePipelineLayout, out cullInstancesPipeline,
+            out copyAllInstancesPipeline, out buildIndirectPipeline, out deferredLightingPipeline,
+            out hdriBackgroundPipeline, out temporalResolvePipeline);
         CreateGraphicsPipeline(out graphicsPipelineLayout, out graphicsPipeline);
-        CreateShadowGraphicsPipeline(graphicsPipelineLayout, out shadowGraphicsPipeline);
-        previousPositionSampler = deviceResources.Track(CreatePreviousPositionSampler());
+        CreateShadowPipeline(graphicsPipelineLayout, out shadowGraphicsPipeline);
 
-        instancesBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
-        meshBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
-        meshRasterMetadataBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit);
-        visibleInstanceIdsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit);
-        visibleCountsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit);
-        indirectCommandsBuffer = CreatePlaceholderBuffer(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit);
-        sceneSettingsBuffer = new VulkanBuffer(
-            context,
-            (ulong)Marshal.SizeOf<SceneSettingsDataGpu>(),
+        nearestSampler = deviceResources.Track(CreateSampler(Filter.Nearest));
+        linearSampler = deviceResources.Track(CreateSampler(Filter.Linear));
+
+        instancesBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
+        meshBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
+        meshRasterMetadataBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit);
+        visibleInstanceIdsBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit);
+        visibleCountsBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit);
+        indirectCommandsBuffer = CreatePlaceholder(BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit);
+        sceneSettingsBuffer = new VulkanBuffer(context, (ulong)sizeof(SceneSettingsDataGpu),
             BufferUsageFlags.StorageBufferBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        probePlaceholderBuffer = new VulkanBuffer(context, 64, BufferUsageFlags.StorageBufferBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
 
-        var initCommandBuffer = context.CreateCommandBuffer();
-        context.BeginCommandBuffer(initCommandBuffer);
-        UpdateSceneResources(initCommandBuffer, force: true);
+        var initCmd = context.CreateCommandBuffer();
+        context.BeginCommandBuffer(initCmd);
+        UpdateSceneResources(initCmd, true);
         UpdateDescriptorBuffers();
-        context.SubmitAndWait(initCommandBuffer);
+        context.SubmitAndWait(initCmd);
 
         scene.RenderSettings.PropertyChanged += (_, _) => settingsDirty = true;
         scene.Camera.Changed += () => settingsDirty = true;
         scene.Environment.PropertyChanged += (_, _) => settingsDirty = true;
     }
 
-    public VulkanImage OutputColor => outputColorImage ?? throw new InvalidOperationException("Raster output image is not initialized.");
-    public VulkanImage OutputAlbedo => albedoImage ?? throw new InvalidOperationException("Raster albedo image is not initialized.");
-    public VulkanImage OutputNormal => normalImage ?? throw new InvalidOperationException("Raster normal image is not initialized.");
-    public VulkanImage OutputCrypto => cryptoImage ?? throw new InvalidOperationException("Raster crypto image is not initialized.");
-    public VulkanImage OutputPosition => positionImage ?? throw new InvalidOperationException("Raster position image is not initialized.");
-    public VulkanImage OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raster adaptive image is not initialized.");
+    public VulkanImage OutputColor => outputColorImage ?? throw new("not initialized");
+    public VulkanImage OutputAlbedo => albedoImage ?? throw new("not initialized");
+    public VulkanImage OutputNormal => normalImage ?? throw new("not initialized");
+    public VulkanImage OutputCrypto => cryptoImage ?? throw new("not initialized");
+    public VulkanImage OutputPosition => positionImage ?? throw new("not initialized");
+    public VulkanImage OutputAdaptiveState => materialImage ?? throw new("not initialized");
     public PixelSize RenderImageSize => renderImageSize;
-    public bool PickBuffersFlippedY => false;
-
-    public void Record(PixelSize renderSize, VulkanImage image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
+    public void Record(PixelSize renderSize, VulkanImage image, Context.CommandBuffer cmd, Scene.RenderDataGpu renderData)
     {
-        EnsureRenderImages(renderSize, commandBuffer);
-        UpdateSceneResources(commandBuffer, force: false);
-        UpdateDescriptorBuffers();
-        UpdateOutputImageBindings();
-        UpdateSceneSettingsBuffer(renderData);
+        EnsureRenderImages(renderSize, cmd);
+        UpdateSceneResources(cmd, false);
+
+        if (descriptorUpdateNeeded)
+        {
+            UpdateDescriptorBuffers();
+            descriptorUpdateNeeded = false;
+        }
+
+        if (lastBoundColorViewHandle != (outputColorImage?.ViewHandle ?? 0))
+        {
+            UpdateOutputImageBindings();
+        }
+
+        var jitterNdc = scene.RenderSettings.TaaEnabled
+            ? GetTaaJitterNdc(frameIndex, renderSize)
+            : Vector2.Zero;
+        UpdateSceneSettingsBuffer(renderData, jitterNdc, scene.RenderSettings.TaaEnabled);
+
         UpdateTextureBindings();
 
-        RunCullPass(commandBuffer, renderData);
-        RunVirtualShadowMapPass(commandBuffer, renderData);
-        RunRasterPass(commandBuffer);
+        FillVisibleCounts(cmd);
+        if (scene.RenderSettings.RasterGpuCullingEnabled)
+            RunCullInstances(cmd);
+        else
+            RunCopyAllInstances(cmd);
+        RunBuildIndirect(cmd);
+        RunShadow(cmd, renderData);
+        RunGBuffer(cmd);
+        RunDeferred(cmd, renderSize);
+        RunBackground(cmd, renderSize);
+        RunTAA(cmd, renderSize, renderData);
+        CopyTaaResolveToOutputAndHistory(cmd);
 
-        RunDeferredLighting(commandBuffer, renderSize);
-        RunHdriBackground(commandBuffer, renderSize);
-
-        if (renderData.RenderSettings.RasterRtAmbientOcclusionEnabled != 0)
-            RunRtAmbientOcclusion(commandBuffer, renderSize);
-
-        hasHistory = true;
+        frameIndex++;
         scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
     }
 
-    public bool QueryPixelUInt(VulkanImage image, int pixelX, int pixelY, out uint value)
+    public bool QueryPixelUInt(VulkanImage image, int x, int y, out uint value)
     {
         value = 0;
-        if (image.CurrentLayout == (uint)ImageLayout.Undefined)
-            return false;
-
-        var maxX = renderImageSize.Width - 1;
-        var maxY = renderImageSize.Height - 1;
-        if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
-            return false;
-
-        value = ReadPixelUInt(image, pixelX, pixelY);
+        if (image.CurrentLayout == (uint)ImageLayout.Undefined) return false;
+        if (x < 0 || y < 0 || x >= renderImageSize.Width || y >= renderImageSize.Height) return false;
+        value = ReadPixelUInt(image, x, y);
         return true;
     }
 
-    public bool QueryPixelHalf4(VulkanImage image, int pixelX, int pixelY, out Vector4 value)
+    public bool QueryPixelHalf4(VulkanImage image, int x, int y, out Vector4 value)
     {
         value = default;
-        if (image.CurrentLayout == (uint)ImageLayout.Undefined)
-            return false;
-
-        var maxX = renderImageSize.Width - 1;
-        var maxY = renderImageSize.Height - 1;
-        if (pixelX < 0 || pixelY < 0 || pixelX > maxX || pixelY > maxY)
-            return false;
-
-        value = ReadPixelHalf4(image, pixelX, pixelY);
+        if (image.CurrentLayout == (uint)ImageLayout.Undefined) return false;
+        if (x < 0 || y < 0 || x >= renderImageSize.Width || y >= renderImageSize.Height) return false;
+        value = ReadPixelHalf4(image, x, y);
         return true;
     }
+
+    // ─── Pipeline & descriptor creation ─────────────────────────────────────
 
     private VulkanDescriptorSet CreateDescriptorSet()
     {
@@ -190,347 +203,238 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
             .Add(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
             .Add(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.VertexBit | ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit)
             .Add(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit | ShaderStageFlags.ComputeBit)
-            .Add(
-                9,
-                DescriptorType.CombinedImageSampler,
-                MaxTextures,
-                ShaderStageFlags.FragmentBit | ShaderStageFlags.ComputeBit,
-                DescriptorBindingFlags.PartiallyBoundBit |
-                DescriptorBindingFlags.VariableDescriptorCountBit |
-                DescriptorBindingFlags.UpdateAfterBindBit)
+            .Add(9, DescriptorType.CombinedImageSampler, MaxTextures, ShaderStageFlags.FragmentBit | ShaderStageFlags.ComputeBit,
+                DescriptorBindingFlags.PartiallyBoundBit | DescriptorBindingFlags.VariableDescriptorCountBit | DescriptorBindingFlags.UpdateAfterBindBit)
             .Add(10, DescriptorType.StorageBuffer, 1, ShaderStageFlags.VertexBit | ShaderStageFlags.ComputeBit)
-            .Add(11, DescriptorType.StorageBuffer, 1, ShaderStageFlags.VertexBit | ShaderStageFlags.ComputeBit)
+            .Add(11, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit)
             .Add(12, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
             .Add(13, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
-            .Add(14, DescriptorType.CombinedImageSampler, 1, ShaderStageFlags.ComputeBit)
-            .Add(15, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
+            .Add(14, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit | ShaderStageFlags.VertexBit)
+            .Add(16, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(18, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(19, DescriptorType.CombinedImageSampler, 1, ShaderStageFlags.ComputeBit)
+            .Add(20, DescriptorType.CombinedImageSampler, 1, ShaderStageFlags.ComputeBit)
+            .Add(21, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
             .Build(context, DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit);
     }
 
-    private void CreateComputeLayoutAndPipelines(out PipelineLayout layout, out Pipeline reset, out Pipeline cull, out Pipeline build, out Pipeline deferred, out Pipeline background, out Pipeline rtAo, out Pipeline shadow)
+    private void CreateComputeLayoutAndPipelines(out PipelineLayout layout, out Pipeline cull,
+        out Pipeline copy, out Pipeline build, out Pipeline deferred, out Pipeline bg, out Pipeline taa)
     {
-        var cullPushRange = new PushConstantRange { StageFlags = ShaderStageFlags.ComputeBit, Offset = 0, Size = (uint)sizeof(CullPushConstants) };
-        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[1];
-        setLayouts[0] = descriptorSet.Layout;
-        layout = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, setLayouts, cullPushRange));
+        var pushRange = new PushConstantRange { StageFlags = ShaderStageFlags.ComputeBit, Offset = 0, Size = (uint)sizeof(TaaPushConstants) };
+        Span<DescriptorSetLayout> sl = stackalloc DescriptorSetLayout[1]; sl[0] = descriptorSet.Layout;
+        layout = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, sl, pushRange));
 
-        reset = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/CullReset.spv"));
         cull = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/CullInstances.spv"));
+        copy = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/CopyAllInstances.spv"));
         build = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/BuildIndirect.spv"));
         deferred = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/DeferredLighting.spv"));
-        background = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/HdriBackground.spv"));
-        rtAo = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/RtAmbientOcclusion.spv"));
-        shadow = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/RtShadowOverlay.spv"));
+        bg = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/HdriBackground.spv"));
+        taa = deviceResources.Track(VulkanPipelineFactory.CreateComputePipeline(context, layout, "Assets/Shaders/Raster/TemporalResolve.spv"));
     }
 
     private void CreateGraphicsPipeline(out PipelineLayout layout, out Pipeline pipeline)
     {
-        var pushRange = new PushConstantRange
-        {
-            StageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit,
-            Offset = 0,
-            Size = (uint)sizeof(RasterPushConstants)
-        };
-        Span<DescriptorSetLayout> setLayouts = stackalloc DescriptorSetLayout[1];
-        setLayouts[0] = descriptorSet.Layout;
-        layout = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, setLayouts, pushRange));
+        var push = new PushConstantRange { StageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit, Offset = 0, Size = (uint)sizeof(ShadowPushConstants) };
+        Span<DescriptorSetLayout> sl = stackalloc DescriptorSetLayout[1]; sl[0] = descriptorSet.Layout;
+        layout = deviceResources.Track(VulkanPipelineFactory.CreatePipelineLayout(context, sl, push));
 
-        using var shaderModules = VulkanPipelineFactory.CreateShaderModuleSet(
-            context,
-            "Assets/Shaders/Raster/DrawVS.spv",
-            "Assets/Shaders/Raster/DrawFS.spv");
-        using var mainName = new ByteString("main");
-
+        using var sm = VulkanPipelineFactory.CreateShaderModuleSet(context, "Assets/Shaders/Raster/DrawVS.spv", "Assets/Shaders/Raster/DrawFS.spv");
+        using var mn = new ByteString("main");
         var stages = stackalloc PipelineShaderStageCreateInfo[2];
-        stages[0] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = shaderModules.Vertex, PName = mainName };
-        stages[1] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = shaderModules.Fragment, PName = mainName };
+        stages[0] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = sm.Vertex, PName = mn };
+        stages[1] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = sm.Fragment, PName = mn };
 
-        var vertexInput = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo };
-        var inputAssembly = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
-        var viewportState = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1 };
-        var rasterizer = new PipelineRasterizationStateCreateInfo
+        var vi = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo };
+        var ia = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
+        var vs = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1 };
+        var rs = new PipelineRasterizationStateCreateInfo { SType = StructureType.PipelineRasterizationStateCreateInfo, PolygonMode = PolygonMode.Fill, CullMode = CullModeFlags.BackBit, FrontFace = FrontFace.CounterClockwise, LineWidth = 1f };
+        var ms = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = SampleCountFlags.Count1Bit };
+        var ds = new PipelineDepthStencilStateCreateInfo { SType = StructureType.PipelineDepthStencilStateCreateInfo, DepthTestEnable = true, DepthWriteEnable = true, DepthCompareOp = CompareOp.LessOrEqual };
+
+        var nAttachments = 7;
+        var ca = stackalloc PipelineColorBlendAttachmentState[nAttachments];
+        for (var i = 0; i < nAttachments; i++)
+            ca[i] = new PipelineColorBlendAttachmentState { ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit };
+        var cb = new PipelineColorBlendStateCreateInfo { SType = StructureType.PipelineColorBlendStateCreateInfo, AttachmentCount = (uint)nAttachments, PAttachments = ca };
+
+        var dyn = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
+        var dync = new PipelineDynamicStateCreateInfo { SType = StructureType.PipelineDynamicStateCreateInfo, DynamicStateCount = 2, PDynamicStates = dyn };
+
+        var cf = stackalloc Format[nAttachments];
+        cf[0] = Format.R32G32B32A32Sfloat;
+        cf[1] = Format.R8G8B8A8Unorm;
+        cf[2] = Format.R16G16B16A16Sfloat;
+        cf[3] = Format.R32Uint;
+        cf[4] = Format.R16G16B16A16Sfloat;
+        cf[5] = Format.R16G16B16A16Sfloat;
+        cf[6] = Format.R16G16Sfloat;
+        var ri = new PipelineRenderingCreateInfo { SType = StructureType.PipelineRenderingCreateInfo, ColorAttachmentCount = (uint)nAttachments, PColorAttachmentFormats = cf, DepthAttachmentFormat = DepthFormat };
+
+        var pi = new GraphicsPipelineCreateInfo
         {
-            SType = StructureType.PipelineRasterizationStateCreateInfo,
-            PolygonMode = PolygonMode.Fill,
-            CullMode = CullModeFlags.None,
-            FrontFace = FrontFace.CounterClockwise,
-            LineWidth = 1f
+            SType = StructureType.GraphicsPipelineCreateInfo, StageCount = 2, PStages = stages,
+            PVertexInputState = &vi, PInputAssemblyState = &ia, PViewportState = &vs,
+            PRasterizationState = &rs, PMultisampleState = &ms, PDepthStencilState = &ds,
+            PColorBlendState = &cb, PDynamicState = &dync, Layout = layout, PNext = &ri
         };
-        var multisample = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = SampleCountFlags.Count1Bit };
-        var depthStencil = new PipelineDepthStencilStateCreateInfo
-        {
-            SType = StructureType.PipelineDepthStencilStateCreateInfo,
-            DepthTestEnable = true,
-            DepthWriteEnable = true,
-            DepthCompareOp = CompareOp.LessOrEqual
-        };
-
-        var colorAttachments = stackalloc PipelineColorBlendAttachmentState[6];
-        for (var i = 0; i < 6; i++)
-        {
-            colorAttachments[i] = new PipelineColorBlendAttachmentState
-            {
-                ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
-            };
-        }
-
-        var colorBlend = new PipelineColorBlendStateCreateInfo
-        {
-            SType = StructureType.PipelineColorBlendStateCreateInfo,
-            AttachmentCount = 6,
-            PAttachments = colorAttachments
-        };
-
-        var dynamicStates = stackalloc DynamicState[2];
-        dynamicStates[0] = DynamicState.Viewport;
-        dynamicStates[1] = DynamicState.Scissor;
-        var dynamicState = new PipelineDynamicStateCreateInfo
-        {
-            SType = StructureType.PipelineDynamicStateCreateInfo,
-            DynamicStateCount = 2,
-            PDynamicStates = dynamicStates
-        };
-
-        var colorFormats = stackalloc Format[6];
-        colorFormats[0] = Format.R32G32B32A32Sfloat;
-        colorFormats[1] = Format.R8G8B8A8Unorm;
-        colorFormats[2] = Format.R16G16B16A16Sfloat;
-        colorFormats[3] = Format.R32Uint;
-        colorFormats[4] = Format.R16G16B16A16Sfloat;
-        colorFormats[5] = Format.R32G32B32A32Sfloat;
-
-        var renderingInfo = new PipelineRenderingCreateInfo
-        {
-            SType = StructureType.PipelineRenderingCreateInfo,
-            ColorAttachmentCount = 6,
-            PColorAttachmentFormats = colorFormats,
-            DepthAttachmentFormat = DepthFormat
-        };
-
-        var pipelineInfo = new GraphicsPipelineCreateInfo
-        {
-            SType = StructureType.GraphicsPipelineCreateInfo,
-            StageCount = 2,
-            PStages = stages,
-            PVertexInputState = &vertexInput,
-            PInputAssemblyState = &inputAssembly,
-            PViewportState = &viewportState,
-            PRasterizationState = &rasterizer,
-            PMultisampleState = &multisample,
-            PDepthStencilState = &depthStencil,
-            PColorBlendState = &colorBlend,
-            PDynamicState = &dynamicState,
-            Layout = layout,
-            PNext = &renderingInfo
-        };
-        context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pipelineInfo, default, out pipeline).ThrowOnError();
+        context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pi, default, out pipeline).ThrowOnError();
         pipeline = deviceResources.Track(pipeline);
-
     }
 
-    private void CreateShadowGraphicsPipeline(PipelineLayout layout, out Pipeline pipeline)
+    private void CreateShadowPipeline(PipelineLayout layout, out Pipeline pipeline)
     {
-        using var shaderModules = VulkanPipelineFactory.CreateShaderModuleSet(
-            context,
-            "Assets/Shaders/Raster/ShadowVS.spv",
-            "Assets/Shaders/Raster/ShadowFS.spv");
-        using var mainName = new ByteString("main");
-
+        using var sm = VulkanPipelineFactory.CreateShaderModuleSet(context, "Assets/Shaders/Raster/ShadowVS.spv", "Assets/Shaders/Raster/ShadowFS.spv");
+        using var mn = new ByteString("main");
         var stages = stackalloc PipelineShaderStageCreateInfo[2];
-        stages[0] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = shaderModules.Vertex, PName = mainName };
-        stages[1] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = shaderModules.Fragment, PName = mainName };
+        stages[0] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = sm.Vertex, PName = mn };
+        stages[1] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = sm.Fragment, PName = mn };
 
-        var vertexInput = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo };
-        var inputAssembly = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
-        var viewportState = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1 };
-        var rasterizer = new PipelineRasterizationStateCreateInfo
-        {
-            SType = StructureType.PipelineRasterizationStateCreateInfo,
-            PolygonMode = PolygonMode.Fill,
-            CullMode = CullModeFlags.None,
-            FrontFace = FrontFace.CounterClockwise,
-            LineWidth = 1f
-        };
-        var multisample = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = SampleCountFlags.Count1Bit };
-        var depthStencil = new PipelineDepthStencilStateCreateInfo
-        {
-            SType = StructureType.PipelineDepthStencilStateCreateInfo,
-            DepthTestEnable = true,
-            DepthWriteEnable = true,
-            DepthCompareOp = CompareOp.LessOrEqual
-        };
-        var colorAttachment = new PipelineColorBlendAttachmentState
-        {
-            ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
-        };
-        var colorBlend = new PipelineColorBlendStateCreateInfo
-        {
-            SType = StructureType.PipelineColorBlendStateCreateInfo,
-            AttachmentCount = 1,
-            PAttachments = &colorAttachment
-        };
-        var dynamicStates = stackalloc DynamicState[2];
-        dynamicStates[0] = DynamicState.Viewport;
-        dynamicStates[1] = DynamicState.Scissor;
-        var dynamicState = new PipelineDynamicStateCreateInfo
-        {
-            SType = StructureType.PipelineDynamicStateCreateInfo,
-            DynamicStateCount = 2,
-            PDynamicStates = dynamicStates
-        };
+        var vi = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo };
+        var ia = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
+        var vs = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1 };
+        var rs = new PipelineRasterizationStateCreateInfo { SType = StructureType.PipelineRasterizationStateCreateInfo, PolygonMode = PolygonMode.Fill, CullMode = CullModeFlags.BackBit, FrontFace = FrontFace.CounterClockwise, LineWidth = 1f };
+        var ms = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = SampleCountFlags.Count1Bit };
+        var ds = new PipelineDepthStencilStateCreateInfo { SType = StructureType.PipelineDepthStencilStateCreateInfo, DepthTestEnable = true, DepthWriteEnable = true, DepthCompareOp = CompareOp.LessOrEqual, DepthBoundsTestEnable = false };
 
-        var colorFormat = Format.R16G16B16A16Sfloat;
-        var renderingInfo = new PipelineRenderingCreateInfo
-        {
-            SType = StructureType.PipelineRenderingCreateInfo,
-            ColorAttachmentCount = 1,
-            PColorAttachmentFormats = &colorFormat,
-            DepthAttachmentFormat = DepthFormat
-        };
+        var cf = Format.R32Sfloat;
+        var cb = new PipelineColorBlendAttachmentState { ColorWriteMask = ColorComponentFlags.RBit };
+        var cbs = new PipelineColorBlendStateCreateInfo { SType = StructureType.PipelineColorBlendStateCreateInfo, AttachmentCount = 1, PAttachments = &cb };
+        var dyn = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
+        var dync = new PipelineDynamicStateCreateInfo { SType = StructureType.PipelineDynamicStateCreateInfo, DynamicStateCount = 2, PDynamicStates = dyn };
+        var ri = new PipelineRenderingCreateInfo { SType = StructureType.PipelineRenderingCreateInfo, ColorAttachmentCount = 1, PColorAttachmentFormats = &cf, DepthAttachmentFormat = DepthFormat };
 
-        var pipelineInfo = new GraphicsPipelineCreateInfo
+        var pi = new GraphicsPipelineCreateInfo
         {
-            SType = StructureType.GraphicsPipelineCreateInfo,
-            StageCount = 2,
-            PStages = stages,
-            PVertexInputState = &vertexInput,
-            PInputAssemblyState = &inputAssembly,
-            PViewportState = &viewportState,
-            PRasterizationState = &rasterizer,
-            PMultisampleState = &multisample,
-            PDepthStencilState = &depthStencil,
-            PColorBlendState = &colorBlend,
-            PDynamicState = &dynamicState,
-            Layout = layout,
-            PNext = &renderingInfo
+            SType = StructureType.GraphicsPipelineCreateInfo, StageCount = 2, PStages = stages,
+            PVertexInputState = &vi, PInputAssemblyState = &ia, PViewportState = &vs,
+            PRasterizationState = &rs, PMultisampleState = &ms, PDepthStencilState = &ds,
+            PColorBlendState = &cbs, PDynamicState = &dync, Layout = layout, PNext = &ri
         };
-        context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pipelineInfo, default, out pipeline).ThrowOnError();
+        context.Api.CreateGraphicsPipelines(context.Device, default, 1, in pi, default, out pipeline).ThrowOnError();
         pipeline = deviceResources.Track(pipeline);
-
     }
 
-    private Sampler CreatePreviousPositionSampler()
+    private Sampler CreateSampler(Filter filter)
     {
-        var samplerInfo = new SamplerCreateInfo
+        var info = new SamplerCreateInfo
         {
             SType = StructureType.SamplerCreateInfo,
-            MagFilter = Filter.Nearest,
-            MinFilter = Filter.Nearest,
-            MipmapMode = SamplerMipmapMode.Nearest,
+            MagFilter = filter, MinFilter = filter, MipmapMode = SamplerMipmapMode.Nearest,
             AddressModeU = SamplerAddressMode.ClampToEdge,
             AddressModeV = SamplerAddressMode.ClampToEdge,
             AddressModeW = SamplerAddressMode.ClampToEdge,
             MaxLod = 0f
         };
-
-        context.Api.CreateSampler(context.Device, in samplerInfo, default, out var sampler).ThrowOnError();
-        return sampler;
+        context.Api.CreateSampler(context.Device, in info, default, out var s).ThrowOnError();
+        return s;
     }
 
-    private VulkanBuffer CreatePlaceholderBuffer(BufferUsageFlags usage)
+    private VulkanBuffer CreatePlaceholder(BufferUsageFlags usage)
+        => new(context, 16, usage, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
+    // ─── Resource management ────────────────────────────────────────────────
+
+    private void EnsureRenderImages(PixelSize size, Context.CommandBuffer cmd)
     {
-        return new VulkanBuffer(
-            context,
-            16,
-            usage,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            new byte[16]);
-    }
+        if (outputColorImage is not null && renderImageSize == size) return;
 
-    private void EnsureRenderImages(PixelSize size, Context.CommandBuffer commandBuffer)
-    {
-        if (outputColorImage is not null && renderImageSize == size)
-            return;
+        void Retain(IDisposable? r) { if (r is not null) context.RetainForExecution(cmd, r); }
+        Retain(outputColorImage); Retain(albedoImage); Retain(normalImage); Retain(cryptoImage);
+        Retain(positionImage); Retain(materialImage); Retain(velocityImage); Retain(historyImage); Retain(taaResolveImage);
+        Retain(depthImage); Retain(shadowDepthImage); Retain(shadowDepthTex);
 
-        if (outputColorImage is not null) context.RetainForExecution(commandBuffer, outputColorImage);
-        if (albedoImage is not null) context.RetainForExecution(commandBuffer, albedoImage);
-        if (normalImage is not null) context.RetainForExecution(commandBuffer, normalImage);
-        if (cryptoImage is not null) context.RetainForExecution(commandBuffer, cryptoImage);
-        if (positionImage is not null) context.RetainForExecution(commandBuffer, positionImage);
-        if (adaptiveStateImage is not null) context.RetainForExecution(commandBuffer, adaptiveStateImage);
-        if (previousPositionHistoryImage is not null) context.RetainForExecution(commandBuffer, previousPositionHistoryImage);
-        if (shadowMomentImage is not null) context.RetainForExecution(commandBuffer, shadowMomentImage);
-        if (depthImage is not null) context.RetainForExecution(commandBuffer, depthImage);
-        if (shadowDepthImage is not null) context.RetainForExecution(commandBuffer, shadowDepthImage);
-
-        var supportedHandles = new string[0];
-        outputColorImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
-        albedoImage = new VulkanImage(context, (uint)Format.R8G8B8A8Unorm, size, false, supportedHandles);
-        normalImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        cryptoImage = new VulkanImage(context, (uint)Format.R32Uint, size, false, supportedHandles);
-        positionImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        previousPositionHistoryImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, supportedHandles);
-        adaptiveStateImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, supportedHandles);
+        outputColorImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, []);
+        albedoImage = new VulkanImage(context, (uint)Format.R8G8B8A8Unorm, size, false, []);
+        normalImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, []);
+        cryptoImage = new VulkanImage(context, (uint)Format.R32Uint, size, false, []);
+        positionImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, []);
+        materialImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, size, false, []);
+        velocityImage = new VulkanImage(context, (uint)Format.R16G16Sfloat, size, false, []);
+        historyImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, []);
+        taaResolveImage = new VulkanImage(context, (uint)Format.R32G32B32A32Sfloat, size, false, []);
         depthImage = new VulkanDepthImage(context, DepthFormat, size);
-        var shadowAtlasSize = new PixelSize(4096, 4096);
-        shadowMomentImage = new VulkanImage(context, (uint)Format.R16G16B16A16Sfloat, shadowAtlasSize, false, supportedHandles);
-        shadowDepthImage = new VulkanDepthImage(context, DepthFormat, shadowAtlasSize);
-        previousPositionHistoryImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
+        shadowDepthImage = new VulkanImage(context, (uint)Format.R32Sfloat, new PixelSize(ShadowAtlasSize, ShadowAtlasSize), false, []);
+        shadowDepthTex = new VulkanDepthImage(context, DepthFormat, new PixelSize(ShadowAtlasSize, ShadowAtlasSize));
+
+        historyImage.TransitionLayout(cmd.InternalHandle, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
         renderImageSize = size;
-        lastBoundColorImageViewHandle = 0;
-        hasHistory = false;
+        lastBoundColorViewHandle = 0;
+        frameIndex = 0;
+        settingsDirty = true;
     }
 
-    private void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
+    private VulkanBuffer UploadDeviceLocal(Context.CommandBuffer cmd, ReadOnlySpan<byte> data, BufferUsageFlags usage)
     {
-        var revisions = scene.GetResourceRevisions();
-        if (!force &&
-            uploadedMeshesRevision == revisions.Meshes &&
-            uploadedTlasRevision == revisions.Tlas)
-            return;
+        var dest = new VulkanBuffer(context, (ulong)data.Length, usage | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit);
+        var staging = new VulkanBuffer(context, (ulong)data.Length, BufferUsageFlags.TransferSrcBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, data);
+        var copyRegion = new BufferCopy { Size = (ulong)data.Length };
+        context.Api.CmdCopyBuffer(cmd.InternalHandle, staging.Handle, dest.Handle, 1, in copyRegion);
+        context.RetainForExecution(cmd, staging);
+        return dest;
+    }
 
-        var instanceBytes = scene.BuildInstanceData();
+    private VulkanBuffer CreateDeviceLocal(Context.CommandBuffer cmd, ulong size, BufferUsageFlags usage)
+    {
+        var dest = new VulkanBuffer(context, size, usage | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit);
+        return dest;
+    }
+
+    private void UpdateSceneResources(Context.CommandBuffer cmd, bool force)
+    {
+        var rev = scene.GetResourceRevisions();
+        if (!force && uploadedMeshesRevision == rev.Meshes && uploadedTlasRevision == rev.Tlas) return;
+
+        var instBytes = scene.BuildInstanceData();
         var meshBytes = scene.BuildMeshAddressData();
-        var rasterMetadataBytes = scene.BuildMeshRasterMetadata();
-        meshRasterMetadata = MemoryMarshal.Cast<byte, MeshRasterMetadataGpu>(rasterMetadataBytes).ToArray();
+        var metaBytes = scene.BuildMeshRasterMetadata();
 
-        var previousInstances = instancesBuffer;
-        var previousMeshes = meshBuffer;
-        var previousRasterMetadata = meshRasterMetadataBuffer;
-        var previousVisibleInstanceIds = visibleInstanceIdsBuffer;
-        var previousVisibleCounts = visibleCountsBuffer;
-        var previousIndirectCommands = indirectCommandsBuffer;
+        var prevInst = instancesBuffer; var prevMesh = meshBuffer;
+        var prevMeta = meshRasterMetadataBuffer; var prevVis = visibleInstanceIdsBuffer;
+        var prevCnt = visibleCountsBuffer; var prevInd = indirectCommandsBuffer;
 
-        instancesBuffer = new VulkanBuffer(context, (ulong)instanceBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, instanceBytes);
-        meshBuffer = new VulkanBuffer(context, (ulong)meshBytes.Length, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, meshBytes);
-        meshRasterMetadataBuffer = new VulkanBuffer(context, (ulong)rasterMetadataBytes.Length, BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, rasterMetadataBytes);
+        instancesBuffer = UploadDeviceLocal(cmd, instBytes, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
+        meshBuffer = UploadDeviceLocal(cmd, meshBytes, BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit);
+        meshRasterMetadataBuffer = UploadDeviceLocal(cmd, metaBytes, BufferUsageFlags.StorageBufferBit);
 
-        var instanceCount = (uint)Math.Max(1, instanceBytes.Length / StructPacking.SizeOf<InstanceGpu>());
-        meshCount = (uint)Math.Max(1, rasterMetadataBytes.Length / StructPacking.SizeOf<MeshRasterMetadataGpu>());
+        var instCount = (uint)Math.Max(1, instBytes.Length / sizeof(InstanceGpu));
+        meshCount = (uint)Math.Max(1, metaBytes.Length / sizeof(MeshRasterMetadataGpu));
 
-        visibleInstanceIdsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, instanceCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        visibleCountsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, meshCount) * sizeof(uint)), BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        indirectCommandsBuffer = new VulkanBuffer(context, (ulong)(Math.Max(1u, meshCount) * StructPacking.SizeOf<DrawIndirectCommandGpu>()), BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        visibleInstanceIdsBuffer = CreateDeviceLocal(cmd, instCount * sizeof(uint), BufferUsageFlags.StorageBufferBit);
+        visibleCountsBuffer = CreateDeviceLocal(cmd, Math.Max(1u, meshCount) * sizeof(uint), BufferUsageFlags.StorageBufferBit);
+        indirectCommandsBuffer = CreateDeviceLocal(cmd, Math.Max(1u, meshCount) * (ulong)sizeof(DrawIndirectCommandGpu), BufferUsageFlags.StorageBufferBit | BufferUsageFlags.IndirectBufferBit);
 
-        context.RetainForExecution(commandBuffer, previousInstances);
-        context.RetainForExecution(commandBuffer, previousMeshes);
-        context.RetainForExecution(commandBuffer, previousRasterMetadata);
-        context.RetainForExecution(commandBuffer, previousVisibleInstanceIds);
-        context.RetainForExecution(commandBuffer, previousVisibleCounts);
-        context.RetainForExecution(commandBuffer, previousIndirectCommands);
+        MemoryBarrier(cmd, AccessFlags.TransferWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
 
-        uploadedMeshesRevision = revisions.Meshes;
-        uploadedTlasRevision = revisions.Tlas;
-        hasHistory = false;
+        void R(IDisposable? r) { if (r is not null) context.RetainForExecution(cmd, r); }
+        R(prevInst); R(prevMesh); R(prevMeta); R(prevVis); R(prevCnt); R(prevInd);
+
+        descriptorUpdateNeeded = true;
+        uploadedMeshesRevision = rev.Meshes; uploadedTlasRevision = rev.Tlas;
     }
 
     private void UpdateDescriptorBuffers()
     {
-        new VulkanDescriptorWriter()
+        var writer = new VulkanDescriptorWriter()
             .StorageBuffer(0, instancesBuffer)
             .StorageBuffer(7, meshBuffer)
             .StorageBuffer(8, sceneSettingsBuffer)
             .StorageBuffer(10, meshRasterMetadataBuffer)
             .StorageBuffer(11, visibleInstanceIdsBuffer)
             .StorageBuffer(12, visibleCountsBuffer)
-            .StorageBuffer(13, indirectCommandsBuffer)
-            .Update(context, descriptorSet.Set);
+            .StorageBuffer(13, indirectCommandsBuffer);
+
+        if (lightProbeSystem is not null && lightProbeSystem.ProbeCount > 0)
+            writer.StorageBuffer(16, lightProbeSystem.ProbeBuffer);
+        else
+            writer.StorageBuffer(16, probePlaceholderBuffer);
+
+        writer.Update(context, descriptorSet.Set);
     }
 
     private void UpdateOutputImageBindings()
     {
-        if (outputColorImage is null || lastBoundColorImageViewHandle == outputColorImage.ViewHandle)
-            return;
+        if (outputColorImage is null || lastBoundColorViewHandle == outputColorImage.ViewHandle) return;
 
         new VulkanDescriptorWriter()
             .StorageImage(1, outputColorImage)
@@ -538,400 +442,421 @@ internal sealed unsafe class GpuRasterizer : IGpuRenderPath
             .StorageImage(3, normalImage!)
             .StorageImage(4, cryptoImage!)
             .StorageImage(5, positionImage!)
-            .StorageImage(6, adaptiveStateImage!)
-            .CombinedImageSampler(14, previousPositionSampler, previousPositionHistoryImage!, ImageLayout.ShaderReadOnlyOptimal)
-            .StorageImage(15, shadowMomentImage!)
+            .StorageImage(6, materialImage!)
+            .StorageImage(14, shadowDepthImage!)
+            .CombinedImageSampler(19, nearestSampler, velocityImage!, ImageLayout.ShaderReadOnlyOptimal)
+            .CombinedImageSampler(20, nearestSampler, historyImage!, ImageLayout.ShaderReadOnlyOptimal)
+            .StorageImage(21, taaResolveImage!)
             .Update(context, descriptorSet.Set);
-
-        lastBoundColorImageViewHandle = outputColorImage.ViewHandle;
+        lastBoundColorViewHandle = outputColorImage.ViewHandle;
     }
 
-    private void UpdateSceneSettingsBuffer(Scene.RenderDataGpu renderData)
+    private void UpdateSceneSettingsBuffer(Scene.RenderDataGpu renderData, Vector2 jitterNdc, bool force = false)
     {
-        if (!settingsDirty)
-            return;
+        if (!settingsDirty && !force) return;
 
-        var settings = new SceneSettingsDataGpu
+        var probeGrid = new LightProbeGridDataGpu
+        {
+            GridDimX = 0, GridDimY = 0, GridDimZ = 0
+        };
+        if (lightProbeSystem is not null && lightProbeSystem.ProbeCount > 0)
+        {
+            probeGrid = new LightProbeGridDataGpu
+            {
+                GridMin = lightProbeSystem.GridMin,
+                GridMax = lightProbeSystem.GridMax,
+                GridDimX = 8,
+                GridDimY = 8,
+                GridDimZ = 8
+            };
+        }
+
+        var s = new SceneSettingsDataGpu
         {
             RenderSettings = renderData.RenderSettings,
             Environment = renderData.Environment,
-            RasterCamera = scene.CaptureRasterCameraData(),
-            RasterShadow = scene.CaptureRasterShadowData()
+            RasterCamera = scene.CaptureRasterCameraData(jitterNdc),
+            RasterShadow = scene.CaptureRasterShadowData(),
+            LightProbeGrid = probeGrid
         };
-        sceneSettingsBuffer.Upload(StructPacking.ToBytes(new[] { settings }));
+        sceneSettingsBuffer.Upload(StructPacking.ToBytes(new[] { s }));
         settingsDirty = false;
     }
 
     private void UpdateTextureBindings()
     {
-        var revisions = scene.GetResourceRevisions();
-        if (uploadedTexturesRevision == revisions.Textures)
-            return;
+        var rev = scene.GetResourceRevisions();
+        if (uploadedTexturesRevision == rev.Textures) return;
 
         var textures = scene.GetTexturesSnapshot();
-        if (textures.Length > MaxTextures)
-            throw new InvalidOperationException($"Too many textures for bindless descriptor array ({textures.Length} > {MaxTextures}).");
+        if (textures.Length == 0) { uploadedTexturesRevision = rev.Textures; return; }
 
-        if (textures.Length == 0)
-        {
-            uploadedTexturesRevision = revisions.Textures;
-            return;
-        }
+        var desc = new DescriptorImageInfo[textures.Length];
+        for (var i = 0; i < textures.Length; i++) desc[i] = textures[i].GetDescriptorImageInfo();
 
-        var descriptors = new DescriptorImageInfo[textures.Length];
-        for (var i = 0; i < textures.Length; i++)
-            descriptors[i] = textures[i].GetDescriptorImageInfo();
-
-        new VulkanDescriptorWriter()
-            .CombinedImageSamplers(9, descriptors)
-            .Update(context, descriptorSet.Set);
-
-        uploadedTexturesRevision = revisions.Textures;
+        new VulkanDescriptorWriter().CombinedImageSamplers(9, desc).Update(context, descriptorSet.Set);
+        uploadedTexturesRevision = rev.Textures;
     }
 
-    private void RunCullPass(Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
+    // ─── Render passes ──────────────────────────────────────────────────────
+
+    private void BindDescriptorSet(CmdBuf cmd, PipelineBindPoint point, PipelineLayout layout)
     {
         var set = descriptorSet.Set;
-        context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Compute, computePipelineLayout, 0, 1, in set, 0, null);
-
-        var groupCountMeshes = (meshCount + ShaderDefines.GROUP_SIZE - 1u) / ShaderDefines.GROUP_SIZE;
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, cullResetPipeline);
-        context.Api.CmdDispatch(commandBuffer.InternalHandle, Math.Max(1u, groupCountMeshes), 1, 1);
-        InsertMemoryBarrier(commandBuffer.InternalHandle, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-
-        var cullPush = new CullPushConstants { HasHistory = hasHistory ? 1 : 0, IsMoving = renderData.IsMoving };
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, cullInstancesPipeline);
-        context.Api.CmdPushConstants(commandBuffer.InternalHandle, computePipelineLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(CullPushConstants), &cullPush);
-        var instanceCount = (uint)Math.Max(1, instancesBuffer.Size / (ulong)StructPacking.SizeOf<InstanceGpu>());
-        var groupCountInstances = (instanceCount + ShaderDefines.GROUP_SIZE - 1u) / ShaderDefines.GROUP_SIZE;
-        context.Api.CmdDispatch(commandBuffer.InternalHandle, Math.Max(1u, groupCountInstances), 1, 1);
-        InsertMemoryBarrier(commandBuffer.InternalHandle, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, buildIndirectPipeline);
-        context.Api.CmdDispatch(commandBuffer.InternalHandle, Math.Max(1u, groupCountMeshes), 1, 1);
-        InsertMemoryBarrier(commandBuffer.InternalHandle, AccessFlags.ShaderWriteBit, AccessFlags.IndirectCommandReadBit | AccessFlags.ShaderReadBit);
+        context.Api.CmdBindDescriptorSets(cmd.InternalHandle, point, layout, 0, 1, in set, 0, null);
     }
 
-    private void RunVirtualShadowMapPass(Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
+    private void MemoryBarrier(CmdBuf cmd, AccessFlags src, AccessFlags dst)
+        => VulkanBarriers.Memory(context.Api, cmd.InternalHandle, src, dst);
+
+    private static Vector2 GetTaaJitterNdc(int frame, PixelSize size)
     {
-        if (renderData.RenderSettings.RasterVirtualShadowMapsEnabled == 0 ||
-            renderData.Environment.DirectionalIntensity <= 0.0001f ||
-            renderData.Environment.DirectionalDirection.LengthSquared() <= 0.0001f)
+        var sampleIndex = (frame & 1023) + 1;
+        var jitterPixels = new Vector2(
+            Halton(sampleIndex, 2) - 0.5f,
+            Halton(sampleIndex, 3) - 0.5f);
+
+        return new Vector2(
+            2.0f * jitterPixels.X / Math.Max(size.Width, 1),
+            2.0f * jitterPixels.Y / Math.Max(size.Height, 1));
+    }
+
+    private static float Halton(int index, int basis)
+    {
+        var result = 0.0f;
+        var fraction = 1.0f / basis;
+        while (index > 0)
         {
-            shadowMomentImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+            result += fraction * (index % basis);
+            index /= basis;
+            fraction /= basis;
+        }
+
+        return result;
+    }
+
+    private void FillVisibleCounts(CmdBuf cmd)
+    {
+        context.Api.CmdFillBuffer(cmd.InternalHandle, visibleCountsBuffer.Handle, 0, visibleCountsBuffer.Size, 0);
+        MemoryBarrier(cmd, AccessFlags.TransferWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+    }
+
+    private void RunCullInstances(CmdBuf cmd)
+    {
+        BindDescriptorSet(cmd, PipelineBindPoint.Compute, computePipelineLayout);
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Compute, cullInstancesPipeline);
+        var instCount = (uint)Math.Max(1, (int)(instancesBuffer.Size / (ulong)sizeof(InstanceGpu)));
+        context.Api.CmdDispatch(cmd.InternalHandle, (instCount + 15u) / 16u, 1, 1);
+        MemoryBarrier(cmd, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+    }
+
+    private void RunCopyAllInstances(CmdBuf cmd)
+    {
+        BindDescriptorSet(cmd, PipelineBindPoint.Compute, computePipelineLayout);
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Compute, copyAllInstancesPipeline);
+        var instCount = (uint)Math.Max(1, (int)(instancesBuffer.Size / (ulong)sizeof(InstanceGpu)));
+        context.Api.CmdDispatch(cmd.InternalHandle, (instCount + 15u) / 16u, 1, 1);
+        MemoryBarrier(cmd, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+    }
+
+    private void RunBuildIndirect(CmdBuf cmd)
+    {
+        BindDescriptorSet(cmd, PipelineBindPoint.Compute, computePipelineLayout);
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Compute, buildIndirectPipeline);
+        context.Api.CmdDispatch(cmd.InternalHandle, Math.Max(1u, meshCount + 15u) / 16u, 1, 1);
+        MemoryBarrier(cmd, AccessFlags.ShaderWriteBit, AccessFlags.IndirectCommandReadBit | AccessFlags.ShaderReadBit);
+    }
+
+    private void RunShadow(CmdBuf cmd, Scene.RenderDataGpu renderData)
+    {
+        bool shadowsOn =
+            renderData.Environment.DirectionalIntensity > 0.0001f &&
+            renderData.Environment.DirectionalDirection.LengthSquared() > 0.0001f;
+
+        if (!shadowsOn)
+        {
+            shadowDepthImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
             return;
         }
 
-        shadowMomentImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        shadowDepthImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.DepthAttachmentOptimal, AccessFlags.DepthStencilAttachmentWriteBit);
+        shadowDepthImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        shadowDepthTex!.TransitionLayout(cmd.InternalHandle, ImageLayout.DepthAttachmentOptimal, AccessFlags.DepthStencilAttachmentWriteBit);
 
-        var momentAttachment = CreateColorAttachment(shadowMomentImage, new ClearValue { Color = new ClearColorValue(1f, 1f, 1f, 1f) });
+        var atlasSize = ShadowAtlasSize;
+        var cascadeW = atlasSize / 2;
+        var cascadeH = atlasSize / 2;
         var depthClear = new ClearValue { DepthStencil = new ClearDepthStencilValue(1f, 0) };
-        var depthAttachment = new RenderingAttachmentInfo
-        {
-            SType = StructureType.RenderingAttachmentInfo,
-            ImageView = shadowDepthImage.View,
-            ImageLayout = ImageLayout.DepthAttachmentOptimal,
-            LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.Store,
-            ClearValue = depthClear
-        };
 
-        var atlasSize = shadowMomentImage.Size;
-        var renderArea = new Rect2D(new Offset2D(0, 0), new Extent2D((uint)Math.Max(1, atlasSize.Width), (uint)Math.Max(1, atlasSize.Height)));
-        var renderingInfo = new RenderingInfo
+        for (int cascade = 0; cascade < CascadeCount; cascade++)
         {
-            SType = StructureType.RenderingInfo,
-            RenderArea = renderArea,
-            LayerCount = 1,
-            ColorAttachmentCount = 1,
-            PColorAttachments = &momentAttachment,
-            PDepthAttachment = &depthAttachment
-        };
-
-        context.Api.CmdBeginRendering(commandBuffer.InternalHandle, in renderingInfo);
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, shadowGraphicsPipeline);
-        var set = descriptorSet.Set;
-        context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, graphicsPipelineLayout, 0, 1, in set, 0, null);
-
-        const int cascadeCount = 4;
-        var cascadeWidth = atlasSize.Width / 2;
-        var cascadeHeight = atlasSize.Height / 2;
-        var physicalPageWidth = Math.Max(1, cascadeWidth / ShadowResidentPagesPerSide);
-        var physicalPageHeight = Math.Max(1, cascadeHeight / ShadowResidentPagesPerSide);
-        var residentVirtualPageOffset = (ShadowVirtualPagesPerSide - ShadowResidentPagesPerSide) / 2;
-        for (var cascade = 0; cascade < cascadeCount; cascade++)
-        {
-            var cascadeX = (cascade & 1) * cascadeWidth;
-            var cascadeY = (cascade >> 1) * cascadeHeight;
-            for (var residentPageY = 0; residentPageY < ShadowResidentPagesPerSide; residentPageY++)
+            int cx = (cascade & 1) * cascadeW;
+            int cy = (cascade >> 1) * cascadeH;
+            var clear = new ClearValue { Color = new ClearColorValue(1f, 0f, 0f, 0f) };
+            var colorAtt = new RenderingAttachmentInfo
             {
-                for (var residentPageX = 0; residentPageX < ShadowResidentPagesPerSide; residentPageX++)
-                {
-                    var physicalPageX = cascadeX + residentPageX * physicalPageWidth;
-                    var physicalPageY = cascadeY + residentPageY * physicalPageHeight;
-                    var viewport = new Viewport(physicalPageX, physicalPageY, physicalPageWidth, physicalPageHeight, 0f, 1f);
-                    var scissor = new Rect2D(
-                        new Offset2D(physicalPageX, physicalPageY),
-                        new Extent2D((uint)Math.Max(1, physicalPageWidth), (uint)Math.Max(1, physicalPageHeight)));
-                    context.Api.CmdSetViewport(commandBuffer.InternalHandle, 0, 1, in viewport);
-                    context.Api.CmdSetScissor(commandBuffer.InternalHandle, 0, 1, in scissor);
+                SType = StructureType.RenderingAttachmentInfo,
+                ImageView = new ImageView(shadowDepthImage.ViewHandle),
+                ImageLayout = ImageLayout.ColorAttachmentOptimal,
+                LoadOp = AttachmentLoadOp.Clear, StoreOp = AttachmentStoreOp.Store,
+                ClearValue = clear
+            };
+            var depthAtt = new RenderingAttachmentInfo
+            {
+                SType = StructureType.RenderingAttachmentInfo,
+                ImageView = shadowDepthTex.View,
+                ImageLayout = ImageLayout.DepthAttachmentOptimal,
+                LoadOp = AttachmentLoadOp.Clear, StoreOp = AttachmentStoreOp.Store,
+                ClearValue = depthClear
+            };
 
-                    var virtualPageX = residentVirtualPageOffset + residentPageX;
-                    var virtualPageY = residentVirtualPageOffset + residentPageY;
-                    var packedVirtualPage = (uint)(virtualPageX | (virtualPageY << 16));
-                    for (uint meshId = 0; meshId < meshCount; meshId++)
-                    {
-                        var metadata = meshRasterMetadata[(int)meshId];
-                        if (metadata.IndexCount == 0)
-                            continue;
+            var renderArea = new Rect2D(new Offset2D(cx, cy), new Extent2D((uint)cascadeW, (uint)cascadeH));
+            var renderingInfo = new RenderingInfo
+            {
+                SType = StructureType.RenderingInfo,
+                RenderArea = renderArea,
+                LayerCount = 1,
+                ColorAttachmentCount = 1,
+                PColorAttachments = &colorAtt,
+                PDepthAttachment = &depthAtt
+            };
 
-                        var push = new RasterPushConstants
-                        {
-                            MeshId = meshId,
-                            VisibleOffset = metadata.VisibleInstanceOffset,
-                            Pad0 = (uint)cascade,
-                            Pad1 = packedVirtualPage
-                        };
-                        context.Api.CmdPushConstants(commandBuffer.InternalHandle, graphicsPipelineLayout, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit, 0, (uint)sizeof(RasterPushConstants), &push);
-                        context.Api.CmdDrawIndirect(commandBuffer.InternalHandle, indirectCommandsBuffer.Handle, meshId * (ulong)StructPacking.SizeOf<DrawIndirectCommandGpu>(), 1, (uint)StructPacking.SizeOf<DrawIndirectCommandGpu>());
-                    }
-                }
-            }
+            context.Api.CmdBeginRendering(cmd.InternalHandle, in renderingInfo);
+            context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Graphics, shadowGraphicsPipeline);
+            BindDescriptorSet(cmd, PipelineBindPoint.Graphics, graphicsPipelineLayout);
+
+            var viewport = new Viewport(cx, cy, cascadeW, cascadeH, 0f, 1f);
+            var scissor = new Rect2D(new Offset2D(cx, cy), new Extent2D((uint)cascadeW, (uint)cascadeH));
+            context.Api.CmdSetViewport(cmd.InternalHandle, 0, 1, in viewport);
+            context.Api.CmdSetScissor(cmd.InternalHandle, 0, 1, in scissor);
+
+            var shadowPush = new ShadowPushConstants { CascadeIndex = (uint)cascade };
+            context.Api.CmdPushConstants(cmd.InternalHandle, graphicsPipelineLayout, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit, 0, (uint)sizeof(ShadowPushConstants), &shadowPush);
+            if (meshCount > 0)
+                context.Api.CmdDrawIndirect(cmd.InternalHandle, indirectCommandsBuffer.Handle, 0, meshCount, (uint)sizeof(DrawIndirectCommandGpu));
+
+            context.Api.CmdEndRendering(cmd.InternalHandle);
         }
 
-        context.Api.CmdEndRendering(commandBuffer.InternalHandle);
-        shadowMomentImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
+        shadowDepthImage.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
     }
 
-    private void RunRasterPass(Context.CommandBuffer commandBuffer)
+    private void RunGBuffer(CmdBuf cmd)
     {
-        outputColorImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        albedoImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        normalImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        cryptoImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        positionImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        adaptiveStateImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
-        depthImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.DepthAttachmentOptimal, AccessFlags.DepthStencilAttachmentWriteBit);
+        TransitionGBufferImagesForRendering(cmd);
 
-        var colorAttachments = stackalloc RenderingAttachmentInfo[6];
-        colorAttachments[0] = CreateColorAttachment(outputColorImage, new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) });
-        colorAttachments[1] = CreateColorAttachment(albedoImage, new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) });
-        colorAttachments[2] = CreateColorAttachment(normalImage, new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) });
-        colorAttachments[3] = CreateColorAttachment(cryptoImage, new ClearValue { Color = new ClearColorValue(ShaderDefines.INVALID_INSTANCE, 0f, 0f, 0f) });
-        colorAttachments[4] = CreateColorAttachment(positionImage, new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) });
-        colorAttachments[5] = CreateColorAttachment(adaptiveStateImage, new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) });
+        var attachments = stackalloc RenderingAttachmentInfo[7];
+        var zero = new ClearValue { Color = new ClearColorValue(0f, 0f, 0f, 0f) };
+        var cryptoClear = new ClearValue { Color = new ClearColorValue(ShaderDefines.INVALID_INSTANCE, 0f, 0f, 0f) };
+        attachments[0] = MakeAttachment(outputColorImage!, zero);
+        attachments[1] = MakeAttachment(albedoImage!, zero);
+        attachments[2] = MakeAttachment(normalImage!, zero);
+        attachments[3] = MakeAttachment(cryptoImage!, cryptoClear);
+        attachments[4] = MakeAttachment(positionImage!, zero);
+        attachments[5] = MakeAttachment(materialImage!, zero);
+        attachments[6] = MakeAttachment(velocityImage!, zero);
 
         var depthClear = new ClearValue { DepthStencil = new ClearDepthStencilValue(1f, 0) };
-        var depthAttachment = new RenderingAttachmentInfo
+        var depthAtt = new RenderingAttachmentInfo
         {
             SType = StructureType.RenderingAttachmentInfo,
-            ImageView = depthImage.View,
+            ImageView = depthImage!.View,
             ImageLayout = ImageLayout.DepthAttachmentOptimal,
-            LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.Store,
+            LoadOp = AttachmentLoadOp.Clear, StoreOp = AttachmentStoreOp.Store,
             ClearValue = depthClear
         };
 
-        var renderArea = new Rect2D(new Offset2D(0, 0), new Extent2D((uint)Math.Max(1, renderImageSize.Width), (uint)Math.Max(1, renderImageSize.Height)));
-        var renderingInfo = new RenderingInfo
+        var rArea = new Rect2D(new Offset2D(0, 0), new Extent2D((uint)renderImageSize.Width, (uint)renderImageSize.Height));
+        var rInfo = new RenderingInfo
         {
             SType = StructureType.RenderingInfo,
-            RenderArea = renderArea,
-            LayerCount = 1,
-            ColorAttachmentCount = 6,
-            PColorAttachments = colorAttachments,
-            PDepthAttachment = &depthAttachment
+            RenderArea = rArea, LayerCount = 1,
+            ColorAttachmentCount = 7, PColorAttachments = attachments,
+            PDepthAttachment = &depthAtt
         };
 
-        context.Api.CmdBeginRendering(commandBuffer.InternalHandle, in renderingInfo);
+        context.Api.CmdBeginRendering(cmd.InternalHandle, in rInfo);
 
-        var viewport = new Viewport(0, 0, renderImageSize.Width, renderImageSize.Height, 0f, 1f);
-        context.Api.CmdSetViewport(commandBuffer.InternalHandle, 0, 1, in viewport);
-        context.Api.CmdSetScissor(commandBuffer.InternalHandle, 0, 1, in renderArea);
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, graphicsPipeline);
-        var set = descriptorSet.Set;
-        context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Graphics, graphicsPipelineLayout, 0, 1, in set, 0, null);
+        var vp = new Viewport(0, 0, renderImageSize.Width, renderImageSize.Height, 0f, 1f);
+        context.Api.CmdSetViewport(cmd.InternalHandle, 0, 1, in vp);
+        context.Api.CmdSetScissor(cmd.InternalHandle, 0, 1, in rArea);
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Graphics, graphicsPipeline);
+        BindDescriptorSet(cmd, PipelineBindPoint.Graphics, graphicsPipelineLayout);
 
-        for (uint meshId = 0; meshId < meshCount; meshId++)
-        {
-            var metadata = meshRasterMetadata[(int)meshId];
-            if (metadata.IndexCount == 0)
-                continue;
+        if (meshCount > 0)
+            context.Api.CmdDrawIndirect(cmd.InternalHandle, indirectCommandsBuffer.Handle, 0, meshCount, (uint)sizeof(DrawIndirectCommandGpu));
 
-            var push = new RasterPushConstants { MeshId = meshId, VisibleOffset = metadata.VisibleInstanceOffset };
-            context.Api.CmdPushConstants(commandBuffer.InternalHandle, graphicsPipelineLayout, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit, 0, (uint)sizeof(RasterPushConstants), &push);
-            context.Api.CmdDrawIndirect(commandBuffer.InternalHandle, indirectCommandsBuffer.Handle, meshId * (ulong)StructPacking.SizeOf<DrawIndirectCommandGpu>(), 1, (uint)StructPacking.SizeOf<DrawIndirectCommandGpu>());
-        }
+        context.Api.CmdEndRendering(cmd.InternalHandle);
 
-        context.Api.CmdEndRendering(commandBuffer.InternalHandle);
-
-        outputColorImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        albedoImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
-        normalImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        cryptoImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit);
-        positionImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        adaptiveStateImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-
-        CopyPositionToHistory(commandBuffer);
+        TransitionGBufferImagesForCompute(cmd);
     }
 
-    private void CopyPositionToHistory(Context.CommandBuffer commandBuffer)
+    private void RunDeferred(CmdBuf cmd, PixelSize size)
     {
-        positionImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
-        previousPositionHistoryImage!.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit);
+        RunFullscreenCompute(cmd, size, deferredLightingPipeline);
+    }
 
-        var region = new ImageCopy
+    private void RunBackground(CmdBuf cmd, PixelSize size)
+    {
+        RunFullscreenCompute(cmd, size, hdriBackgroundPipeline);
+    }
+
+    private void RunTAA(CmdBuf cmd, PixelSize size, Scene.RenderDataGpu renderData)
+    {
+        taaResolveImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderWriteBit);
+        var push = new TaaPushConstants
+        {
+            Frame = frameIndex,
+            Enabled = scene.RenderSettings.TaaEnabled ? 1 : 0,
+            BlendFactor = renderData.IsMoving != 0 ? 0.65f : 0.9f,
+            IsMoving = renderData.IsMoving
+        };
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Compute, temporalResolvePipeline);
+        var set = descriptorSet.Set;
+        context.Api.CmdBindDescriptorSets(cmd.InternalHandle, PipelineBindPoint.Compute, computePipelineLayout, 0, 1, in set, 0, null);
+        context.Api.CmdPushConstants(cmd.InternalHandle, computePipelineLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(TaaPushConstants), &push);
+
+        var gx = ((uint)size.Width + 15u) / 16u;
+        var gy = ((uint)size.Height + 15u) / 16u;
+        context.Api.CmdDispatch(cmd.InternalHandle, gx, gy, 1);
+        MemoryBarrier(cmd, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+    }
+
+    private void CopyTaaResolveToOutputAndHistory(CmdBuf cmd)
+    {
+        taaResolveImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
+        outputColorImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit);
+        historyImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit);
+
+        var copy = new ImageCopy
         {
             SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
             DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-            Extent = new Extent3D((uint)Math.Max(1, renderImageSize.Width), (uint)Math.Max(1, renderImageSize.Height), 1)
+            Extent = new Extent3D((uint)renderImageSize.Width, (uint)renderImageSize.Height, 1)
         };
+
         context.Api.CmdCopyImage(
-            commandBuffer.InternalHandle,
-            positionImage.InternalHandle,
+            cmd.InternalHandle,
+            taaResolveImage.InternalHandle,
             ImageLayout.TransferSrcOptimal,
-            previousPositionHistoryImage.InternalHandle,
+            outputColorImage.InternalHandle,
             ImageLayout.TransferDstOptimal,
             1,
-            in region);
+            in copy);
 
-        positionImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        previousPositionHistoryImage.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
+        context.Api.CmdCopyImage(
+            cmd.InternalHandle,
+            taaResolveImage.InternalHandle,
+            ImageLayout.TransferSrcOptimal,
+            historyImage.InternalHandle,
+            ImageLayout.TransferDstOptimal,
+            1,
+            in copy);
+
+        taaResolveImage.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderWriteBit);
+        outputColorImage.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        historyImage.TransitionLayout(cmd.InternalHandle, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
     }
 
-    private void RunDeferredLighting(Context.CommandBuffer commandBuffer, PixelSize renderSize)
+    private void RunFullscreenCompute(CmdBuf cmd, PixelSize size, Pipeline pipeline)
     {
-        RunFullscreenCompute(commandBuffer, renderSize, deferredLightingPipeline);
+        context.Api.CmdBindPipeline(cmd.InternalHandle, PipelineBindPoint.Compute, pipeline);
+        BindDescriptorSet(cmd, PipelineBindPoint.Compute, computePipelineLayout);
+        var gx = ((uint)size.Width + 15u) / 16u;
+        var gy = ((uint)size.Height + 15u) / 16u;
+        context.Api.CmdDispatch(cmd.InternalHandle, gx, gy, 1);
+        MemoryBarrier(cmd, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
     }
 
-    private void RunHdriBackground(Context.CommandBuffer commandBuffer, PixelSize renderSize)
+    private void TransitionGBufferImagesForRendering(CmdBuf cmd)
     {
-        RunFullscreenCompute(commandBuffer, renderSize, hdriBackgroundPipeline);
+        outputColorImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        albedoImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        normalImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        cryptoImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        positionImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        materialImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        velocityImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ColorAttachmentOptimal, AccessFlags.ColorAttachmentWriteBit);
+        depthImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.DepthAttachmentOptimal, AccessFlags.DepthStencilAttachmentWriteBit);
     }
 
-    private void RunRtAmbientOcclusion(Context.CommandBuffer commandBuffer, PixelSize renderSize)
+    private void TransitionGBufferImagesForCompute(CmdBuf cmd)
     {
-        RunFullscreenCompute(commandBuffer, renderSize, rtAmbientOcclusionPipeline);
+        outputColorImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        albedoImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        normalImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        cryptoImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        positionImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        materialImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        velocityImage!.TransitionLayout(cmd.InternalHandle, ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit);
     }
 
-    private void RunShadowOverlay(Context.CommandBuffer commandBuffer, PixelSize renderSize)
-    {
-        RunFullscreenCompute(commandBuffer, renderSize, shadowOverlayPipeline);
-    }
-
-    private void RunFullscreenCompute(Context.CommandBuffer commandBuffer, PixelSize renderSize, Pipeline pipeline)
-    {
-        context.Api.CmdBindPipeline(commandBuffer.InternalHandle, PipelineBindPoint.Compute, pipeline);
-        var set = descriptorSet.Set;
-        context.Api.CmdBindDescriptorSets(commandBuffer.InternalHandle, PipelineBindPoint.Compute, computePipelineLayout, 0, 1, in set, 0, null);
-        var groupCountX = ((uint)Math.Max(1, renderSize.Width) + ShaderDefines.GROUP_SIZE - 1u) / ShaderDefines.GROUP_SIZE;
-        var groupCountY = ((uint)Math.Max(1, renderSize.Height) + ShaderDefines.GROUP_SIZE - 1u) / ShaderDefines.GROUP_SIZE;
-        context.Api.CmdDispatch(commandBuffer.InternalHandle, groupCountX, groupCountY, 1);
-        InsertMemoryBarrier(commandBuffer.InternalHandle, AccessFlags.ShaderWriteBit, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-    }
-
-    private RenderingAttachmentInfo CreateColorAttachment(VulkanImage image, ClearValue clearValue)
+    private static RenderingAttachmentInfo MakeAttachment(VulkanImage img, ClearValue cv)
     {
         return new RenderingAttachmentInfo
         {
             SType = StructureType.RenderingAttachmentInfo,
-            ImageView = new ImageView(image.ViewHandle),
+            ImageView = new ImageView(img.ViewHandle),
             ImageLayout = ImageLayout.ColorAttachmentOptimal,
-            LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.Store,
-            ClearValue = clearValue
+            LoadOp = AttachmentLoadOp.Clear, StoreOp = AttachmentStoreOp.Store,
+            ClearValue = cv
         };
     }
 
-    private void InsertMemoryBarrier(CommandBuffer commandBuffer, AccessFlags srcAccessMask, AccessFlags dstAccessMask)
-    {
-        VulkanBarriers.Memory(context.Api, commandBuffer, srcAccessMask, dstAccessMask);
-    }
+    // ─── Pixel queries ──────────────────────────────────────────────────────
 
-    private uint ReadPixelUInt(VulkanImage image, int pixelX, int pixelY)
+    private uint ReadPixelUInt(VulkanImage image, int px, int py)
     {
         using var staging = new VulkanBuffer(context, sizeof(uint), BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
-
-        unsafe
-        {
-            void* mapped = null;
-            context.Api.MapMemory(context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
-            try
-            {
-                return *(uint*)mapped;
-            }
-            finally
-            {
-                context.Api.UnmapMemory(context.Device, staging.Memory);
-            }
-        }
+        CopyPixel(image, staging, px, py);
+        void* mapped; context.Api.MapMemory(context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
+        var val = *(uint*)mapped;
+        context.Api.UnmapMemory(context.Device, staging.Memory);
+        return val;
     }
 
-    private Vector4 ReadPixelHalf4(VulkanImage image, int pixelX, int pixelY)
+    private Vector4 ReadPixelHalf4(VulkanImage image, int px, int py)
     {
         using var staging = new VulkanBuffer(context, sizeof(ushort) * 4, BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        CopyImagePixelToBuffer(image, staging, pixelX, pixelY);
-
-        unsafe
-        {
-            void* mapped = null;
-            context.Api.MapMemory(context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
-            try
-            {
-                var data = (ushort*)mapped;
-                return new Vector4(
-                    (float)BitConverter.UInt16BitsToHalf(data[0]),
-                    (float)BitConverter.UInt16BitsToHalf(data[1]),
-                    (float)BitConverter.UInt16BitsToHalf(data[2]),
-                    (float)BitConverter.UInt16BitsToHalf(data[3]));
-            }
-            finally
-            {
-                context.Api.UnmapMemory(context.Device, staging.Memory);
-            }
-        }
+        CopyPixel(image, staging, px, py);
+        void* mapped; context.Api.MapMemory(context.Device, staging.Memory, 0, staging.Size, 0, &mapped).ThrowOnError();
+        var data = (ushort*)mapped;
+        var v = new Vector4(
+            (float)BitConverter.UInt16BitsToHalf(data[0]),
+            (float)BitConverter.UInt16BitsToHalf(data[1]),
+            (float)BitConverter.UInt16BitsToHalf(data[2]),
+            (float)BitConverter.UInt16BitsToHalf(data[3]));
+        context.Api.UnmapMemory(context.Device, staging.Memory);
+        return v;
     }
 
-    private void CopyImagePixelToBuffer(VulkanImage image, VulkanBuffer staging, int pixelX, int pixelY)
+    private void CopyPixel(VulkanImage image, VulkanBuffer staging, int px, int py)
     {
-        var commandBuffer = context.CreateCommandBuffer();
-        context.BeginCommandBuffer(commandBuffer);
-
-        image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
-
+        var cb = context.CreateCommandBuffer();
+        context.BeginCommandBuffer(cb);
+        image.TransitionLayout(cb.InternalHandle, ImageLayout.TransferSrcOptimal, AccessFlags.TransferReadBit);
         var region = new BufferImageCopy
         {
             ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-            ImageOffset = new Offset3D(pixelX, pixelY, 0),
+            ImageOffset = new Offset3D(px, py, 0),
             ImageExtent = new Extent3D(1, 1, 1)
         };
-        context.Api.CmdCopyImageToBuffer(commandBuffer.InternalHandle, image.InternalHandle, ImageLayout.TransferSrcOptimal, staging.Handle, 1, in region);
-        image.TransitionLayout(commandBuffer.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
-        context.SubmitAndWait(commandBuffer);
+        context.Api.CmdCopyImageToBuffer(cb.InternalHandle, image.InternalHandle, ImageLayout.TransferSrcOptimal, staging.Handle, 1, in region);
+        image.TransitionLayout(cb.InternalHandle, ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+        context.SubmitAndWait(cb);
     }
+
+    // ─── Cleanup ────────────────────────────────────────────────────────────
 
     public void Dispose()
     {
-        outputColorImage?.Dispose();
-        albedoImage?.Dispose();
-        normalImage?.Dispose();
-        cryptoImage?.Dispose();
-        positionImage?.Dispose();
-        previousPositionHistoryImage?.Dispose();
-        adaptiveStateImage?.Dispose();
-        shadowMomentImage?.Dispose();
-        depthImage?.Dispose();
-        shadowDepthImage?.Dispose();
-        sceneSettingsBuffer.Dispose();
-        indirectCommandsBuffer.Dispose();
-        visibleCountsBuffer.Dispose();
-        visibleInstanceIdsBuffer.Dispose();
-        meshRasterMetadataBuffer.Dispose();
-        meshBuffer.Dispose();
-        instancesBuffer.Dispose();
-        deviceResources.Dispose();
-        descriptorSet.Dispose();
+        outputColorImage?.Dispose(); albedoImage?.Dispose(); normalImage?.Dispose();
+        cryptoImage?.Dispose(); positionImage?.Dispose(); materialImage?.Dispose();
+        velocityImage?.Dispose(); historyImage?.Dispose(); taaResolveImage?.Dispose();
+        depthImage?.Dispose(); shadowDepthImage?.Dispose(); shadowDepthTex?.Dispose();
+        sceneSettingsBuffer.Dispose(); probePlaceholderBuffer.Dispose();
+        indirectCommandsBuffer.Dispose(); visibleCountsBuffer.Dispose();
+        visibleInstanceIdsBuffer.Dispose(); meshRasterMetadataBuffer.Dispose();
+        meshBuffer.Dispose(); instancesBuffer.Dispose();
+        deviceResources.Dispose(); descriptorSet.Dispose();
     }
 }

@@ -1,23 +1,19 @@
-using System;
 using System.Collections.Specialized;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
-using Serilog;
 using UniversalUmap.Rendering.Scenes;
 
 namespace UniversalUmap.Rendering.ViewModels;
 
 public sealed partial class OutlinerPanelViewModel : ViewModelBase
 {
-    [ObservableProperty] private SuppressibleObservableCollection<OutlinerItem> items = [];
-    [ObservableProperty] private OutlinerItem? selectedItem;
+    [ObservableProperty] private SuppressibleObservableCollection<SceneHierarchyNode> items = [];
+    [ObservableProperty] private SceneHierarchyNode? selectedItem;
     [ObservableProperty] private bool isSceneEmpty = true;
 
     private Scene? scene;
     private bool syncingSelectionFromScene;
-    private OutlinerItem? selectedItemRef;
-
-    private const int ItemsPerBatch = 5;
+    private SceneHierarchyNode? selectedItemRef;
 
     public OutlinerPanelViewModel()
     {
@@ -46,44 +42,14 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         if (scene is null)
             return;
 
-        var count = scene.GetInstanceCount();
-        var startIndex = Items.Count;
-
-        if (startIndex >= count)
-            return;
-
-        Dispatcher.UIThread.Post(() => AddItemsBatched(startIndex, count), DispatcherPriority.Background);
-    }
-
-    private void AddItemsBatched(int startIndex, int totalCount)
-    {
-        var added = 0;
-        for (var i = startIndex; i < totalCount && added < ItemsPerBatch; i++)
+        var roots = scene.GetHierarchyRootsSnapshot();
+        Dispatcher.UIThread.Post(() =>
         {
-            try
-            {
-                if (scene!.TryGetInstanceAt(i, out var instance) && instance is not null)
-                {
-                    var subtitle = instance.MeshAsset?.Name ?? string.Empty;
-                    var item = new OutlinerItem(i, instance.Name ?? $"Instance {i}", subtitle, SceneHierarchyNodeKind.StaticMesh);
-                    Items.Add(item);
-                }
-                added++;
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Failed to add outliner item at index {Index}", i);
-            }
-        }
-
-        if (added >= ItemsPerBatch)
-        {
-            Dispatcher.UIThread.Post(() => AddItemsBatched(startIndex + added, totalCount), DispatcherPriority.Background);
-        }
-        else if (Items.Count > 0)
-        {
+            Items.Clear();
+            foreach (var root in roots)
+                Items.Add(root);
             SyncSelectionFromScene();
-        }
+        }, DispatcherPriority.Background);
     }
 
     public void Clear()
@@ -95,7 +61,7 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         }, DispatcherPriority.Background);
     }
 
-    partial void OnItemsChanged(SuppressibleObservableCollection<OutlinerItem>? oldValue, SuppressibleObservableCollection<OutlinerItem> newValue)
+    partial void OnItemsChanged(SuppressibleObservableCollection<SceneHierarchyNode>? oldValue, SuppressibleObservableCollection<SceneHierarchyNode> newValue)
     {
         if (oldValue is not null)
             oldValue.CollectionChanged -= OnItemsCollectionChanged;
@@ -105,15 +71,16 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         UpdateIsSceneEmpty();
     }
 
-    partial void OnSelectedItemChanged(OutlinerItem? value)
+    partial void OnSelectedItemChanged(SceneHierarchyNode? value)
     {
         UpdateSelectedNode(value);
 
         if (syncingSelectionFromScene || scene is null)
             return;
 
-        if (value is not null && value.InstanceIndex >= 0)
-            scene.SelectInstance(value.InstanceIndex);
+        var instanceIndex = value?.FirstInstanceIndexOrDefault() ?? -1;
+        if (instanceIndex >= 0)
+            scene.SelectInstance(instanceIndex);
         else
             scene.ClearSelection();
     }
@@ -133,10 +100,10 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         {
             var selectedInstanceIndex = scene.SelectedInstanceIndex;
 
-            if (selectedInstanceIndex < 0 || selectedInstanceIndex >= Items.Count)
+            if (selectedInstanceIndex < 0 || !scene.TryGetHierarchyNodeForInstance(selectedInstanceIndex, out var node))
                 SelectedItem = null;
-            else if (!ReferenceEquals(SelectedItem, Items[selectedInstanceIndex]))
-                SelectedItem = Items[selectedInstanceIndex];
+            else if (!ReferenceEquals(SelectedItem, node))
+                SelectedItem = node;
         }
         finally
         {
@@ -144,7 +111,7 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         }
     }
 
-    private void UpdateSelectedNode(OutlinerItem? value)
+    private void UpdateSelectedNode(SceneHierarchyNode? value)
     {
         if (ReferenceEquals(selectedItemRef, value))
         {

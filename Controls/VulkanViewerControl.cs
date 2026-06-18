@@ -57,9 +57,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     internal event Action? FrameRendered;
     internal event Action? DebugOverlayToggleRequested;
 
-    internal string SelectedInstanceName => scene?.SelectedInstance?.Name ?? "<None>";
-    internal Vector3 CameraPositionDebug => scene?.GetCameraViewSnapshot().Position ?? Vector3.Zero;
-    internal Vector3 ArcballPivotDebug => scene?.GetCameraViewSnapshot().ArcballPivot ?? Vector3.Zero;
     protected override bool UseTimedHoldCapture => true;
 
     public Scene? Scene => scene;
@@ -321,7 +318,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
                 (int)rd.BufferVisualization,
                 rd.RenderSettings.AdaptiveTargetError, rd.RenderSettings.AdaptiveMinSamples,
                 rd.SelectedInstanceId, presentationBuffer.ColorImage,
-                rd.IsMoving, selectionRenderPath.PickBuffersFlippedY);
+                rd.IsMoving);
             presentationBuffer.BlitToPresentedImage(cmd, target);
             result = cmd;
         });

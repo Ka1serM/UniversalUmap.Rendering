@@ -62,7 +62,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     for (int y = blockStart.y; y < blockEnd.y; ++y) {
         for (int x = blockStart.x; x < blockEnd.x; ++x) {
             int2 outputPixel = int2(x, y);
-            int2 pickPixelCoord = int2(outputPixel.x, (screenSize.y - 1) - outputPixel.y);
             AdaptiveSamplingContext adaptiveContext = loadAdaptiveSamplingContext(outputPixel);
             float4 finalColorData;
             float4 finalAdaptiveData;
@@ -74,8 +73,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 finalColorData,
                 finalAdaptiveData);
 
-            outputCrypto[pickPixelCoord] = stableState.PrimaryObjectIndex;
-            outputPosition[pickPixelCoord] = stableState.PrimaryObjectIndex != InvalidInstance
+            outputCrypto[outputPixel] = stableState.PrimaryObjectIndex;
+            outputPosition[outputPixel] = stableState.PrimaryObjectIndex != InvalidInstance
                 ? float4(stableState.PrimaryPosition, 1.0)
                 : float4(0.0);
 

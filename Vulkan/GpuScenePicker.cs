@@ -47,7 +47,7 @@ internal sealed class GpuScenePicker
             return false;
 
         var queryPixelX = pixelX;
-        var queryPixelY = pixelY;
+        var queryPixelY = renderSize.Height - 1 - pixelY;
 
         if (!renderPath.QueryPixelUInt(renderPath.OutputCrypto, queryPixelX, queryPixelY, out var pickedId) ||
             !scene.TrySelectInstance(pickedId, out instance))

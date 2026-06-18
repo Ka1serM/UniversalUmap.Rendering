@@ -259,6 +259,9 @@ public sealed unsafe class VulkanImage : IDisposable
         ImageLayout destinationLayout,
         AccessFlags destinationAccessFlags)
     {
+        if (currentLayout == destinationLayout && currentAccessFlags == destinationAccessFlags)
+            return;
+
         MemoryHelper.TransitionLayout(
             context.Api,
             commandBuffer,

@@ -7,34 +7,34 @@
 #include "../Lights/DirectionalLight.slang"
 #include "../Lights/EnvironmentLight.slang"
 
-static const float SSIL_WORLD_RADIUS = 2.0;
-static const float SSIL_SAMPLE_DISTRIBUTION_POWER = 1.8;
-static const float SSIL_AO_POWER = 1.35;
-static const float SSIL_HIT_THICKNESS = 0.35;
-static const float SSIL_INDIRECT_INTENSITY = 1.0;
-static const int SSIL_SLICE_COUNT = 6;
-static const int SSIL_STEPS_PER_SLICE = 4;
-static const int SSIL_SECTOR_COUNT = 32;
-static const float SSIL_PIXEL_TOO_CLOSE_THRESHOLD = 1.3;
-static const float SSIL_MAX_SCREEN_RADIUS = 96.0;
-static const float SSIL_MIN_SAMPLE_WEIGHT = 1.0 / 32.0;
-static const float CONTACT_SHADOW_MAX_DISTANCE = 2.25;
-static const int CONTACT_SHADOW_STEPS = 16;
-static const int VIRTUAL_SHADOW_BLOCKER_SAMPLE_COUNT = 48;
-static const int VIRTUAL_SHADOW_FILTER_SAMPLE_COUNT = 96;
-static const float VIRTUAL_SHADOW_BLOCKER_SEARCH_RADIUS_TEXELS = 16.0;
-static const float VIRTUAL_SHADOW_LIGHT_RADIUS_TEXELS = 160.0;
-static const float VIRTUAL_SHADOW_MIN_FILTER_RADIUS_TEXELS = 0.0;
-static const float VIRTUAL_SHADOW_MAX_FILTER_RADIUS_TEXELS = 22.0;
-static const float VIRTUAL_SHADOW_RECEIVER_PLANE_BIAS_SCALE = 1.5;
-static const float VIRTUAL_SHADOW_VIRTUAL_PAGES_PER_SIDE = 32.0;
-static const float VIRTUAL_SHADOW_RESIDENT_PAGES_PER_SIDE = 8.0;
+// ─── GTAO constants ─────────────────────────────────────────────────────────
+static const float GTAO_RADIUS = 1.5;
+static const int GTAO_SLICES = 6;
+static const int GTAO_STEPS = 4;
+static const float GTAO_POWER = 1.5;
+static const float GTAO_MAX_SCREEN_RADIUS = 64.0;
+static const float GTAO_THICKNESS = 0.25;
+
+// ─── SSR constants ──────────────────────────────────────────────────────────
 static const int SSR_STEPS = 40;
 static const int SSR_REFINE_STEPS = 5;
 static const float SSR_MAX_DISTANCE = 40.0;
 static const float SSR_MAX_ROUGHNESS = 0.82;
-static const float HALF_PI = 1.5707963267948966;
 
+// ─── CSM PCF/PCSS constants ────────────────────────────────────────────────
+static const int CSM_BLOCKER_SAMPLES = 16;
+static const int CSM_FILTER_SAMPLES = 32;
+static const float CSM_BLOCKER_RADIUS_TEXELS = 8.0;
+static const float CSM_LIGHT_RADIUS_TEXELS = 42.0;
+static const float CSM_MIN_FILTER_RADIUS = 1.0;
+static const float CSM_MAX_FILTER_RADIUS = 14.0;
+static const float CSM_DEPTH_BIAS_MIN = 0.00012;
+static const float CSM_DEPTH_BIAS_SLOPE = 0.00125;
+
+// ─── Light probe constants ─────────────────────────────────────────────────
+static const int PROBE_STRIDE = 8;
+
+// ─── Surface data ──────────────────────────────────────────────────────────
 struct DeferredSurface
 {
     bool Valid;
@@ -49,53 +49,143 @@ struct DeferredSurface
     float Opacity;
 };
 
-float3 sampleDiffuseEnvironmentDeferred(float3 normal, EnvironmentDataGpu environmentData)
+// ─── SH evaluation ─────────────────────────────────────────────────────────
+void evalSHBasis(float3 dir, out float sh[9])
 {
-    if (environmentData.IrradianceMapIndex >= 0)
-    {
-        float2 uv = directionToEnvironmentUv(normal, environmentData);
-        return textureSamplers[environmentData.IrradianceMapIndex].Sample(uv).rgb * environmentData.LightingExposureScale;
-    }
-
-    return sampleEnvironmentMapColorLod(
-        normal,
-        environmentData,
-        environmentData.LightingExposureScale,
-        max(environmentData.MaxTextureLod, 0.0));
+    float x = dir.x, y = dir.y, z = dir.z;
+    sh[0] = 0.282095;
+    sh[1] = 0.488603 * y;
+    sh[2] = 0.488603 * z;
+    sh[3] = 0.488603 * x;
+    sh[4] = 1.092548 * x * y;
+    sh[5] = 1.092548 * y * z;
+    sh[6] = 0.315392 * (3.0 * z * z - 1.0);
+    sh[7] = 1.092548 * x * z;
+    sh[8] = 0.546274 * (x * x - y * y);
 }
 
-float3 sampleSpecularEnvironmentDeferred(float3 reflectedDir, float roughness, EnvironmentDataGpu environmentData)
+void unpackProbeSH(float4 slots[8], out float3 sh[9])
 {
-    float lod = clamp(roughness, 0.0, 1.0) * max(environmentData.MaxTextureLod, 0.0);
-    int specularTextureIndex = environmentData.RadianceMapIndex >= 0
-        ? environmentData.RadianceMapIndex
-        : environmentData.TextureIndex;
-    if (specularTextureIndex < 0)
+    sh[0] = float3(slots[1].x, slots[3].x, slots[5].x);
+    sh[1] = float3(slots[1].y, slots[3].y, slots[5].y);
+    sh[2] = float3(slots[1].z, slots[3].z, slots[5].z);
+    sh[3] = float3(slots[1].w, slots[4].x, slots[6].x);
+    sh[4] = float3(slots[2].x, slots[4].y, slots[6].y);
+    sh[5] = float3(slots[2].y, slots[4].z, slots[6].z);
+    sh[6] = float3(slots[2].z, slots[4].w, slots[6].w);
+    sh[7] = float3(slots[2].w, slots[5].w, slots[7].x);
+    sh[8] = float3(slots[3].w, slots[7].z, slots[7].y);
+}
+
+float3 evaluateSH(float3 dir, float3 sh[9])
+{
+    float basis[9];
+    evalSHBasis(dir, basis);
+    float3 result = float3(0.0);
+    for (int i = 0; i < 9; i++)
+        result += sh[i] * basis[i];
+    return max(result, float3(0.0));
+}
+
+float3 evaluateLightProbeGI(float3 worldPos, float3 normal)
+{
+    LightProbeGridDataGpu grid = sceneSettings.LightProbeGrid;
+    if (grid.GridDimX == 0 || grid.GridDimY == 0 || grid.GridDimZ == 0)
         return float3(0.0);
 
-    float2 uv = directionToEnvironmentUv(reflectedDir, environmentData);
-    return textureSamplers[specularTextureIndex].SampleLevel(uv, max(lod, 0.0)).rgb * environmentData.LightingExposureScale;
+    float3 gridMin = grid.GridMin;
+    float3 gridMax = grid.GridMax;
+    float3 cellSize = (gridMax - gridMin) / float3(float(grid.GridDimX), float(grid.GridDimY), float(grid.GridDimZ));
+    if (any(cellSize <= 0.0)) return float3(0.0);
+
+    float3 t = (worldPos - gridMin) / (gridMax - gridMin);
+    t = saturate(t);
+    float3 f = t * float3(float(grid.GridDimX), float(grid.GridDimY), float(grid.GridDimZ)) - 0.5;
+    int3 i0 = int3(floor(f));
+    int3 i1 = min(i0 + 1, int3(grid.GridDimX - 1, grid.GridDimY - 1, grid.GridDimZ - 1));
+    float3 w = frac(f);
+    i0 = max(i0, int3(0));
+
+    float3 result = float3(0.0);
+    float totalWeight = 0.0;
+
+    for (int k = 0; k <= 1; k++)
+    {
+        for (int j = 0; j <= 1; j++)
+        {
+            for (int i = 0; i <= 1; i++)
+            {
+                int3 idx = int3(
+                    i == 0 ? i0.x : i1.x,
+                    j == 0 ? i0.y : i1.y,
+                    k == 0 ? i0.z : i1.z);
+
+                float weight = (i == 0 ? 1.0 - w.x : w.x)
+                             * (j == 0 ? 1.0 - w.y : w.y)
+                             * (k == 0 ? 1.0 - w.z : w.z);
+                if (weight <= 0.0) continue;
+
+                int linearIdx = idx.z * grid.GridDimY * grid.GridDimX + idx.y * grid.GridDimX + idx.x;
+                int baseSlot = linearIdx * PROBE_STRIDE;
+
+                float4 slots[8];
+                for (int s = 0; s < 8; s++)
+                    slots[s] = lightProbeData[baseSlot + s];
+
+                float3 sh[9];
+                unpackProbeSH(slots, sh);
+
+                float3 radiance = evaluateSH(normal, sh);
+                result += radiance * weight;
+                totalWeight += weight;
+            }
+        }
+    }
+
+    return totalWeight > 0.0 ? result / totalWeight : float3(0.0);
 }
 
+// ─── IBL helpers ───────────────────────────────────────────────────────────
+float3 sampleDiffuseEnvironmentDeferred(float3 normal, EnvironmentDataGpu envData)
+{
+    if (envData.IrradianceMapIndex >= 0)
+    {
+        float2 uv = directionToEnvironmentUv(normal, envData);
+        return textureSamplers[envData.IrradianceMapIndex].Sample(uv).rgb * envData.LightingExposureScale;
+    }
+    return sampleEnvironmentMapColorLod(normal, envData, envData.LightingExposureScale, max(envData.MaxTextureLod, 0.0));
+}
+
+float3 sampleSpecularEnvironmentDeferred(float3 reflectedDir, float roughness, EnvironmentDataGpu envData)
+{
+    float lod = clamp(roughness, 0.0, 1.0) * max(envData.MaxTextureLod, 0.0);
+    int specIdx = envData.RadianceMapIndex >= 0 ? envData.RadianceMapIndex : envData.TextureIndex;
+    if (specIdx < 0) return float3(0.0);
+    float2 uv = directionToEnvironmentUv(reflectedDir, envData);
+    return textureSamplers[specIdx].SampleLevel(uv, max(lod, 0.0)).rgb * envData.LightingExposureScale;
+}
+
+// ─── Surface loading ───────────────────────────────────────────────────────
 DeferredSurface loadSurface(int2 pixel)
 {
     DeferredSurface surface;
-    float4 packedPosition = outputPosition[pixel];
-    surface.Valid = packedPosition.w > 0.5;
-    surface.Position = packedPosition.xyz;
+    float4 packedPos = outputPosition[pixel];
+    surface.Valid = packedPos.w > 0.5;
+    surface.Position = packedPos.xyz;
     surface.Normal = normalize(outputNormal[pixel].xyz * 2.0 - 1.0);
     surface.Albedo = outputAlbedo[pixel].rgb;
     float4 emissionOpacity = outputColor[pixel];
     surface.Emission = emissionOpacity.rgb;
     surface.Opacity = emissionOpacity.a;
-    float4 material = outputAdaptiveState[pixel];
-    surface.Metallic = saturate(material.x);
-    surface.Specular = saturate(material.y);
-    surface.Roughness = saturate(max(outputNormal[pixel].w, material.z));
-    surface.Transmission = saturate(material.w);
+    float4 mat = outputMaterial[pixel];
+    surface.Metallic = saturate(mat.x);
+    surface.Specular = saturate(mat.y);
+    surface.Roughness = saturate(max(outputNormal[pixel].w, mat.z));
+    surface.Transmission = saturate(mat.w);
     return surface;
 }
 
+// ─── Utility ───────────────────────────────────────────────────────────────
 float screenEdgeFade(float2 uv, int2 screenSize)
 {
     float aspect = float(screenSize.y) / max(float(screenSize.x), 1.0);
@@ -105,1118 +195,437 @@ float screenEdgeFade(float2 uv, int2 screenSize)
     return saturate(fadeIn.x * fadeIn.y * fadeOut.x * fadeOut.y);
 }
 
-bool projectWorldToUv(float3 worldPosition, out float2 uv, out float cameraDistance)
+bool projectWorldToUv(float3 worldPos, out float2 uv, out float cameraDistance)
 {
-    float4 clip = mul(float4(worldPosition, 1.0), sceneSettings.RasterCamera.WorldToClip);
-    if (clip.w <= 0.0)
-    {
-        uv = float2(0.0);
-        cameraDistance = 0.0;
-        return false;
-    }
-
+    float4 clip = mul(float4(worldPos, 1.0), sceneSettings.RasterCamera.WorldToClip);
+    if (clip.w <= 0.0) { uv = float2(0.0); cameraDistance = 0.0; return false; }
     float3 ndc = clip.xyz / clip.w;
     if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0)
-    {
-        uv = float2(0.0);
-        cameraDistance = 0.0;
-        return false;
-    }
-
+    { uv = float2(0.0); cameraDistance = 0.0; return false; }
     uv = ndc.xy * 0.5 + 0.5;
-    float3 cameraForward = normalize(sceneSettings.RasterCamera.Direction);
-    cameraDistance = max(dot(worldPosition - sceneSettings.RasterCamera.Position, cameraForward), sceneSettings.RasterCamera.NearPlane);
+    float3 cf = normalize(sceneSettings.RasterCamera.Direction);
+    cameraDistance = max(dot(worldPos - sceneSettings.RasterCamera.Position, cf), sceneSettings.RasterCamera.NearPlane);
     return true;
 }
 
-float cameraLinearDepth(float3 worldPosition)
+float cameraLinearDepth(float3 worldPos)
 {
-    float3 cameraForward = normalize(sceneSettings.RasterCamera.Direction);
-    return max(dot(worldPosition - sceneSettings.RasterCamera.Position, cameraForward), sceneSettings.RasterCamera.NearPlane);
+    float3 cf = normalize(sceneSettings.RasterCamera.Direction);
+    return max(dot(worldPos - sceneSettings.RasterCamera.Position, cf), sceneSettings.RasterCamera.NearPlane);
 }
 
-bool loadSsilPosition(int2 pixel, int2 screenSize, out float3 position, out float linearDepth)
+float computeScreenSpaceRayOriginBias(float3 worldPos)
+{
+    return max(computeRayOriginBias(worldPos) * 4.0, cameraLinearDepth(worldPos) * 2.5e-4);
+}
+
+// ─── GTAO (Ground Truth Ambient Occlusion) ──────────────────────────────────
+bool loadGbufferPosition(int2 pixel, int2 screenSize, out float3 pos, out float linearDepth)
 {
     if (pixel.x < 0 || pixel.y < 0 || pixel.x >= screenSize.x || pixel.y >= screenSize.y)
-    {
-        position = float3(0.0);
-        linearDepth = 0.0;
-        return false;
-    }
-
-    float4 packedPosition = outputPosition[pixel];
-    if (packedPosition.w <= 0.5)
-    {
-        position = float3(0.0);
-        linearDepth = 0.0;
-        return false;
-    }
-
-    position = packedPosition.xyz;
-    linearDepth = cameraLinearDepth(position);
+    { pos = float3(0.0); linearDepth = 0.0; return false; }
+    float4 packed = outputPosition[pixel];
+    if (packed.w <= 0.5) { pos = float3(0.0); linearDepth = 0.0; return false; }
+    pos = packed.xyz;
+    linearDepth = cameraLinearDepth(pos);
     return true;
 }
 
-float3 normalizedDeltaOrZero(float3 fromPosition, float3 toPosition)
+float3 normalizedDeltaOrZero(float3 from, float3 to)
 {
-    float3 delta = toPosition - fromPosition;
-    float deltaLength = length(delta);
-    return deltaLength > EPSILON ? delta / deltaLength : float3(0.0);
+    float3 d = to - from;
+    float l = length(d);
+    return l > EPSILON ? d / l : float3(0.0);
 }
 
-float3 computeSsilPositionNormal(int2 pixel, int2 screenSize, DeferredSurface surface, float3 viewVec)
+float3 computeScreenSpaceNormal(int2 pixel, int2 screenSize, DeferredSurface surface, float3 viewVec)
 {
     float centerDepth = cameraLinearDepth(surface.Position);
+    float3 leftPos, rightPos, topPos, bottomPos;
+    float leftD, rightD, topD, bottomD;
+    bool hl = loadGbufferPosition(pixel + int2(-1, 0), screenSize, leftPos, leftD);
+    bool hr = loadGbufferPosition(pixel + int2(1, 0), screenSize, rightPos, rightD);
+    bool ht = loadGbufferPosition(pixel + int2(0, -1), screenSize, topPos, topD);
+    bool hb = loadGbufferPosition(pixel + int2(0, 1), screenSize, bottomPos, bottomD);
 
-    float3 leftPosition;
-    float3 rightPosition;
-    float3 topPosition;
-    float3 bottomPosition;
-    float leftDepth;
-    float rightDepth;
-    float topDepth;
-    float bottomDepth;
-    bool hasLeft = loadSsilPosition(pixel + int2(-1, 0), screenSize, leftPosition, leftDepth);
-    bool hasRight = loadSsilPosition(pixel + int2(1, 0), screenSize, rightPosition, rightDepth);
-    bool hasTop = loadSsilPosition(pixel + int2(0, -1), screenSize, topPosition, topDepth);
-    bool hasBottom = loadSsilPosition(pixel + int2(0, 1), screenSize, bottomPosition, bottomDepth);
+    float4 edges = float4(hl ? leftD - centerDepth : 0.0, hr ? rightD - centerDepth : 0.0,
+                          ht ? topD - centerDepth : 0.0, hb ? bottomD - centerDepth : 0.0);
+    float slopeLR = (edges.y - edges.x) * 0.5;
+    float slopeTB = (edges.w - edges.z) * 0.5;
+    float4 slopeAdj = edges + float4(slopeLR, -slopeLR, slopeTB, -slopeTB);
+    edges = min(abs(edges), abs(slopeAdj));
+    edges = saturate(1.25 - edges / max(centerDepth * 0.011, 1.0e-3));
+    edges *= float4(hl ? 1.0 : 0.0, hr ? 1.0 : 0.0, ht ? 1.0 : 0.0, hb ? 1.0 : 0.0);
 
-    float4 edgesLRTB = float4(
-        hasLeft ? leftDepth - centerDepth : 0.0,
-        hasRight ? rightDepth - centerDepth : 0.0,
-        hasTop ? topDepth - centerDepth : 0.0,
-        hasBottom ? bottomDepth - centerDepth : 0.0);
-    float slopeLR = (edgesLRTB.y - edgesLRTB.x) * 0.5;
-    float slopeTB = (edgesLRTB.w - edgesLRTB.z) * 0.5;
-    float4 slopeAdjusted = edgesLRTB + float4(slopeLR, -slopeLR, slopeTB, -slopeTB);
-    edgesLRTB = min(abs(edgesLRTB), abs(slopeAdjusted));
-    edgesLRTB = saturate(1.25 - edgesLRTB / max(centerDepth * 0.011, 1.0e-3));
-    edgesLRTB *= float4(hasLeft ? 1.0 : 0.0, hasRight ? 1.0 : 0.0, hasTop ? 1.0 : 0.0, hasBottom ? 1.0 : 0.0);
+    float3 lDir = hl ? normalizedDeltaOrZero(surface.Position, leftPos) : float3(0.0);
+    float3 rDir = hr ? normalizedDeltaOrZero(surface.Position, rightPos) : float3(0.0);
+    float3 tDir = ht ? normalizedDeltaOrZero(surface.Position, topPos) : float3(0.0);
+    float3 bDir = hb ? normalizedDeltaOrZero(surface.Position, bottomPos) : float3(0.0);
+    float4 accepted = saturate(float4(edges.x * edges.z, edges.z * edges.y, edges.y * edges.w, edges.w * edges.x) + 0.01);
+    accepted *= float4((hl && ht) ? 1.0 : 0.0, (ht && hr) ? 1.0 : 0.0, (hr && hb) ? 1.0 : 0.0, (hb && hl) ? 1.0 : 0.0);
 
-    float3 leftDir = hasLeft ? normalizedDeltaOrZero(surface.Position, leftPosition) : float3(0.0);
-    float3 rightDir = hasRight ? normalizedDeltaOrZero(surface.Position, rightPosition) : float3(0.0);
-    float3 topDir = hasTop ? normalizedDeltaOrZero(surface.Position, topPosition) : float3(0.0);
-    float3 bottomDir = hasBottom ? normalizedDeltaOrZero(surface.Position, bottomPosition) : float3(0.0);
-    float4 acceptedNormals = saturate(float4(
-        edgesLRTB.x * edgesLRTB.z,
-        edgesLRTB.z * edgesLRTB.y,
-        edgesLRTB.y * edgesLRTB.w,
-        edgesLRTB.w * edgesLRTB.x) + 0.01);
-    acceptedNormals *= float4(
-        (hasLeft && hasTop) ? 1.0 : 0.0,
-        (hasTop && hasRight) ? 1.0 : 0.0,
-        (hasRight && hasBottom) ? 1.0 : 0.0,
-        (hasBottom && hasLeft) ? 1.0 : 0.0);
-
-    float3 normalSum = acceptedNormals.x * cross(leftDir, topDir)
-        + acceptedNormals.y * cross(topDir, rightDir)
-        + acceptedNormals.z * cross(rightDir, bottomDir)
-        + acceptedNormals.w * cross(bottomDir, leftDir);
-    if (length(normalSum) <= EPSILON)
-        return surface.Normal;
-
-    float3 positionNormal = normalize(normalSum);
-    if (dot(positionNormal, viewVec) < 0.0)
-        positionNormal = -positionNormal;
-
-    return positionNormal;
+    float3 normalSum = accepted.x * cross(lDir, tDir) + accepted.y * cross(tDir, rDir)
+                     + accepted.z * cross(rDir, bDir) + accepted.w * cross(bDir, lDir);
+    if (length(normalSum) <= EPSILON) return surface.Normal;
+    float3 posNormal = normalize(normalSum);
+    return dot(posNormal, viewVec) < 0.0 ? -posNormal : posNormal;
 }
 
-float estimateSsilScreenRadius(float centerDepth, int2 screenSize, float effectRadius)
+float computeGtaoVisibility(int2 pixel, int2 screenSize, DeferredSurface surface)
 {
-    RasterCameraDataGpu camera = sceneSettings.RasterCamera;
-    float pixelWorldSizeX = 2.0 * length(camera.Horizontal) * centerDepth / max(float(screenSize.x), 1.0);
-    float pixelWorldSizeY = 2.0 * length(camera.Vertical) * centerDepth / max(float(screenSize.y), 1.0);
-    float pixelWorldSize = max(min(pixelWorldSizeX, pixelWorldSizeY), 1.0e-4);
-    float viewportLimitedRadius = max(24.0, min(SSIL_MAX_SCREEN_RADIUS, min(float(screenSize.x), float(screenSize.y)) * 0.18));
-    return clamp(effectRadius / pixelWorldSize, 0.0, viewportLimitedRadius);
-}
-
-float computeScreenSpaceRayOriginBias(float3 worldPosition)
-{
-    return max(computeRayOriginBias(worldPosition) * 4.0, cameraLinearDepth(worldPosition) * 2.5e-4);
-}
-
-int countBits32(uint value)
-{
-    int result = 0;
-    for (int bitIndex = 0; bitIndex < 32; ++bitIndex)
-        result += int((value >> uint(bitIndex)) & 1u);
-    return result;
-}
-
-uint buildVisibilitySectorMask(float normalizedAngle0, float normalizedAngle1)
-{
-    float lo = saturate(min(normalizedAngle0, normalizedAngle1));
-    float hi = saturate(max(normalizedAngle0, normalizedAngle1));
-    int first = clamp(int(floor(lo * float(SSIL_SECTOR_COUNT))), 0, SSIL_SECTOR_COUNT - 1);
-    int last = clamp(int(ceil(hi * float(SSIL_SECTOR_COUNT))), first + 1, SSIL_SECTOR_COUNT);
-
-    uint mask = 0u;
-    for (int bitIndex = 0; bitIndex < SSIL_SECTOR_COUNT; ++bitIndex)
-    {
-        if (bitIndex >= first && bitIndex < last)
-            mask |= 1u << uint(bitIndex);
-    }
-
-    return mask;
-}
-
-struct SsilResult
-{
-    float Visibility;
-    float3 IndirectRadiance;
-};
-
-float3 estimateSsilSampleRadiance(DeferredSurface surface)
-{
-    float3 viewDir = fastNormalize(sceneSettings.RasterCamera.Position - surface.Position);
-    float nDotV = max(dot(surface.Normal, viewDir), 0.0);
-    float dielectricF0 = dielectricF0FromSpecular(surface.Specular);
-    float3 f0 = lerp(float3(dielectricF0), surface.Albedo, surface.Metallic);
-    float3 diffuseColor = surface.Albedo * (1.0 - surface.Metallic);
-    float3 diffuseEnvironment = sampleDiffuseEnvironmentDeferred(surface.Normal, sceneSettings.Environment);
-    float3 reflectedDir = reflect(-viewDir, surface.Normal);
-    float3 specularEnvironment = sampleSpecularEnvironmentDeferred(reflectedDir, surface.Roughness, sceneSettings.Environment);
-    float3 radiance = surface.Emission
-        + diffuseEnvironment * diffuseColor * (1.0 / PI)
-        + specularEnvironment * envBrdfApprox(f0, surface.Roughness, nDotV);
-
-    if (hasDirectionalLight(sceneSettings.Environment))
-    {
-        float3 lightDirection = getDirectionalLightDirection(sceneSettings.Environment);
-        float nDotL = max(dot(surface.Normal, lightDirection), 0.0);
-        if (nDotL > 0.0)
-            radiance += surface.Albedo * float3(sceneSettings.Environment.DirectionalIntensity) * nDotL * (1.0 / PI);
-    }
-
-    return max(radiance, float3(0.0));
-}
-
-SsilResult computeSsil(int2 pixel, int2 screenSize, DeferredSurface surface)
-{
-    SsilResult result;
-    result.Visibility = 1.0;
-    result.IndirectRadiance = float3(0.0);
-    if (sceneSettings.RenderSettings.RasterSsilEnabled == 0)
-        return result;
-
     float centerDepth = cameraLinearDepth(surface.Position);
-    float effectRadius = min(SSIL_WORLD_RADIUS, max(centerDepth * 0.75, SSIL_WORLD_RADIUS * 0.25));
-    float screenRadius = estimateSsilScreenRadius(centerDepth, screenSize, effectRadius);
-    if (screenRadius < SSIL_PIXEL_TOO_CLOSE_THRESHOLD)
-        return result;
+    float effectRadius = min(GTAO_RADIUS, max(centerDepth * 0.5, GTAO_RADIUS * 0.25));
 
-    float3 cameraRight = normalize(sceneSettings.RasterCamera.Horizontal);
-    float3 cameraUp = normalize(sceneSettings.RasterCamera.Vertical);
-    float3 viewVec = normalize(sceneSettings.RasterCamera.Position - surface.Position);
-    float3 ssilNormal = computeSsilPositionNormal(pixel, screenSize, surface, viewVec);
-    float3 centerPosition = surface.Position + ssilNormal * computeScreenSpaceRayOriginBias(surface.Position);
+    RasterCameraDataGpu cam = sceneSettings.RasterCamera;
+    float pxWX = 2.0 * length(cam.Horizontal) * centerDepth / max(float(screenSize.x), 1.0);
+    float pxWY = 2.0 * length(cam.Vertical) * centerDepth / max(float(screenSize.y), 1.0);
+    float pxW = max(pxWX, pxWY);
+    if (pxW <= 1.0e-4) return 1.0;
+    float screenRadius = clamp(effectRadius / pxW, 0.0, GTAO_MAX_SCREEN_RADIUS);
+    if (screenRadius < 1.3) return 1.0;
 
-    float visibility = 0.0;
-    float3 indirectRadiance = float3(0.0);
-    float validSliceCount = 0.0;
+    float3 camRight = normalize(cam.Horizontal);
+    float3 camUp = normalize(cam.Vertical);
+    float3 viewVec = normalize(cam.Position - surface.Position);
+    float3 ssNormal = computeScreenSpaceNormal(pixel, screenSize, surface, viewVec);
 
-    for (int sliceIndex = 0; sliceIndex < SSIL_SLICE_COUNT; ++sliceIndex)
+    float ao = 0.0;
+    for (int si = 0; si < GTAO_SLICES; si++)
     {
-        float phi = (float(sliceIndex) + 0.5) * (PI / float(SSIL_SLICE_COUNT));
-        float2 sliceDirection = float2(cos(phi), sin(phi));
-        float3 directionVec = normalize(cameraRight * sliceDirection.x + cameraUp * sliceDirection.y);
-        float3 orthoDirectionVec = directionVec - dot(directionVec, viewVec) * viewVec;
-        float orthoLength = length(orthoDirectionVec);
-        if (orthoLength <= EPSILON)
-            continue;
+        float phi = (float(si) / float(GTAO_SLICES)) * PI;
+        float2 sDir = float2(cos(phi), sin(phi));
 
-        orthoDirectionVec /= orthoLength;
-        float3 axisVec = normalize(cross(orthoDirectionVec, viewVec));
-        float3 projectedNormalVec = ssilNormal - axisVec * dot(ssilNormal, axisVec);
-        float projectedNormalLength = length(projectedNormalVec);
-        if (projectedNormalLength <= EPSILON)
-            continue;
-
-        float signNorm = dot(orthoDirectionVec, projectedNormalVec) >= 0.0 ? 1.0 : -1.0;
-        float cosNorm = saturate(dot(projectedNormalVec, viewVec) / projectedNormalLength);
-        float n = signNorm * acos(clamp(cosNorm, -1.0, 1.0));
-
-        uint occlusionMask = 0u;
-        for (int sideIndex = 0; sideIndex < 2; ++sideIndex)
+        [unroll] for (int side = 0; side < 2; side++)
         {
-            float side = sideIndex == 0 ? -1.0 : 1.0;
-            for (int stepIndex = 0; stepIndex < SSIL_STEPS_PER_SLICE; ++stepIndex)
+            float sideSign = side == 0 ? -1.0 : 1.0;
+            float maxCosHorizon = -1.0;
+
+            [unroll] for (int step = 0; step < GTAO_STEPS; step++)
             {
-                float step01 = (float(stepIndex) + 0.5) / float(SSIL_STEPS_PER_SLICE);
-                float sampleDistancePixels = max(
-                    SSIL_PIXEL_TOO_CLOSE_THRESHOLD,
-                    pow(step01, SSIL_SAMPLE_DISTRIBUTION_POWER) * screenRadius);
-                int2 sampleOffset = int2(round(sliceDirection * (sampleDistancePixels * side)));
-                if (sampleOffset.x == 0 && sampleOffset.y == 0)
-                    continue;
+                float step01 = (float(step) + 0.5) / float(GTAO_STEPS);
+                float distPx = max(1.3, pow(step01, 1.8) * screenRadius);
+                int2 off = int2(round(sDir * (distPx * sideSign)));
+                if (off.x == 0 && off.y == 0) continue;
+                int2 sp = pixel + off;
 
-                int2 samplePixel = pixel + sampleOffset;
-                float3 samplePosition;
-                float sampleDepth;
-                if (!loadSsilPosition(samplePixel, screenSize, samplePosition, sampleDepth))
-                    continue;
+                float3 sampPos; float sampD;
+                if (!loadGbufferPosition(sp, screenSize, sampPos, sampD)) continue;
 
-                DeferredSurface sampleSurface = loadSurface(samplePixel);
-                float3 sampleDelta = samplePosition - centerPosition;
-                float sampleDistance = length(sampleDelta);
-                if (sampleDistance <= EPSILON || sampleDistance > effectRadius)
-                    continue;
+                float3 delta = sampPos - surface.Position;
+                float dist = length(delta);
+                if (dist <= 1.0e-6 || dist > effectRadius) continue;
 
-                float planeDistance = dot(samplePosition - surface.Position, ssilNormal);
-                float sameSurfaceEpsilon = max(computeScreenSpaceRayOriginBias(surface.Position), sampleDistance * 0.015);
-                if (abs(planeDistance) <= sameSurfaceEpsilon && dot(sampleSurface.Normal, ssilNormal) > 0.8)
-                    continue;
-                if (planeDistance < -max(sameSurfaceEpsilon, sampleDistance * 0.02))
-                    continue;
+                float planeDist = dot(delta, ssNormal);
+                float sameSurfEps = max(computeScreenSpaceRayOriginBias(surface.Position), dist * 0.015);
+                if (abs(planeDist) <= sameSurfEps) continue;
+                if (planeDist < 0.0) continue;
 
-                float3 sampleHorizon = sampleDelta / sampleDistance;
-                float frontHorizon = dot(sampleHorizon, viewVec);
-                float backHorizon = dot(normalize(sampleDelta - viewVec * SSIL_HIT_THICKNESS), viewVec);
-                float2 horizonAngles = acos(clamp(float2(frontHorizon, backHorizon), float2(-1.0), float2(1.0)));
-                float2 normalizedAngles = saturate((side * -horizonAngles - n + HALF_PI) * (1.0 / PI));
-                normalizedAngles = side >= 0.0 ? normalizedAngles.yx : normalizedAngles;
-                uint sectorMask = buildVisibilitySectorMask(normalizedAngles.x, normalizedAngles.y);
-                uint newMask = sectorMask & ~occlusionMask;
-                float sectorWeight = max(float(countBits32(newMask)) / float(SSIL_SECTOR_COUNT), 0.0);
-                if (sectorWeight > 0.0)
-                {
-                    float3 currentToSample = normalize(samplePosition - surface.Position);
-                    float geometryTerm = saturate(dot(ssilNormal, currentToSample)) *
-                        saturate(dot(sampleSurface.Normal, -currentToSample));
-                    if (geometryTerm > 0.0)
-                    {
-                        float distanceWeight = saturate(1.0 - sampleDistance / max(effectRadius, EPSILON));
-                        distanceWeight = max(distanceWeight * distanceWeight, SSIL_MIN_SAMPLE_WEIGHT);
-                        indirectRadiance += estimateSsilSampleRadiance(sampleSurface) * geometryTerm * sectorWeight * distanceWeight;
-                    }
-                }
-
-                occlusionMask |= sectorMask;
+                float3 dir = delta / dist;
+                float cosAngle = dot(dir, ssNormal);
+                maxCosHorizon = max(maxCosHorizon, cosAngle);
             }
-        }
 
-        visibility += 1.0 - float(countBits32(occlusionMask)) / float(SSIL_SECTOR_COUNT);
-        validSliceCount += 1.0;
-    }
-
-    if (validSliceCount <= EPSILON)
-        return result;
-
-    visibility = visibility / validSliceCount;
-    visibility = pow(saturate(visibility), SSIL_AO_POWER);
-    float smallRadiusFade = saturate((screenRadius - SSIL_PIXEL_TOO_CLOSE_THRESHOLD) / 16.0);
-    result.Visibility = lerp(1.0, max(0.03, visibility), smallRadiusFade);
-    result.IndirectRadiance = indirectRadiance * (SSIL_INDIRECT_INTENSITY / max(validSliceCount, 1.0));
-    return result;
-}
-
-float computeScreenSpaceContactShadow(
-    int2 pixel,
-    DeferredSurface surface,
-    int2 screenSize,
-    float3 lightDirection,
-    float3 originNormal)
-{
-    if (sceneSettings.RenderSettings.RasterScreenSpaceContactShadowsEnabled == 0)
-        return 1.0;
-
-    float nDotL = max(dot(surface.Normal, lightDirection), 0.0);
-    if (nDotL <= 0.0)
-        return 1.0;
-
-    float bias = max(computeShadowBias(surface.Position, nDotL) * 2.0, computeScreenSpaceRayOriginBias(surface.Position));
-    float3 origin = offsetRayOrigin(surface.Position, originNormal, lightDirection) + lightDirection * bias;
-    float visibility = 1.0;
-
-    for (int i = 1; i <= CONTACT_SHADOW_STEPS; ++i)
-    {
-        float step01 = float(i) / float(CONTACT_SHADOW_STEPS);
-        float rayDistance = lerp(0.04, CONTACT_SHADOW_MAX_DISTANCE, step01 * step01);
-        float3 rayPoint = origin + lightDirection * rayDistance;
-
-        float2 sampleUv;
-        float rayCameraDistance;
-        if (!projectWorldToUv(rayPoint, sampleUv, rayCameraDistance))
-            continue;
-
-        int2 samplePixel = clamp(int2(sampleUv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
-
-        float4 samplePosition = outputPosition[samplePixel];
-        if (samplePosition.w <= 0.5 || length(samplePosition.xyz - surface.Position) < max(0.04, bias * 8.0))
-            continue;
-        if (samplePixel.x == pixel.x && samplePixel.y == pixel.y)
-            continue;
-
-        float hitCameraDistance = cameraLinearDepth(samplePosition.xyz);
-        float depthDelta = rayCameraDistance - hitCameraDistance;
-        float thickness = max(0.04, rayDistance * 0.08);
-        if (depthDelta > 0.0 && depthDelta <= thickness)
-        {
-            float distanceFade = 1.0 - step01;
-            float edgeFade = screenEdgeFade(sampleUv, screenSize);
-            visibility = min(visibility, lerp(1.0, 0.18, distanceFade * edgeFade));
-            break;
+            if (maxCosHorizon >= 0.0)
+                ao += maxCosHorizon;
         }
     }
 
-    return visibility;
+    float totalSlices = float(GTAO_SLICES * 2);
+    float visibility = ao / totalSlices;
+    visibility = pow(saturate(visibility), GTAO_POWER);
+    return max(visibility, 0.03);
 }
 
+// ─── SSR ───────────────────────────────────────────────────────────────────
 float3 estimateDeferredSurfaceRadiance(DeferredSurface surface)
 {
-    float3 hitViewDir = fastNormalize(sceneSettings.RasterCamera.Position - surface.Position);
-    float hitNdotV = max(dot(surface.Normal, hitViewDir), 0.0);
-    float dielectricF0 = dielectricF0FromSpecular(surface.Specular);
-    float3 hitF0 = lerp(float3(dielectricF0), surface.Albedo, surface.Metallic);
-    float3 hitDiffuseColor = surface.Albedo * (1.0 - surface.Metallic);
-    float3 hitDiffuseEnvironment = sampleDiffuseEnvironmentDeferred(surface.Normal, sceneSettings.Environment);
-    float3 hitReflectedDir = reflect(-hitViewDir, surface.Normal);
-    float3 hitSpecularEnvironment = sampleSpecularEnvironmentDeferred(hitReflectedDir, surface.Roughness, sceneSettings.Environment);
-    float3 radiance = surface.Emission
-        + hitDiffuseEnvironment * hitDiffuseColor * (1.0 / PI)
-        + hitSpecularEnvironment * envBrdfApprox(hitF0, surface.Roughness, hitNdotV);
+    float3 vDir = fastNormalize(sceneSettings.RasterCamera.Position - surface.Position);
+    float nDotV = max(dot(surface.Normal, vDir), 0.0);
+    float dielecF0 = dielectricF0FromSpecular(surface.Specular);
+    float3 f0 = lerp(float3(dielecF0), surface.Albedo, surface.Metallic);
+    float3 diffColor = surface.Albedo * (1.0 - surface.Metallic);
+    float3 diffEnv = sampleDiffuseEnvironmentDeferred(surface.Normal, sceneSettings.Environment);
+    float3 reflDir = reflect(-vDir, surface.Normal);
+    float3 specEnv = sampleSpecularEnvironmentDeferred(reflDir, surface.Roughness, sceneSettings.Environment);
+    float3 rad = surface.Emission + diffEnv * diffColor * (1.0 / PI) + specEnv * envBrdfApprox(f0, surface.Roughness, nDotV);
 
     if (hasDirectionalLight(sceneSettings.Environment))
     {
-        float3 lightDirection = getDirectionalLightDirection(sceneSettings.Environment);
-        float nDotL = max(dot(surface.Normal, lightDirection), 0.0);
+        float3 lDir = getDirectionalLightDirection(sceneSettings.Environment);
+        float nDotL = max(dot(surface.Normal, lDir), 0.0);
         if (nDotL > 0.0)
         {
             PbrBxdf bxdf;
-            BxdfEval bxdfEval = bxdf.evalOpaque(
-                hitViewDir,
-                surface.Normal,
-                surface.Normal,
-                lightDirection,
-                surface.Albedo,
-                surface.Specular,
-                surface.Metallic,
-                surface.Roughness,
-                computeSpecularSamplingWeight(hitViewDir, surface.Normal, surface.Albedo, hitF0, surface.Metallic, surface.Roughness));
-            radiance += bxdfEval.f * float3(sceneSettings.Environment.DirectionalIntensity) * nDotL;
+            BxdfEval be = bxdf.evalOpaque(vDir, surface.Normal, surface.Normal, lDir, surface.Albedo,
+                surface.Specular, surface.Metallic, surface.Roughness,
+                computeSpecularSamplingWeight(vDir, surface.Normal, surface.Albedo, f0, surface.Metallic, surface.Roughness));
+            rad += be.f * float3(sceneSettings.Environment.DirectionalIntensity) * nDotL;
         }
     }
-
-    return max(radiance, float3(0.0));
+    return max(rad, float3(0.0));
 }
 
-bool validateSsrHit(
-    DeferredSurface surface,
-    int2 screenSize,
-    float3 reflectionDir,
-    float3 originNormal,
-    float3 rayPoint,
-    float2 hitUv,
-    float rayCameraDistance,
-    out float3 reflectedColor,
-    out float confidence)
+bool validateSsrHit(DeferredSurface surface, int2 screenSize, float3 reflDir, float3 originNormal,
+    float3 rayPoint, float2 hitUv, float rayCamDist, out float3 color, out float conf)
 {
-    reflectedColor = float3(0.0);
-    confidence = 0.0;
-
-    int2 hitPixel = clamp(int2(hitUv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
-    DeferredSurface hitSurface = loadSurface(hitPixel);
-    if (!hitSurface.Valid || length(hitSurface.Position - surface.Position) < 0.08)
-        return false;
-    if (abs(dot(hitSurface.Position - surface.Position, originNormal)) < computeScreenSpaceRayOriginBias(surface.Position) &&
-        dot(hitSurface.Normal, originNormal) > 0.8)
-        return false;
-
-    if (dot(hitSurface.Normal, reflectionDir) > 0.0)
-        return false;
-
-    float hitCameraDistance = cameraLinearDepth(hitSurface.Position);
-    float depthDistance = abs(hitCameraDistance - rayCameraDistance);
-    float thickness = max(0.08, length(rayPoint - surface.Position) * 0.025);
-    float hitConfidence = 1.0 - smoothstep(0.0, thickness, depthDistance);
-    hitConfidence *= hitConfidence;
-    hitConfidence *= screenEdgeFade(hitUv, screenSize);
-    if (hitConfidence <= 0.0)
-        return false;
-
-    reflectedColor = estimateDeferredSurfaceRadiance(hitSurface);
-    confidence = hitConfidence;
+    color = float3(0.0); conf = 0.0;
+    int2 hp = clamp(int2(hitUv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
+    DeferredSurface hs = loadSurface(hp);
+    if (!hs.Valid || length(hs.Position - surface.Position) < 0.08) return false;
+    if (abs(dot(hs.Position - surface.Position, originNormal)) < computeScreenSpaceRayOriginBias(surface.Position)
+        && dot(hs.Normal, originNormal) > 0.8) return false;
+    if (dot(hs.Normal, reflDir) > 0.0) return false;
+    float hitCamDist = cameraLinearDepth(hs.Position);
+    float depthDist = abs(hitCamDist - rayCamDist);
+    float thick = max(0.08, length(rayPoint - surface.Position) * 0.025);
+    conf = 1.0 - smoothstep(0.0, thick, depthDist);
+    conf *= conf * screenEdgeFade(hitUv, screenSize);
+    if (conf <= 0.0) return false;
+    color = estimateDeferredSurfaceRadiance(hs);
     return true;
 }
 
-bool refineSsrHit(
-    DeferredSurface surface,
-    int2 screenSize,
-    float3 reflectionDir,
-    float3 originNormal,
-    float previousDistance,
-    float hitDistance,
-    out float3 reflectedColor,
-    out float confidence)
+bool refineSsrHit(DeferredSurface surface, int2 screenSize, float3 reflDir, float3 originNormal,
+    float prevDist, float hitDist, out float3 bestColor, out float bestConf)
 {
-    float minDistance = previousDistance;
-    float maxDistance = hitDistance;
-    float3 bestColor = float3(0.0);
-    float bestConfidence = 0.0;
-
-    for (int i = 0; i < SSR_REFINE_STEPS; ++i)
+    float minD = prevDist, maxD = hitDist;
+    bestColor = float3(0.0); bestConf = 0.0;
+    for (int i = 0; i < SSR_REFINE_STEPS; i++)
     {
-        float midDistance = (minDistance + maxDistance) * 0.5;
-        float3 rayPoint = offsetRayOrigin(surface.Position, originNormal, reflectionDir) + reflectionDir * midDistance;
-
-        float2 hitUv;
-        float rayCameraDistance;
-        if (!projectWorldToUv(rayPoint, hitUv, rayCameraDistance))
-        {
-            maxDistance = midDistance;
-            continue;
-        }
-
-        int2 hitPixel = clamp(int2(hitUv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
-        float4 samplePosition = outputPosition[hitPixel];
-        if (samplePosition.w <= 0.5)
-        {
-            minDistance = midDistance;
-            continue;
-        }
-
-        float hitCameraDistance = cameraLinearDepth(samplePosition.xyz);
-        float depthDelta = rayCameraDistance - hitCameraDistance;
-        if (depthDelta > 0.0)
-            maxDistance = midDistance;
-        else
-            minDistance = midDistance;
-
-        float3 candidateColor;
-        float candidateConfidence;
-        if (validateSsrHit(surface, screenSize, reflectionDir, originNormal, rayPoint, hitUv, rayCameraDistance, candidateColor, candidateConfidence)
-            && candidateConfidence > bestConfidence)
-        {
-            bestColor = candidateColor;
-            bestConfidence = candidateConfidence;
-        }
+        float mid = (minD + maxD) * 0.5;
+        float3 rp = offsetRayOrigin(surface.Position, originNormal, reflDir) + reflDir * mid;
+        float2 uv; float camDist;
+        if (!projectWorldToUv(rp, uv, camDist)) { maxD = mid; continue; }
+        int2 hp = clamp(int2(uv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
+        float4 sp = outputPosition[hp];
+        if (sp.w <= 0.5) { minD = mid; continue; }
+        float hitCamDist = cameraLinearDepth(sp.xyz);
+        if ((camDist - hitCamDist) > 0.0) maxD = mid; else minD = mid;
+        float3 c; float cf;
+        if (validateSsrHit(surface, screenSize, reflDir, originNormal, rp, uv, camDist, c, cf) && cf > bestConf)
+        { bestColor = c; bestConf = cf; }
     }
-
-    reflectedColor = bestColor;
-    confidence = bestConfidence;
-    return bestConfidence > 0.0;
+    return bestConf > 0.0;
 }
 
-bool traceScreenSpaceReflection(
-    int2 pixel,
-    DeferredSurface surface,
-    int2 screenSize,
-    float3 viewDir,
-    float3 originNormal,
-    out float3 reflectedColor,
-    out float confidence)
+bool traceScreenSpaceReflection(int2 pixel, DeferredSurface surface, int2 screenSize, float3 viewDir,
+    float3 originNormal, out float3 color, out float conf)
 {
-    reflectedColor = float3(0.0);
-    confidence = 0.0;
-    if (sceneSettings.RenderSettings.RasterScreenSpaceReflectionsEnabled == 0 || surface.Roughness > SSR_MAX_ROUGHNESS)
-        return false;
-
-    float3 reflectionDir = normalize(reflect(-viewDir, surface.Normal));
-    if (dot(reflectionDir, surface.Normal) <= 0.0)
-        return false;
-
-    float3 origin = offsetRayOrigin(surface.Position, originNormal, reflectionDir);
-    float previousRayDistance = 0.0;
-    float previousDepthDelta = -1.0;
-    for (int i = 1; i <= SSR_STEPS; ++i)
+    color = float3(0.0); conf = 0.0;
+    if (surface.Roughness > SSR_MAX_ROUGHNESS) return false;
+    float3 reflDir = normalize(reflect(-viewDir, surface.Normal));
+    if (dot(reflDir, surface.Normal) <= 0.0) return false;
+    float3 origin = offsetRayOrigin(surface.Position, originNormal, reflDir);
+    float prevDist = 0.0, prevDDelta = -1.0;
+    for (int i = 1; i <= SSR_STEPS; i++)
     {
         float step01 = float(i) / float(SSR_STEPS);
-        float rayDistance = lerp(0.05, SSR_MAX_DISTANCE, step01 * step01);
-        float3 rayPoint = origin + reflectionDir * rayDistance;
-
-        float2 hitUv;
-        float rayCameraDistance;
-        if (!projectWorldToUv(rayPoint, hitUv, rayCameraDistance))
-            continue;
-
-        int2 samplePixel = clamp(int2(hitUv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
-        float4 samplePosition = outputPosition[samplePixel];
-        if (samplePosition.w <= 0.5 ||
-            (samplePixel.x == pixel.x && samplePixel.y == pixel.y) ||
-            length(samplePosition.xyz - surface.Position) < 0.08)
+        float rayDist = lerp(0.05, SSR_MAX_DISTANCE, step01 * step01);
+        float3 rp = origin + reflDir * rayDist;
+        float2 uv; float camDist;
+        if (!projectWorldToUv(rp, uv, camDist)) { prevDist = rayDist; continue; }
+        int2 sp = clamp(int2(uv * float2(screenSize)), int2(0), max(screenSize - 1, int2(0)));
+        float4 samp = outputPosition[sp];
+        if (samp.w <= 0.5 || (sp.x == pixel.x && sp.y == pixel.y) || length(samp.xyz - surface.Position) < 0.08)
+        { prevDist = rayDist; continue; }
+        float hitCamDist = cameraLinearDepth(samp.xyz);
+        float thick = max(0.08, rayDist * 0.025);
+        float dDelta = camDist - hitCamDist;
+        if ((dDelta > 0.0 && dDelta <= thick) || (prevDDelta < 0.0 && dDelta > 0.0))
         {
-            previousRayDistance = rayDistance;
-            continue;
+            if (refineSsrHit(surface, screenSize, reflDir, originNormal, prevDist, rayDist, color, conf)) return true;
+            if (validateSsrHit(surface, screenSize, reflDir, originNormal, rp, uv, camDist, color, conf)) return true;
         }
-
-        float hitCameraDistance = cameraLinearDepth(samplePosition.xyz);
-        float thickness = max(0.08, rayDistance * 0.025);
-        float depthDelta = rayCameraDistance - hitCameraDistance;
-        if ((depthDelta > 0.0 && depthDelta <= thickness) || (previousDepthDelta < 0.0 && depthDelta > 0.0))
-        {
-            if (refineSsrHit(surface, screenSize, reflectionDir, originNormal, previousRayDistance, rayDistance, reflectedColor, confidence))
-                return true;
-
-            if (validateSsrHit(surface, screenSize, reflectionDir, originNormal, rayPoint, hitUv, rayCameraDistance, reflectedColor, confidence))
-                return true;
-        }
-
-        previousRayDistance = rayDistance;
-        previousDepthDelta = depthDelta;
+        prevDist = rayDist; prevDDelta = dDelta;
     }
-
     return false;
 }
 
-float computeRtShadowVisibility(DeferredSurface surface, float3 lightDirection, float nDotL, float3 originNormal)
+// ─── CSM PCSS ──────────────────────────────────────────────────────────────
+float4x4 selectCascadeMatrix(int cascade)
 {
-    if (sceneSettings.RenderSettings.RasterRtShadowsEnabled == 0)
-        return 1.0;
-
-    float shadowBias = max(computeShadowBias(surface.Position, nDotL) * 2.0, computeScreenSpaceRayOriginBias(surface.Position));
-    float3 shadowOrigin = offsetRayOrigin(surface.Position, originNormal, lightDirection);
-    return traceShadowRay(shadowOrigin, lightDirection, shadowBias, 1000.0) ? 0.0 : 1.0;
-}
-
-float4x4 selectShadowWorldToClip(int cascadeIndex)
-{
-    if (cascadeIndex == 0) return sceneSettings.RasterShadow.WorldToClip0;
-    if (cascadeIndex == 1) return sceneSettings.RasterShadow.WorldToClip1;
-    if (cascadeIndex == 2) return sceneSettings.RasterShadow.WorldToClip2;
+    if (cascade == 0) return sceneSettings.RasterShadow.WorldToClip0;
+    if (cascade == 1) return sceneSettings.RasterShadow.WorldToClip1;
+    if (cascade == 2) return sceneSettings.RasterShadow.WorldToClip2;
     return sceneSettings.RasterShadow.WorldToClip3;
 }
 
-float4 selectShadowUvScaleOffset(int cascadeIndex)
+int selectCascade(float linearDepth)
 {
-    if (cascadeIndex == 0) return sceneSettings.RasterShadow.UvScaleOffset0;
-    if (cascadeIndex == 1) return sceneSettings.RasterShadow.UvScaleOffset1;
-    if (cascadeIndex == 2) return sceneSettings.RasterShadow.UvScaleOffset2;
-    return sceneSettings.RasterShadow.UvScaleOffset3;
-}
-
-bool translateVirtualShadowAtlasUvToPhysical(int cascadeIndex, float2 virtualAtlasUv, out float2 physicalAtlasUv)
-{
-    float4 scaleOffset = selectShadowUvScaleOffset(cascadeIndex);
-    float2 virtualPageUv = (virtualAtlasUv - scaleOffset.zw) / max(scaleOffset.xy, float2(EPSILON));
-    float2 virtualPageCoord = virtualPageUv * VIRTUAL_SHADOW_VIRTUAL_PAGES_PER_SIDE;
-    float residentPageOffset = (VIRTUAL_SHADOW_VIRTUAL_PAGES_PER_SIDE - VIRTUAL_SHADOW_RESIDENT_PAGES_PER_SIDE) * 0.5;
-    float2 residentCoord = virtualPageCoord - residentPageOffset;
-    if (any(residentCoord < float2(0.0)) || any(residentCoord >= float2(VIRTUAL_SHADOW_RESIDENT_PAGES_PER_SIDE)))
-    {
-        physicalAtlasUv = float2(0.0);
-        return false;
-    }
-
-    float2 physicalPageUv = residentCoord / VIRTUAL_SHADOW_RESIDENT_PAGES_PER_SIDE;
-    physicalAtlasUv = physicalPageUv * scaleOffset.xy + scaleOffset.zw;
-    return true;
-}
-
-int selectVirtualShadowCascade(float linearDepth)
-{
-    float4 farDistances = sceneSettings.RasterShadow.CascadeFarDistances;
-    if (linearDepth <= farDistances.x) return 0;
-    if (linearDepth <= farDistances.y) return 1;
-    if (linearDepth <= farDistances.z) return 2;
+    float4 farDists = sceneSettings.RasterShadow.CascadeFarDistances;
+    if (linearDepth <= farDists.x) return 0;
+    if (linearDepth <= farDists.y) return 1;
+    if (linearDepth <= farDists.z) return 2;
     return 3;
 }
 
-bool projectToVirtualShadowPage(float3 worldPosition, int cascadeIndex, out float2 atlasUv, out float receiverDepth)
+float2 cascadeToAtlasUv(float2 cascadeUv, int cascade)
 {
-    float4 clip = mul(float4(worldPosition, 1.0), selectShadowWorldToClip(cascadeIndex));
-    if (clip.w <= 0.0)
-    {
-        atlasUv = float2(0.0);
-        receiverDepth = 0.0;
-        return false;
-    }
+    float2 quadOffset = float2(float(cascade & 1) * 0.5, float(cascade >> 1) * 0.5);
+    return cascadeUv * 0.5 + quadOffset;
+}
 
+int2 cascadeTileMinPixel(int cascade, int2 atlasSize)
+{
+    int2 tileSize = max(atlasSize / 2, int2(1));
+    return int2(cascade & 1, cascade >> 1) * tileSize;
+}
+
+int2 cascadeTileMaxPixel(int cascade, int2 atlasSize)
+{
+    int2 tileSize = max(atlasSize / 2, int2(1));
+    return cascadeTileMinPixel(cascade, atlasSize) + tileSize - int2(1);
+}
+
+float interleavedGradientNoise(int2 pixel)
+{
+    float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
+    return frac(magic.z * frac(dot(float2(pixel), magic.xy)));
+}
+
+float sampleCascadeShadowDepth(float2 atlasUv, int cascade, int2 atlasSize)
+{
+    int2 tileMin = cascadeTileMinPixel(cascade, atlasSize) + int2(1);
+    int2 tileMax = cascadeTileMaxPixel(cascade, atlasSize) - int2(1);
+    int2 p = int2(atlasUv * float2(atlasSize));
+    p = clamp(p, tileMin, tileMax);
+    return rasterShadowDepth[p];
+}
+
+float computeCsmPcssVisibility(float3 worldPos, float nDotL, float3 normal, float linearDepth)
+{
+    if (nDotL <= 0.0) return 1.0;
+
+    int cascade = selectCascade(linearDepth);
+    float4 clip = mul(float4(worldPos, 1.0), selectCascadeMatrix(cascade));
+    if (clip.w <= 0.0) return 1.0;
     float3 ndc = clip.xyz / clip.w;
     if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0)
-    {
-        atlasUv = float2(0.0);
-        receiverDepth = 0.0;
-        return false;
-    }
+        return 1.0;
 
-    float2 pageUv = ndc.xy * 0.5 + 0.5;
-    float4 scaleOffset = selectShadowUvScaleOffset(cascadeIndex);
-    atlasUv = pageUv * scaleOffset.xy + scaleOffset.zw;
-    receiverDepth = saturate(ndc.z);
-    return true;
-}
+    float2 cascadeUv = ndc.xy * 0.5 + 0.5;
+    // Edge fade
+    float edgeDist = min(min(cascadeUv.x, cascadeUv.y), min(1.0 - cascadeUv.x, 1.0 - cascadeUv.y));
+    float edgeFade = smoothstep(0.0, 0.05, edgeDist);
 
-void getVirtualShadowPageBounds(
-    int cascadeIndex,
-    float2 atlasUv,
-    out int2 atlasSize,
-    out int2 pageMin,
-    out int2 pageMax,
-    out int2 centerPixel)
-{
-    uint shadowWidth;
-    uint shadowHeight;
-    rasterShadowMoments.GetDimensions(shadowWidth, shadowHeight);
-    atlasSize = int2(max(shadowWidth, 1u), max(shadowHeight, 1u));
+    float2 atlasUv = cascadeToAtlasUv(cascadeUv, cascade);
+    float receiverDepth = saturate(ndc.z);
 
-    float4 scaleOffset = selectShadowUvScaleOffset(cascadeIndex);
-    pageMin = clamp(int2(floor(scaleOffset.zw * float2(atlasSize))), int2(0), atlasSize - 1);
-    pageMax = clamp(int2(ceil((scaleOffset.zw + scaleOffset.xy) * float2(atlasSize))) - 1, pageMin, atlasSize - 1);
-    centerPixel = clamp(int2(floor(atlasUv * float2(atlasSize))), pageMin, pageMax);
-}
+    uint atlasW, atlasH;
+    rasterShadowDepth.GetDimensions(atlasW, atlasH);
+    int2 atlasSize = int2(atlasW, atlasH);
+    float2 texelSize = 1.0 / float2(atlasSize);
+    float depthBias = CSM_DEPTH_BIAS_MIN + CSM_DEPTH_BIAS_SLOPE * pow(saturate(1.0 - nDotL), 2.0);
+    receiverDepth = saturate(receiverDepth - depthBias);
+    float noise = interleavedGradientNoise(int2(cascadeUv * float2(atlasSize)));
 
-float4 sampleShadowMomentsBilinear(float2 atlasUv, int2 atlasSize, int2 pageMin, int2 pageMax)
-{
-    float2 texelPosition = atlasUv * float2(atlasSize) - 0.5;
-    int2 basePixel = int2(floor(texelPosition));
-    float2 blend = frac(texelPosition);
-
-    int2 p00 = clamp(basePixel, pageMin, pageMax);
-    int2 p10 = clamp(basePixel + int2(1, 0), pageMin, pageMax);
-    int2 p01 = clamp(basePixel + int2(0, 1), pageMin, pageMax);
-    int2 p11 = clamp(basePixel + int2(1, 1), pageMin, pageMax);
-
-    float4 row0 = lerp(rasterShadowMoments[p00], rasterShadowMoments[p10], blend.x);
-    float4 row1 = lerp(rasterShadowMoments[p01], rasterShadowMoments[p11], blend.x);
-    return saturate(lerp(row0, row1, blend.y));
-}
-
-float2 virtualShadowSampleRotation(int2 centerPixel)
-{
-    uint2 seed = pcg2d(uint2(uint(centerPixel.x), uint(centerPixel.y)) ^ uint2(0xA511E9B3u, 0x63D83595u));
-    float angle = float(seed.x) * (6.28318530718 / 4294967296.0);
-    return float2(cos(angle), sin(angle));
-}
-
-float2 rotateOffset(float2 offset, float2 rotationTrig)
-{
-    return float2(
-        offset.x * rotationTrig.x - offset.y * rotationTrig.y,
-        offset.y * rotationTrig.x + offset.x * rotationTrig.y);
-}
-
-float2 poissonDiskOffset(int sampleIndex, int sampleCount, float2 rotationTrig)
-{
-    if (sampleIndex == 0)
-        return float2(0.0);
-
-    float sampleCountFloat = max(float(sampleCount), 1.0);
-    float radius = sqrt((float(sampleIndex) + 0.5) / sampleCountFloat);
-    float angle = float(sampleIndex) * 2.39996322973;
-    return rotateOffset(float2(cos(angle), sin(angle)) * radius, rotationTrig);
-}
-
-bool projectSsilPixelToVirtualShadowPage(
-    int2 pixel,
-    int2 screenSize,
-    int cascadeIndex,
-    out float2 atlasUv,
-    out float receiverDepth)
-{
-    if (pixel.x < 0 || pixel.y < 0 || pixel.x >= screenSize.x || pixel.y >= screenSize.y)
-    {
-        atlasUv = float2(0.0);
-        receiverDepth = 0.0;
-        return false;
-    }
-
-    float4 packedPosition = outputPosition[pixel];
-    if (packedPosition.w <= 0.5)
-    {
-        atlasUv = float2(0.0);
-        receiverDepth = 0.0;
-        return false;
-    }
-
-    return projectToVirtualShadowPage(packedPosition.xyz, cascadeIndex, atlasUv, receiverDepth);
-}
-
-bool computeShadowScreenDerivative(
-    int2 negativePixel,
-    int2 positivePixel,
-    int2 screenSize,
-    int cascadeIndex,
-    float2 centerAtlasUv,
-    float centerDepth,
-    out float2 atlasTexelDelta,
-    out float depthDelta)
-{
-    float2 negativeUv;
-    float2 positiveUv;
-    float negativeDepth;
-    float positiveDepth;
-    bool hasNegative = projectSsilPixelToVirtualShadowPage(
-        negativePixel,
-        screenSize,
-        cascadeIndex,
-        negativeUv,
-        negativeDepth);
-    bool hasPositive = projectSsilPixelToVirtualShadowPage(
-        positivePixel,
-        screenSize,
-        cascadeIndex,
-        positiveUv,
-        positiveDepth);
-
-    uint shadowWidth;
-    uint shadowHeight;
-    rasterShadowMoments.GetDimensions(shadowWidth, shadowHeight);
-    float virtualToPhysicalScale = VIRTUAL_SHADOW_VIRTUAL_PAGES_PER_SIDE / VIRTUAL_SHADOW_RESIDENT_PAGES_PER_SIDE;
-    float2 atlasSize = float2(max(shadowWidth, 1u), max(shadowHeight, 1u)) * virtualToPhysicalScale;
-
-    if (hasNegative && hasPositive)
-    {
-        atlasTexelDelta = (positiveUv - negativeUv) * atlasSize;
-        depthDelta = positiveDepth - negativeDepth;
-        return length(atlasTexelDelta) > EPSILON;
-    }
-
-    if (hasPositive)
-    {
-        atlasTexelDelta = (positiveUv - centerAtlasUv) * atlasSize;
-        depthDelta = positiveDepth - centerDepth;
-        return length(atlasTexelDelta) > EPSILON;
-    }
-
-    if (hasNegative)
-    {
-        atlasTexelDelta = (centerAtlasUv - negativeUv) * atlasSize;
-        depthDelta = centerDepth - negativeDepth;
-        return length(atlasTexelDelta) > EPSILON;
-    }
-
-    atlasTexelDelta = float2(0.0);
-    depthDelta = 0.0;
-    return false;
-}
-
-float2 estimateReceiverDepthGradientPerTexel(
-    int2 pixel,
-    int2 screenSize,
-    int cascadeIndex,
-    float2 atlasUv,
-    float receiverDepth)
-{
-    float2 dUvDx;
-    float2 dUvDy;
-    float dDepthDx;
-    float dDepthDy;
-    bool hasDx = computeShadowScreenDerivative(
-        pixel + int2(-1, 0),
-        pixel + int2(1, 0),
-        screenSize,
-        cascadeIndex,
-        atlasUv,
-        receiverDepth,
-        dUvDx,
-        dDepthDx);
-    bool hasDy = computeShadowScreenDerivative(
-        pixel + int2(0, -1),
-        pixel + int2(0, 1),
-        screenSize,
-        cascadeIndex,
-        atlasUv,
-        receiverDepth,
-        dUvDy,
-        dDepthDy);
-
-    if (!hasDx || !hasDy)
-        return float2(0.0);
-
-    float determinant = dUvDx.x * dUvDy.y - dUvDx.y * dUvDy.x;
-    if (abs(determinant) <= 1.0e-5)
-        return float2(0.0);
-
-    float2 gradient;
-    gradient.x = (dDepthDx * dUvDy.y - dUvDx.y * dDepthDy) / determinant;
-    gradient.y = (dUvDx.x * dDepthDy - dDepthDx * dUvDy.x) / determinant;
-    return clamp(gradient, float2(-0.01), float2(0.01));
-}
-
-bool findAverageBlockerDepth(
-    float2 atlasUv,
-    int cascadeIndex,
-    float receiverDepth,
-    float depthBias,
-    float2 receiverDepthGradientPerTexel,
-    out float blockerDepth)
-{
-    int2 atlasSize;
-    int2 pageMin;
-    int2 pageMax;
-    int2 centerPixel;
-    getVirtualShadowPageBounds(cascadeIndex, atlasUv, atlasSize, pageMin, pageMax, centerPixel);
-
-    float2 rotationTrig = virtualShadowSampleRotation(centerPixel);
-    float blockerDepthSum = 0.0;
+    // Blocker search
+    float blockerSum = 0.0;
     int blockerCount = 0;
-    float2 atlasTexelSize = 1.0 / float2(atlasSize);
-    for (int i = 0; i < VIRTUAL_SHADOW_BLOCKER_SAMPLE_COUNT; ++i)
+    for (int i = 0; i < CSM_BLOCKER_SAMPLES; i++)
     {
-        float2 sampleOffsetTexels = poissonDiskOffset(
-            i,
-            VIRTUAL_SHADOW_BLOCKER_SAMPLE_COUNT,
-            rotationTrig) * VIRTUAL_SHADOW_BLOCKER_SEARCH_RADIUS_TEXELS;
-        float2 sampleAtlasUv = atlasUv + sampleOffsetTexels * atlasTexelSize;
-        float sampleDepth = sampleShadowMomentsBilinear(sampleAtlasUv, atlasSize, pageMin, pageMax).x;
-        float blockerThreshold = receiverDepth + dot(sampleOffsetTexels, receiverDepthGradientPerTexel) - depthBias;
-        if (sampleDepth < blockerThreshold)
+        float angle = (float(i) + noise) * 2.399963;
+        float radius = sqrt((float(i) + 0.5) / float(CSM_BLOCKER_SAMPLES));
+        float2 off = float2(cos(angle), sin(angle)) * radius * CSM_BLOCKER_RADIUS_TEXELS * texelSize;
+        float sampleDepth = sampleCascadeShadowDepth(atlasUv + off, cascade, atlasSize);
+        if (sampleDepth < receiverDepth)
         {
-            blockerDepthSum += sampleDepth;
-            blockerCount += 1;
+            blockerSum += sampleDepth;
+            blockerCount++;
         }
     }
 
-    blockerDepth = blockerCount > 0 ? blockerDepthSum / float(blockerCount) : 1.0;
-    return blockerCount > 0;
-}
+    float blockerAvg = blockerCount > 0 ? blockerSum / float(blockerCount) : -1.0;
+    if (blockerAvg < 0.0) return 1.0;
 
-float computePcssFilterRadiusTexels(float receiverDepth, float blockerDepth, float depthBias)
-{
-    float blockerGap = max(receiverDepth - blockerDepth - depthBias, 0.0);
-    float penumbra = blockerGap / max(blockerDepth, 0.025);
-    float filterRadius = penumbra * VIRTUAL_SHADOW_LIGHT_RADIUS_TEXELS;
-    return clamp(
-        filterRadius,
-        VIRTUAL_SHADOW_MIN_FILTER_RADIUS_TEXELS,
-        VIRTUAL_SHADOW_MAX_FILTER_RADIUS_TEXELS);
-}
+    // Penumbra estimation
+    float blockerGap = max(receiverDepth - blockerAvg, 0.0);
+    float penumbra = blockerGap / max(blockerAvg, 0.025);
+    float filterRadius = clamp(penumbra * CSM_LIGHT_RADIUS_TEXELS, CSM_MIN_FILTER_RADIUS, CSM_MAX_FILTER_RADIUS);
 
-float computeHardShadowIntensity(float2 atlasUv, int cascadeIndex, float receiverDepth, float depthBias)
-{
-    int2 atlasSize;
-    int2 pageMin;
-    int2 pageMax;
-    int2 centerPixel;
-    getVirtualShadowPageBounds(cascadeIndex, atlasUv, atlasSize, pageMin, pageMax, centerPixel);
-
-    float sampleDepth = rasterShadowMoments[centerPixel].x;
-    return receiverDepth > sampleDepth + depthBias ? 1.0 : 0.0;
-}
-
-float4 sampleFilteredShadowMoments(float2 atlasUv, int cascadeIndex, float filterRadiusTexels)
-{
-    int2 atlasSize;
-    int2 pageMin;
-    int2 pageMax;
-    int2 centerPixel;
-    getVirtualShadowPageBounds(cascadeIndex, atlasUv, atlasSize, pageMin, pageMax, centerPixel);
-
-    float radius = clamp(filterRadiusTexels, 0.0, VIRTUAL_SHADOW_MAX_FILTER_RADIUS_TEXELS);
-    if (radius < 0.5)
-        return saturate(rasterShadowMoments[centerPixel]);
-
-    float4 moments = float4(0.0);
-    float2 rotationTrig = virtualShadowSampleRotation(centerPixel);
-    float2 atlasTexelSize = 1.0 / float2(atlasSize);
-    for (int i = 0; i < VIRTUAL_SHADOW_FILTER_SAMPLE_COUNT; ++i)
+    // PCF
+    float shadow = 0.0;
+    for (int i = 0; i < CSM_FILTER_SAMPLES; i++)
     {
-        float2 sampleOffsetTexels = poissonDiskOffset(i, VIRTUAL_SHADOW_FILTER_SAMPLE_COUNT, rotationTrig) * radius;
-        float2 sampleAtlasUv = atlasUv + sampleOffsetTexels * atlasTexelSize;
-        moments += sampleShadowMomentsBilinear(sampleAtlasUv, atlasSize, pageMin, pageMax);
+        float angle = (float(i) + noise) * 2.399963;
+        float radius = sqrt((float(i) + 0.5) / float(CSM_FILTER_SAMPLES));
+        float2 off = float2(cos(angle), sin(angle)) * radius * filterRadius * texelSize;
+        float sampleDepth = sampleCascadeShadowDepth(atlasUv + off, cascade, atlasSize);
+        shadow += sampleDepth < receiverDepth ? 1.0 : 0.0;
     }
+    shadow /= float(CSM_FILTER_SAMPLES);
 
-    return saturate(moments / float(VIRTUAL_SHADOW_FILTER_SAMPLE_COUNT));
+    return lerp(1.0, 1.0 - shadow, edgeFade);
 }
 
-float computeVarianceShadowIntensity(float4 moments, float fragmentDepth, float depthBias)
-{
-    if (fragmentDepth <= moments.x + depthBias)
-        return 0.0;
-
-    float variance = max(moments.y - moments.x * moments.x, 2.0e-5);
-    float depthDelta = fragmentDepth - moments.x;
-    float litUpperBound = variance / (variance + depthDelta * depthDelta);
-    return 1.0 - saturate(litUpperBound);
-}
-
-float computeHamburger4MsmShadowIntensity(float4 moments, float fragmentDepth, float depthBias, float momentBias)
-{
-    float4 b = lerp(moments, float4(0.5), momentBias);
-    float3 z = float3(saturate(fragmentDepth - depthBias), 0.0, 0.0);
-
-    float l32D22 = b.z - b.x * b.y;
-    float d22 = b.y - b.x * b.x;
-    float squaredDepthVariance = b.w - b.y * b.y;
-    float d33D22 = squaredDepthVariance * d22 - l32D22 * l32D22;
-    if (d22 <= 1.0e-6 || d33D22 <= 1.0e-10)
-        return computeVarianceShadowIntensity(b, fragmentDepth, depthBias);
-
-    float invD22 = 1.0 / d22;
-    float l32 = l32D22 * invD22;
-    float3 c = float3(1.0, z.x, z.x * z.x);
-    c.y -= b.x;
-    c.z -= b.y + l32 * c.y;
-    c.y *= invD22;
-    c.z *= d22 / d33D22;
-    c.y -= l32 * c.z;
-    c.x -= dot(c.yz, b.xy);
-    if (abs(c.z) <= 1.0e-8)
-        return computeVarianceShadowIntensity(b, fragmentDepth, depthBias);
-
-    float p = c.y / c.z;
-    float q = c.x / c.z;
-    float discriminant = p * p * 0.25 - q;
-    if (discriminant < 0.0)
-        return computeVarianceShadowIntensity(b, fragmentDepth, depthBias);
-
-    float root = sqrt(discriminant);
-    z.y = -p * 0.5 - root;
-    z.z = -p * 0.5 + root;
-
-    float4 switchData = z.z < z.x
-        ? float4(z.y, z.x, 1.0, 1.0)
-        : (z.y < z.x ? float4(z.x, z.y, 0.0, 1.0) : float4(0.0));
-    float denominator = (z.z - switchData.y) * (z.x - z.y);
-    if (abs(denominator) <= 1.0e-8)
-        return computeVarianceShadowIntensity(b, fragmentDepth, depthBias);
-
-    float quotient = (switchData.x * z.z - b.x * (switchData.x + z.z) + b.y) / denominator;
-    return saturate(switchData.z + switchData.w * quotient);
-}
-
-float computeVirtualShadowMapVisibility(
-    int2 pixel,
-    DeferredSurface surface,
-    int2 screenSize,
-    float3 lightDirection,
-    float nDotL,
-    float3 originNormal)
-{
-    if (sceneSettings.RenderSettings.RasterVirtualShadowMapsEnabled == 0 ||
-        sceneSettings.RasterShadow.AtlasSizePageSizeCascadeCountEnabled.w <= 0.5 ||
-        nDotL <= 0.0)
-    {
-        return 1.0;
-    }
-
-    float worldBias = max(computeShadowBias(surface.Position, nDotL) * 2.0, computeScreenSpaceRayOriginBias(surface.Position));
-    float3 receiverPosition = offsetRayOrigin(surface.Position, originNormal, lightDirection) + lightDirection * worldBias;
-    int cascadeIndex = selectVirtualShadowCascade(cameraLinearDepth(surface.Position));
-
-    float2 virtualAtlasUv;
-    float2 atlasUv;
-    float receiverDepth;
-    bool projected = projectToVirtualShadowPage(receiverPosition, cascadeIndex, virtualAtlasUv, receiverDepth) &&
-        translateVirtualShadowAtlasUvToPhysical(cascadeIndex, virtualAtlasUv, atlasUv);
-    if (!projected)
-    {
-        for (int fallbackCascade = cascadeIndex + 1; fallbackCascade < 4; ++fallbackCascade)
-        {
-            if (projectToVirtualShadowPage(receiverPosition, fallbackCascade, virtualAtlasUv, receiverDepth) &&
-                translateVirtualShadowAtlasUvToPhysical(fallbackCascade, virtualAtlasUv, atlasUv))
-            {
-                cascadeIndex = fallbackCascade;
-                projected = true;
-                break;
-            }
-        }
-    }
-
-    if (!projected)
-        return 1.0;
-
-    float normalizedDepthBias = max(0.00035, 0.0015 * (1.0 - nDotL));
-    float2 gradientAtlasUv = atlasUv;
-    float gradientReceiverDepth = receiverDepth;
-    float2 gradientVirtualAtlasUv;
-    if (projectToVirtualShadowPage(surface.Position, cascadeIndex, gradientVirtualAtlasUv, gradientReceiverDepth))
-        translateVirtualShadowAtlasUvToPhysical(cascadeIndex, gradientVirtualAtlasUv, gradientAtlasUv);
-    float2 receiverDepthGradientPerTexel = estimateReceiverDepthGradientPerTexel(
-        pixel,
-        screenSize,
-        cascadeIndex,
-        gradientAtlasUv,
-        gradientReceiverDepth);
-    float blockerDepth;
-    bool hasBlocker = findAverageBlockerDepth(
-        atlasUv,
-        cascadeIndex,
-        receiverDepth,
-        normalizedDepthBias,
-        receiverDepthGradientPerTexel,
-        blockerDepth);
-    if (!hasBlocker)
-        return 1.0;
-
-    float filterRadiusTexels = computePcssFilterRadiusTexels(receiverDepth, blockerDepth, normalizedDepthBias);
-    float receiverPlaneBias = dot(abs(receiverDepthGradientPerTexel), float2(filterRadiusTexels)) *
-        VIRTUAL_SHADOW_RECEIVER_PLANE_BIAS_SCALE;
-    float comparisonDepthBias = normalizedDepthBias + receiverPlaneBias;
-    float shadowIntensity = filterRadiusTexels < 0.5
-        ? computeHardShadowIntensity(atlasUv, cascadeIndex, receiverDepth, comparisonDepthBias)
-        : computeHamburger4MsmShadowIntensity(
-            sampleFilteredShadowMoments(atlasUv, cascadeIndex, filterRadiusTexels),
-            receiverDepth,
-            comparisonDepthBias,
-            3.0e-5);
-
-    float4 scaleOffset = selectShadowUvScaleOffset(cascadeIndex);
-    float2 pageUv = saturate((atlasUv - scaleOffset.zw) / max(scaleOffset.xy, float2(EPSILON)));
-    float edgeDistance = min(min(pageUv.x, pageUv.y), min(1.0 - pageUv.x, 1.0 - pageUv.y));
-    float edgeFade = smoothstep(0.0, 0.025, edgeDistance);
-    return lerp(1.0, 1.0 - shadowIntensity, edgeFade);
-}
-
+// ─── Main ──────────────────────────────────────────────────────────────────
 [shader("compute")]
 [numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    uint width;
-    uint height;
+    uint width, height;
     outputColor.GetDimensions(width, height);
-    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height)
-        return;
+    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height) return;
 
     int2 pixel = int2(dispatchThreadID.xy);
     int2 screenSize = int2(width, height);
     DeferredSurface surface = loadSurface(pixel);
-    if (!surface.Valid)
-        return;
+    if (!surface.Valid) return;
 
     float3 viewDir = fastNormalize(sceneSettings.RasterCamera.Position - surface.Position);
-    float3 originNormal = computeSsilPositionNormal(pixel, screenSize, surface, viewDir);
+    float3 originNormal = computeScreenSpaceNormal(pixel, screenSize, surface, viewDir);
     float nDotV = max(dot(surface.Normal, viewDir), 0.0);
     float dielectricF0 = dielectricF0FromSpecular(surface.Specular);
     float3 f0 = lerp(float3(dielectricF0), surface.Albedo, surface.Metallic);
     float3 diffuseColor = surface.Albedo * (1.0 - surface.Metallic);
 
-    SsilResult ssil = computeSsil(pixel, screenSize, surface);
+    // GTAO
+    float gtaoVis = computeGtaoVisibility(pixel, screenSize, surface);
+
+    // IBL diffuse
     float3 diffuseEnvironment = sampleDiffuseEnvironmentDeferred(surface.Normal, sceneSettings.Environment);
+
+    // IBL specular
     float3 reflectedDir = reflect(-viewDir, surface.Normal);
     float3 specularEnvironment = sampleSpecularEnvironmentDeferred(reflectedDir, surface.Roughness, sceneSettings.Environment);
 
-    float3 diffuseAmbient = diffuseEnvironment * diffuseColor * (1.0 / PI) * ssil.Visibility;
-    float3 screenSpaceIndirect = diffuseColor * ssil.IndirectRadiance * (1.0 / PI);
-    float specularAo = computeSpecularOcclusion(nDotV, ssil.Visibility, surface.Roughness);
+    // Light probe GI
+    float3 probeGI = evaluateLightProbeGI(surface.Position, surface.Normal);
+
+    // Compose ambient
+    float3 diffuseAmbient = diffuseEnvironment * diffuseColor * (1.0 / PI) * gtaoVis;
+    float3 probeGIComponent = diffuseColor * probeGI * (1.0 / PI);
+
+    float specularAo = computeSpecularOcclusion(nDotV, gtaoVis, surface.Roughness);
     float3 specularAmbient = specularEnvironment * envBrdfApprox(f0, surface.Roughness, nDotV) * specularAo;
 
-    float3 ssrColor;
-    float ssrConfidence;
+    // SSR
+    float3 ssrColor; float ssrConfidence;
     if (traceScreenSpaceReflection(pixel, surface, screenSize, viewDir, originNormal, ssrColor, ssrConfidence))
     {
         float ssrWeight = ssrConfidence * saturate(1.0 - surface.Roughness / SSR_MAX_ROUGHNESS);
         specularAmbient = lerp(specularAmbient, ssrColor * envBrdfApprox(f0, surface.Roughness, nDotV), ssrWeight);
     }
 
+    // Direct sun with CSM PCSS
     float3 directSun = float3(0.0);
     if (hasDirectionalLight(sceneSettings.Environment))
     {
-        float3 lightDirection = getDirectionalLightDirection(sceneSettings.Environment);
-        float nDotL = max(dot(surface.Normal, lightDirection), 0.0);
+        float3 lightDir = getDirectionalLightDirection(sceneSettings.Environment);
+        float nDotL = max(dot(surface.Normal, lightDir), 0.0);
         if (nDotL > 0.0)
         {
             PbrBxdf bxdf;
             BxdfEval bxdfEval = bxdf.evalOpaque(
-                viewDir,
-                surface.Normal,
-                surface.Normal,
-                lightDirection,
-                surface.Albedo,
-                surface.Specular,
-                surface.Metallic,
-                surface.Roughness,
+                viewDir, surface.Normal, surface.Normal, lightDir,
+                surface.Albedo, surface.Specular, surface.Metallic, surface.Roughness,
                 computeSpecularSamplingWeight(viewDir, surface.Normal, surface.Albedo, f0, surface.Metallic, surface.Roughness));
 
-            float visibility = computeVirtualShadowMapVisibility(pixel, surface, screenSize, lightDirection, nDotL, originNormal);
-            visibility *= computeScreenSpaceContactShadow(pixel, surface, screenSize, lightDirection, originNormal);
-            visibility *= computeRtShadowVisibility(surface, lightDirection, nDotL, originNormal);
-            directSun = bxdfEval.f * float3(sceneSettings.Environment.DirectionalIntensity) * nDotL * visibility;
+            float shadowVis = computeCsmPcssVisibility(surface.Position, nDotL, surface.Normal, cameraLinearDepth(surface.Position));
+            directSun = bxdfEval.f * float3(sceneSettings.Environment.DirectionalIntensity) * nDotL * shadowVis;
         }
     }
 
-    float3 finalColor = max(surface.Emission + diffuseAmbient + screenSpaceIndirect + specularAmbient + directSun, float3(0.0));
+    float3 finalColor = max(surface.Emission + diffuseAmbient + probeGIComponent + specularAmbient + directSun, float3(0.0));
     outputColor[pixel] = float4(finalColor, surface.Opacity);
 }

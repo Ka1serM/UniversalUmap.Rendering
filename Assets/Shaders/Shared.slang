@@ -145,13 +145,15 @@ struct RenderSettingsDataGpu
     float Exposure;
     int TransparentBackground;
     int RenderMode;
+    int BufferVisualization;
+    int TaaEnabled;
     int AoSampleAlbedo;
     int RasterRtAmbientOcclusionEnabled;
     int RasterRtShadowsEnabled;
-    int RasterSsilEnabled;
-    int RasterVirtualShadowMapsEnabled;
-    int RasterScreenSpaceContactShadowsEnabled;
+    int RasterGtaoEnabled;
     int RasterScreenSpaceReflectionsEnabled;
+    int RasterGpuCullingEnabled;
+    int Pad0;
     int Pad1;
     int Pad2;
 };
@@ -210,7 +212,10 @@ struct RasterCameraDataGpu
     float NearPlane;
     float FarPlane;
     float Pad4;
+    float2 JitterNdc;
+    float2 PrevJitterNdc;
     float4x4 WorldToClip;
+    float4x4 PrevWorldToClip;
 };
 
 struct RasterShadowDataGpu
@@ -219,12 +224,26 @@ struct RasterShadowDataGpu
     float4x4 WorldToClip1;
     float4x4 WorldToClip2;
     float4x4 WorldToClip3;
-    float4 UvScaleOffset0;
-    float4 UvScaleOffset1;
-    float4 UvScaleOffset2;
-    float4 UvScaleOffset3;
     float4 CascadeFarDistances;
-    float4 AtlasSizePageSizeCascadeCountEnabled;
+    float4 AtlasSizeCascadeCountEnabled;
+};
+
+struct LightProbeGpu
+{
+    float3 Position;
+    int Pad0;
+};
+
+struct LightProbeGridDataGpu
+{
+    float3 GridMin;
+    int Pad0;
+    float3 GridMax;
+    int Pad1;
+    int GridDimX;
+    int GridDimY;
+    int GridDimZ;
+    int Pad2;
 };
 
 struct SceneSettingsDataGpu
@@ -233,6 +252,7 @@ struct SceneSettingsDataGpu
     EnvironmentDataGpu Environment;
     RasterCameraDataGpu RasterCamera;
     RasterShadowDataGpu RasterShadow;
+    LightProbeGridDataGpu LightProbeGrid;
 };
 
 

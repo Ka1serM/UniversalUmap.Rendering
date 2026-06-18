@@ -1,68 +1,47 @@
 #include "../Shared.slang"
 #include "../Bindings.slang"
 
-[[vk::binding(11, 0)]] StructuredBuffer<uint, Std430DataLayout> visibleInstanceIds;
-
-struct RasterPushConstants
+struct ShadowPushConstants
 {
-    uint MeshId;
-    uint VisibleOffset;
     uint CascadeIndex;
-    uint VirtualPagePacked;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
-[[vk::push_constant]] ConstantBuffer<RasterPushConstants> rasterPushConstants;
+[[vk::push_constant]] ConstantBuffer<ShadowPushConstants> pc;
 
 struct VsOutput
 {
     float4 Position : SV_Position;
     float2 UV : TEXCOORD0;
-    float ShadowDepth : TEXCOORD1;
-    nointerpolation uint MeshId : TEXCOORD2;
-    nointerpolation uint TriangleIndex : TEXCOORD3;
+    float LinearDepth : TEXCOORD1;
 };
 
-float4x4 selectShadowWorldToClip(uint cascadeIndex)
+float4x4 getCascadeMatrix(uint cascade)
 {
-    if (cascadeIndex == 0u) return sceneSettings.RasterShadow.WorldToClip0;
-    if (cascadeIndex == 1u) return sceneSettings.RasterShadow.WorldToClip1;
-    if (cascadeIndex == 2u) return sceneSettings.RasterShadow.WorldToClip2;
+    if (cascade == 0) return sceneSettings.RasterShadow.WorldToClip0;
+    if (cascade == 1) return sceneSettings.RasterShadow.WorldToClip1;
+    if (cascade == 2) return sceneSettings.RasterShadow.WorldToClip2;
     return sceneSettings.RasterShadow.WorldToClip3;
 }
 
-float4 remapClipToVirtualShadowPage(float4 clip, uint virtualPagePacked)
-{
-    const float virtualPagesPerSide = 32.0;
-
-    uint virtualPageX = virtualPagePacked & 0xffffu;
-    uint virtualPageY = (virtualPagePacked >> 16u) & 0xffffu;
-    float2 pageCenterNdc = (float2(float(virtualPageX), float(virtualPageY)) + 0.5) *
-        (2.0 / virtualPagesPerSide) - 1.0;
-
-    clip.xy = clip.xy * virtualPagesPerSide - clip.w * pageCenterNdc * virtualPagesPerSide;
-    return clip;
-}
-
 [shader("vertex")]
-VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+VsOutput main(uint vertexId : SV_VulkanVertexID, uint instanceId : SV_VulkanInstanceID)
 {
     VsOutput output;
 
-    uint sceneInstanceId = visibleInstanceIds[rasterPushConstants.VisibleOffset + instanceId];
-    InstanceGpu instanceData = instances[sceneInstanceId];
-    MeshAddressesGpu mesh = meshes[rasterPushConstants.MeshId];
+    uint sceneInstanceId = visibleInstanceIds[instanceId];
+    InstanceGpu inst = instances[sceneInstanceId];
+    MeshAddressesGpu mesh = meshes[inst.MeshId];
 
-    uint vertexIndex = reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[vertexId];
-    Vertex vertex = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[vertexIndex];
+    uint vi = reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[vertexId];
+    Vertex vert = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[vi];
+    float3 worldPos = mul(float4(vert.Position, 1.0), inst.Transform).xyz;
 
-    float3 worldPosition = mul(float4(vertex.Position, 1.0), instanceData.Transform).xyz;
-    float4 clip = mul(float4(worldPosition, 1.0), selectShadowWorldToClip(rasterPushConstants.CascadeIndex));
-    clip = remapClipToVirtualShadowPage(clip, rasterPushConstants.VirtualPagePacked);
-
+    float4 clip = mul(float4(worldPos, 1.0), getCascadeMatrix(pc.CascadeIndex));
     output.Position = clip;
-    output.UV = vertex.UV;
-    output.ShadowDepth = saturate(clip.z / max(clip.w, 1.0e-6));
-    output.MeshId = rasterPushConstants.MeshId;
-    output.TriangleIndex = vertexId / 3u;
+    output.UV = vert.UV;
+    output.LinearDepth = saturate(clip.z / max(clip.w, 1.0e-6));
     return output;
 }

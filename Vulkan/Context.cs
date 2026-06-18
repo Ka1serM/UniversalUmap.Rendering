@@ -559,6 +559,8 @@ public sealed class Context : IDisposable
                     dynamicRenderingSupported = dynamicRenderingFeatures.DynamicRendering;
                     scalarBlockLayoutSupported = scalarBlockLayoutFeatures.ScalarBlockLayout;
                     rendererFeaturesSupported =
+                        feature2.Features.MultiDrawIndirect &&
+                        feature2.Features.DrawIndirectFirstInstance &&
                         descriptorIndexingFeatures.RuntimeDescriptorArray &&
                         descriptorIndexingFeatures.ShaderSampledImageArrayNonUniformIndexing &&
                         descriptorIndexingFeatures.DescriptorBindingSampledImageUpdateAfterBind &&
@@ -580,7 +582,7 @@ public sealed class Context : IDisposable
                 }
                 if (!rendererFeaturesSupported)
                 {
-                    Log.Information("Skipping GPU {GpuName}: required descriptor indexing or buffer device address features are not supported.", name);
+                    Log.Information("Skipping GPU {GpuName}: required descriptor indexing, buffer device address, or indirect draw features are not supported.", name);
                     continue;
                 }
 
@@ -661,7 +663,11 @@ public sealed class Context : IDisposable
                         PpEnabledExtensionNames = pDeviceExtensions
                     };
 
-                    var features = new PhysicalDeviceFeatures();
+                    var features = new PhysicalDeviceFeatures
+                    {
+                        MultiDrawIndirect = true,
+                        DrawIndirectFirstInstance = true
+                    };
                     var feature2 = new PhysicalDeviceFeatures2
                     {
                         SType = StructureType.PhysicalDeviceFeatures2,

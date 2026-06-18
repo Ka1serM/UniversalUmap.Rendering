@@ -34,26 +34,28 @@ public sealed class MeshInstance
     private readonly IScene owner;
     public string Name { get; }
     public MeshAsset MeshAsset { get; }
+    public int HierarchyNodeId { get; }
     public Matrix4x4 Transform { get; private set; }
 
-    internal MeshInstance(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform)
+    internal MeshInstance(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform, int hierarchyNodeId = -1)
     {
         this.owner = owner;
         Name = name;
         MeshAsset = meshAsset;
         Transform = transform;
+        HierarchyNodeId = hierarchyNodeId;
     }
 
-    internal static MeshInstance Create(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform)
+    internal static MeshInstance Create(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform, int hierarchyNodeId = -1)
     {
-        return new MeshInstance(owner, name, meshAsset, transform);
+        return new MeshInstance(owner, name, meshAsset, transform, hierarchyNodeId);
     }
 
-    internal static bool TryCreate(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform, out MeshInstance? instance)
+    internal static bool TryCreate(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform, out MeshInstance? instance, int hierarchyNodeId = -1)
     {
         try
         {
-            instance = Create(owner, name, meshAsset, transform);
+            instance = Create(owner, name, meshAsset, transform, hierarchyNodeId);
             return true;
         }
         catch
@@ -93,13 +95,13 @@ public sealed class MeshInstance
         return IsFiniteMatrix(matrix);
     }
 
-    internal static bool TryCreateFromUnrealTransform(IScene owner, string name, MeshAsset meshAsset, FTransform transform, out MeshInstance? instance)
+    internal static bool TryCreateFromUnrealTransform(IScene owner, string name, MeshAsset meshAsset, FTransform transform, out MeshInstance? instance, int hierarchyNodeId = -1)
     {
         instance = null;
         if (!TryConvertUnrealTransform(transform, out var matrix))
             return false;
 
-        return TryCreate(owner, name, meshAsset, matrix, out instance);
+        return TryCreate(owner, name, meshAsset, matrix, out instance, hierarchyNodeId);
     }
 
     public void SetTransform(Matrix4x4 transform)

@@ -1,28 +1,48 @@
-<UserControl xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-             xmlns:icons="clr-namespace:FluentIcons.Avalonia;assembly=FluentIcons.Avalonia"
-             xmlns:rendering="clr-namespace:UniversalUmap.Rendering.Controls;assembly=UniversalUmap.Rendering"
-             x:Class="UniversalUmap.Rendering.Views.ViewerPanel"
-             x:CompileBindings="False">
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:icons="clr-namespace:FluentIcons.Avalonia;assembly=FluentIcons.Avalonia"
+    xmlns:rendering="clr-namespace:UniversalUmap.Rendering.Controls;assembly=UniversalUmap.Rendering"
+    x:Class="UniversalUmap.Rendering.Views.ViewerPanel"
+    x:CompileBindings="False"
+>
     <Border ClipToBounds="True">
         <Grid>
             <rendering:VulkanViewerControl x:Name="ViewportControl" />
-            <rendering:EnvironmentRotationControl Source="{Binding ElementName=ViewportControl}" />
-            <rendering:SunDirectionControl Source="{Binding ElementName=ViewportControl}" />
-            <rendering:RotateViewGizmoControl Source="{Binding ElementName=ViewportControl}" />
-            <rendering:DollyViewGizmoControl Source="{Binding ElementName=ViewportControl}"
-                                             HorizontalAlignment="Right"
-                                             VerticalAlignment="Top"
-                                             Margin="0,148,15,0" />
-            <rendering:PanViewGizmoControl Source="{Binding ElementName=ViewportControl}"
-                                           HorizontalAlignment="Right"
-                                           VerticalAlignment="Top"
-                                           Margin="0,196,15,0" />
-            <rendering:RenderModeSwitcher Margin="12"
-                                          HorizontalAlignment="Left"
-                                          VerticalAlignment="Top"
-                                          SelectedMode="{Binding RenderSettingsPanel.Model.RenderMode, Mode=TwoWay}" />
+            <rendering:EnvironmentRotationControl
+                Source="{Binding ElementName=ViewportControl}"
+            />
+            <rendering:SunDirectionControl
+                Source="{Binding ElementName=ViewportControl}"
+            />
+            <rendering:RotateViewGizmoControl
+                Source="{Binding ElementName=ViewportControl}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,15,12,0"
+            />
+            <rendering:DollyViewGizmoControl
+                Source="{Binding ElementName=ViewportControl}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,120,12,0"
+            />
+            <rendering:PanViewGizmoControl
+                Source="{Binding ElementName=ViewportControl}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,168,12,0"
+            />
+            <rendering:DebugOverlayControl
+                Source="{Binding ElementName=ViewportControl}"
+            />
+            <rendering:RenderModeSwitcher
+                Margin="12"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                SelectedMode="{Binding RenderSettingsPanel.Model.RenderMode, Mode=TwoWay}"
+            />
         </Grid>
     </Border>
 </UserControl>

@@ -26,7 +26,6 @@ struct CompositePushConstants
     float adaptiveTargetError;
     int adaptiveMinSamples;
     int isMoving;
-    int pickBuffersFlippedY;
 };
 
 [[vk::push_constant]] ConstantBuffer<CompositePushConstants> pc;
@@ -45,12 +44,6 @@ static const float ADAPTIVE_EPSILON = 1e-6;
 
 float3 applyTonemap(float3 hdrColor) {
     return aces(hdrColor);
-}
-
-int2 toPickPixel(int2 outputPixel, int2 outputSize) {
-    if (pc.pickBuffersFlippedY == 0)
-        return outputPixel;
-    return int2(outputPixel.x, (outputSize.y - 1) - outputPixel.y);
 }
 
 int2 mapOutputPixelToInputPixel(int2 outputPixel, int2 outputSize, int2 inputSize)
@@ -129,12 +122,11 @@ bool isSelectedHit(int2 outputPixel, int2 outputSize, int2 inputSize) {
         return false;
 
     int2 inputPixel = mapOutputPixelToInputPixel(outputPixel, outputSize, inputSize);
-    int2 pickPixel = toPickPixel(inputPixel, inputSize);
-    uint cryptoId = inputCryptoImage[pickPixel];
+    uint cryptoId = inputCryptoImage[inputPixel];
     if (cryptoId != pc.selectedInstanceId)
         return false;
 
-    float4 packedPosition = inputPositionImage[pickPixel];
+    float4 packedPosition = inputPositionImage[inputPixel];
     return packedPosition.w > 0.5;
 }
 
@@ -214,8 +206,7 @@ float3 visualizePosition(int2 pixel, int2 outputSize)
     inputPositionImage.GetDimensions(inputWidth, inputHeight);
     int2 inputSize = int2(inputWidth, inputHeight);
     int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
-    int2 pickPixel = toPickPixel(inputPixel, inputSize);
-    float4 packedPosition = inputPositionImage[pickPixel];
+    float4 packedPosition = inputPositionImage[inputPixel];
     if (packedPosition.w <= 0.5)
         return float3(0.0);
 
@@ -242,8 +233,7 @@ float3 visualizeCryptoId(int2 pixel, int2 outputSize)
     inputCryptoImage.GetDimensions(inputWidth, inputHeight);
     int2 inputSize = int2(inputWidth, inputHeight);
     int2 inputPixel = mapOutputPixelToInputPixel(pixel, outputSize, inputSize);
-    int2 pickPixel = toPickPixel(inputPixel, inputSize);
-    uint cryptoId = inputCryptoImage[pickPixel];
+    uint cryptoId = inputCryptoImage[inputPixel];
     if (cryptoId == InvalidInstance)
         return float3(0.0);
     return hashIdToColor(cryptoId);

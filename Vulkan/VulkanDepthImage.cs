@@ -70,6 +70,9 @@ internal sealed unsafe class VulkanDepthImage : IDisposable
 
     public void TransitionLayout(CommandBuffer commandBuffer, ImageLayout destinationLayout, AccessFlags destinationAccessFlags)
     {
+        if (currentLayout == destinationLayout && currentAccessFlags == destinationAccessFlags)
+            return;
+
         VulkanBarriers.Image(
             context.Api,
             commandBuffer,

@@ -4,7 +4,6 @@ using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
-using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 
@@ -12,7 +11,6 @@ namespace UniversalUmap.Rendering.Controls;
 
 public sealed class DebugOverlayControl : Control
 {
-    private static readonly IBrush OverlayBackgroundBrush = new SolidColorBrush(Color.FromArgb(155, 12, 12, 12));
     private static readonly IBrush OverlayTextBrush = Brushes.White;
     private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly Stopwatch fpsSampleTimer = Stopwatch.StartNew();
@@ -21,8 +19,8 @@ public sealed class DebugOverlayControl : Control
     private ulong lastFpsFrameCount;
     private float fps;
     private Typeface? overlayTypeface;
-    private FormattedText[] overlayLines = Array.Empty<FormattedText>();
-    private Rect overlayPanelRect;
+    private FormattedText? overlayText;
+    private string? lastText;
     private bool overlayDirty = true;
 
     public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
@@ -37,42 +35,34 @@ public sealed class DebugOverlayControl : Control
     public DebugOverlayControl()
     {
         IsHitTestVisible = false;
-        HorizontalAlignment = HorizontalAlignment.Stretch;
-        VerticalAlignment = VerticalAlignment.Stretch;
 
         refreshTimer.Tick += (_, _) =>
         {
             UpdateFps();
             overlayDirty = true;
-            RefreshOverlayTextCache();
+            RefreshOverlayText();
             if (showDebugOverlay)
                 InvalidateVisual();
         };
         refreshTimer.Start();
     }
 
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (overlayText is null)
+            return new Size(0, 0);
+
+        return new Size(overlayText.WidthIncludingTrailingWhitespace, overlayText.Height);
+    }
+
     public override void Render(DrawingContext context)
     {
         base.Render(context);
 
-        var source = Source;
-        if (source is null || !showDebugOverlay)
-            return;
-        if (overlayLines.Length == 0)
+        if (Source is null || !showDebugOverlay || overlayText is null)
             return;
 
-        const double padding = 8d;
-        context.DrawRectangle(OverlayBackgroundBrush, null, overlayPanelRect, 10, 10);
-
-        var y = overlayPanelRect.Y + padding;
-        for (var i = 0; i < overlayLines.Length; i++)
-        {
-            var line = overlayLines[i];
-            context.DrawText(line, new Point(overlayPanelRect.X + padding, y));
-            y += line.Height;
-            if (i + 1 < overlayLines.Length)
-                y += 2d;
-        }
+        context.DrawText(overlayText, new Point(0, 0));
     }
 
     private void SubscribeToSource(VulkanViewerControl source)
@@ -96,7 +86,7 @@ public sealed class DebugOverlayControl : Control
     {
         showDebugOverlay = !showDebugOverlay;
         overlayDirty = true;
-        RefreshOverlayTextCache();
+        RefreshOverlayText();
         InvalidateVisual();
     }
 
@@ -113,15 +103,15 @@ public sealed class DebugOverlayControl : Control
         overlayDirty = true;
     }
 
-    private void RefreshOverlayTextCache()
+    private void RefreshOverlayText()
     {
-        if (!overlayDirty && overlayLines.Length > 0)
+        if (!overlayDirty)
             return;
 
         if (!showDebugOverlay || Source is null)
         {
-            overlayLines = Array.Empty<FormattedText>();
-            overlayPanelRect = default;
+            overlayText = null;
+            lastText = null;
             overlayDirty = false;
             return;
         }
@@ -131,42 +121,24 @@ public sealed class DebugOverlayControl : Control
             TextElement.GetFontStyle(this),
             TextElement.GetFontWeight(this));
 
-        var source = Source;
-        var pivot = source.ArcballPivotDebug;
-        var camera = source.CameraPositionDebug;
-        var lines = new[]
-        {
-            //$"FPS: {fps:0.0}",
-            $"Selected: {source.SelectedInstanceName}",
-            $"Arcball Pivot: ({pivot.X:0.0}, {pivot.Y:0.0}, {pivot.Z:0.0})",
-            $"Camera: ({camera.X:0.0}, {camera.Y:0.0}, {camera.Z:0.0})"
-        };
+        var ms = fps > 0f ? 1000f / fps : 0f;
+        var text = $"FPS: {fps:0.0}\n{ms:0.0} ms";
 
-        const double fontSize = 12d;
-        const double lineSpacing = 2d;
-        const double padding = 8d;
-        var newLines = new FormattedText[lines.Length];
-        var maxWidth = 0d;
-        var totalHeight = 0d;
-
-        for (var i = 0; i < lines.Length; i++)
+        if (text == lastText && overlayText is not null)
         {
-            var text = new FormattedText(
-                lines[i],
-                CultureInfo.InvariantCulture,
-                FlowDirection.LeftToRight,
-                typeface,
-                fontSize,
-                OverlayTextBrush);
-            newLines[i] = text;
-            maxWidth = Math.Max(maxWidth, text.WidthIncludingTrailingWhitespace);
-            totalHeight += text.Height;
-            if (i + 1 < lines.Length)
-                totalHeight += lineSpacing;
+            overlayDirty = false;
+            return;
         }
 
-        overlayLines = newLines;
-        overlayPanelRect = new Rect(12, 12, maxWidth + padding * 2, totalHeight + padding * 2);
+        overlayText = new FormattedText(
+            text,
+            CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            typeface,
+            12d,
+            OverlayTextBrush);
+
+        lastText = text;
         overlayDirty = false;
     }
 
@@ -196,7 +168,7 @@ public sealed class DebugOverlayControl : Control
         lastFpsFrameCount = 0;
         fpsSampleTimer.Restart();
         overlayDirty = true;
-        RefreshOverlayTextCache();
+        RefreshOverlayText();
         InvalidateVisual();
     }
 }

@@ -153,7 +153,7 @@ public static class TextureResolver
         foreach (var pair in textures)
         {
             var key = pair.Key ?? string.Empty;
-            var path = pair.Value?.GetPathName() ?? string.Empty;
+            var path = pair.Value?.Path ?? string.Empty;
 
             if (IsBlacklisted(rule, key) || IsBlacklisted(rule, path))
                 continue;
@@ -171,53 +171,23 @@ public static class TextureResolver
         foreach (var key in keys)
         {
             var match = textures.FirstOrDefault(x => x.Key.Contains(key, StringComparison.OrdinalIgnoreCase)).Value;
-            if (match is not null && !string.IsNullOrWhiteSpace(match.GetPathName()))
-                return match.GetPathName();
+            if (match is not null && !string.IsNullOrWhiteSpace(match.Path))
+                return match.Path;
         }
 
         return null;
     }
 
-    private static Dictionary<string, UTexture> ExtractTexturesFromMaterial(UObject material)
+    /// <summary>
+    /// Deep texture discovery via the shared <see cref="MaterialExtractor"/> so preview and the
+    /// glTF exporter resolve textures from the same flattened material data.
+    /// </summary>
+    private static IReadOnlyDictionary<string, ExtractedTexture> ExtractTexturesFromMaterial(UObject material)
     {
-        var textures = new Dictionary<string, UTexture>(StringComparer.OrdinalIgnoreCase);
+        if (MaterialExtractor.TryExtract(material, out var extracted))
+            return extracted.Textures;
 
-        try
-        {
-            if (material is UMaterialInstanceConstant mic)
-            {
-                foreach (var tv in mic.TextureParameterValues ?? [])
-                {
-                    if (tv.ParameterValue.TryLoad(out UTexture export))
-                        textures.TryAdd(tv.Name, export);
-                }
-            }
-            else if (material is UMaterialInstance materialInstance)
-            {
-                // Handle other material instance types if needed
-            }
-            else if (material is UMaterial mat)
-            {
-                // Handle base materials if needed
-                if (mat.CachedExpressionData?.TryGetValue(out FStructFallback cached, "Parameters") == true &&
-                    cached.TryGetValue(out FPackageIndex[] texVals, "TextureValues") &&
-                    cached.TryGetAllValues(out FStructFallback[] entries, "RuntimeEntries") &&
-                    entries?.ElementAtOrDefault(0)?.TryGetValue(out FMaterialParameterInfo[] texInfos, "ParameterInfos") == true)
-                {
-                    for (var i = 0; i < texInfos?.Length && i < texVals?.Length; i++)
-                    {
-                        if (texVals[i] is not null && texVals[i].TryLoad(out UTexture export))
-                            textures.TryAdd(texInfos[i].Name.Text, export);
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // Ignore extraction errors
-        }
-
-        return textures;
+        return new Dictionary<string, ExtractedTexture>();
     }
 
     private static bool IsBlacklisted(AutoTextureItem rule, string input)

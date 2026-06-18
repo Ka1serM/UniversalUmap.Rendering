@@ -17,9 +17,7 @@ public sealed unsafe class Compositor : IDisposable
         public float AdaptiveTargetError;
         public int AdaptiveMinSamples;
         public int IsMoving;
-        public int PickBuffersFlippedY;
         public int Pad0;  // Struct padding to 16 bytes
-        public int Pad1;  // Struct padding to 16 bytes
     }
 
     private readonly Context context;
@@ -80,8 +78,7 @@ public sealed unsafe class Compositor : IDisposable
         int adaptiveMinSamples,
         uint selectedInstanceId,
         VulkanImage outputImage,
-        int isMoving,
-        bool pickBuffersFlippedY)
+        int isMoving)
     {
         var descriptorSet = UpdateBindings(colorInputImage, albedoInputImage, normalInputImage, cryptoInputImage, positionInputImage, adaptiveInputImage, outputImage);
 
@@ -102,7 +99,6 @@ public sealed unsafe class Compositor : IDisposable
             AdaptiveTargetError = adaptiveTargetError,
             AdaptiveMinSamples = adaptiveMinSamples,
             IsMoving = isMoving,
-            PickBuffersFlippedY = pickBuffersFlippedY ? 1 : 0
         };
         context.Api.CmdPushConstants(
             commandBuffer.InternalHandle,

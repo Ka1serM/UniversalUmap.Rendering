@@ -150,16 +150,19 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     public VulkanImage OutputPosition => positionImage ?? throw new InvalidOperationException("Raytracer position image is not initialized");
     public VulkanImage OutputAdaptiveState => adaptiveStateImage ?? throw new InvalidOperationException("Raytracer adaptive-state image is not initialized");
     public PixelSize RenderImageSize => renderImageSize;
-    public bool PickBuffersFlippedY => true;
-
     public void Record(PixelSize renderSize, VulkanImage image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData)
     {
         EnsureRenderImages(renderSize, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
         if (settingsDirty || Scene.IsDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings))
             FrameIndex = 0;
-        UpdateOutputImageBindings();
-        UpdateSceneSettingsBuffer(commandBuffer, renderData, force: false);
+
+        if (lastBoundColorImageViewHandle != outputColorImage?.ViewHandle)
+            UpdateOutputImageBindings();
+
+        if (settingsDirty)
+            UpdateSceneSettingsBuffer(commandBuffer, renderData, force: false);
+
         UpdateTextureBindings();
 
         if (!hasLoggedFirstRender || FrameIndex < 3)

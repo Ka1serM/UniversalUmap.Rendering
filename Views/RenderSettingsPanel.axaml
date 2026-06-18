@@ -68,62 +68,14 @@
                 </Grid>
             </StackPanel>
 
-            <CheckBox Content="Adaptive Sampling" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.AdaptiveSamplingEnabled, Mode=TwoWay}" />
-
-            <StackPanel Spacing="3">
-                <TextBlock Classes="renderLabel" Text="Adaptive Min Samples" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                    <Slider Grid.Column="0" Minimum="1" Maximum="32" TickFrequency="1" HorizontalAlignment="Stretch"
-                            Value="{Binding Model.AdaptiveMinSamples, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Classes="renderValue"
-                               Text="{Binding Model.AdaptiveMinSamples, StringFormat={}{0:0}}" />
-                </Grid>
-            </StackPanel>
-
-            <StackPanel Spacing="3">
-                <TextBlock Classes="renderLabel" Text="Adaptive Target Error" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                    <Slider Grid.Column="0" Minimum="0.005" Maximum="0.1" TickFrequency="0.005" HorizontalAlignment="Stretch"
-                            Value="{Binding Model.AdaptiveTargetError, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Classes="renderValue"
-                               Text="{Binding Model.AdaptiveTargetError, StringFormat={}{0:0.000}}" />
-                </Grid>
-            </StackPanel>
-
-            <StackPanel Spacing="3">
-                <TextBlock Classes="renderLabel" Text="Russian Roulette Start" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                    <Slider Grid.Column="0" Minimum="1" Maximum="12" TickFrequency="1" HorizontalAlignment="Stretch"
-                            Value="{Binding Model.RussianRouletteStartBounce, Mode=TwoWay}" />
-                    <TextBlock Grid.Column="1" Classes="renderValue"
-                               Text="{Binding Model.RussianRouletteStartBounce, StringFormat={}{0:0}}" />
-                </Grid>
-            </StackPanel>
+            <CheckBox Content="Sample Albedo in AO Mode" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.AoSampleAlbedo, Mode=TwoWay}" />
 
             <CheckBox Content="Transparent Background" VerticalAlignment="Center"
                       IsChecked="{Binding Model.TransparentBackground, Mode=TwoWay}" />
 
-            <CheckBox Content="Sample Albedo in AO Mode" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.AoSampleAlbedo, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster RTAO" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterRtAmbientOcclusionEnabled, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster RT Shadows" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterRtShadowsEnabled, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster SSIL" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterSsilEnabled, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster Virtual Shadow Maps" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterVirtualShadowMapsEnabled, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster Contact Shadows" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterScreenSpaceContactShadowsEnabled, Mode=TwoWay}" />
-
-            <CheckBox Content="Raster SSR" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterScreenSpaceReflectionsEnabled, Mode=TwoWay}" />
+            <CheckBox Content="GPU Culling" VerticalAlignment="Center"
+                      IsChecked="{Binding Model.RasterGpuCullingEnabled, Mode=TwoWay}" />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

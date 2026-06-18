@@ -23,19 +23,25 @@ public sealed class RotateViewGizmoControl : ContentControl
     private const float HoverFadeRate = 14f;
     private const float TickDeltaClampSeconds = 0.1f;
     private const float AnimationEpsilon = 0.0005f;
-    private const double AxisClickMoveThreshold = 6d;
+
+    private const float GizmoScale = 0.75f;
+
+    private const double AxisClickMoveThreshold = 6d * GizmoScale;
 
     private const float GizmoFadeFactor = 1f;
-    private const float GizmoLineWidth = 3.5f;
-    private const float GizmoLineHoverWidthBoost = 1.35f;
-    private const float GizmoOutlineWidth = 2f;
-    private const float GizmoCircleRadius = 12f;
-    private const float GizmoCircleHoverRadiusBoost = 1.6f;
-    private const float GizmoLabelSize = 17f;
-    private const float GizmoBigCircleRadius = 66f;
+    private const float GizmoLineWidth = 3.5f * GizmoScale;
+    private const float GizmoLineHoverWidthBoost = 1.35f * GizmoScale;
+    private const float GizmoOutlineWidth = 2f * GizmoScale;
+    private const float GizmoCircleRadius = 12f * GizmoScale;
+    private const float GizmoCircleHoverRadiusBoost = 1.6f * GizmoScale;
+    private const float GizmoLabelSize = 17f * GizmoScale;
+
+    private const float GizmoBigCircleRadius = 66f * GizmoScale;
+    private const float GizmoDiameter = GizmoBigCircleRadius * 2f;
     private const float GizmoAxisLineLength = GizmoBigCircleRadius - GizmoCircleRadius;
 
     private static readonly Color LabelColor = Color.FromArgb(255, 14, 18, 24);
+
     private static readonly Color[] AxisColors =
     [
         Color.FromArgb(255, 233, 62, 85),
@@ -47,9 +53,12 @@ public sealed class RotateViewGizmoControl : ContentControl
 
     private static readonly Vector3[] AxisDirections =
     [
-        Vector3.UnitX, -Vector3.UnitX,
-        Vector3.UnitY, -Vector3.UnitY,
-        Vector3.UnitZ, -Vector3.UnitZ
+        Vector3.UnitX,
+        -Vector3.UnitX,
+        Vector3.UnitY,
+        -Vector3.UnitY,
+        Vector3.UnitZ,
+        -Vector3.UnitZ
     ];
 
     private readonly record struct AxisHandle(int Id, int AxisIndex, float Depth, Point ScreenPosition);
@@ -63,25 +72,31 @@ public sealed class RotateViewGizmoControl : ContentControl
     private VulkanViewerControl? viewer;
     private Scene? observedScene;
     private TopLevel? observedTopLevel;
+
     private Point localPointer;
-    private bool hasTrackedPointer;
     private Point pressedPointer;
     private Vector3 pressedAxisWorldDirection;
-    private int hoveredAxisId = -1;
-    private int pressedAxisId = -1;
+
+    private bool hasTrackedPointer;
     private bool hoveredCenter;
     private bool rotating;
     private bool orbitCaptureMode;
+    private bool snapAnimating;
+
+    private int hoveredAxisId = -1;
+    private int pressedAxisId = -1;
 
     private float centerFadeCurrent;
     private float centerFadeTarget;
-    private bool snapAnimating;
     private float snapTimeSeconds;
+
     private Vector3 snapStartPosition;
-    private Quaternion snapStartRotation;
     private Vector3 snapTargetPosition;
+    private Quaternion snapStartRotation;
     private Quaternion snapTargetRotation;
+
     private double lastTickSeconds;
+
     public static readonly StyledProperty<VulkanViewerControl?> SourceProperty =
         AvaloniaProperty.Register<RotateViewGizmoControl, VulkanViewerControl?>(nameof(Source));
 
@@ -93,22 +108,23 @@ public sealed class RotateViewGizmoControl : ContentControl
 
     public RotateViewGizmoControl()
     {
-        var diameter = (GizmoBigCircleRadius * 2f) + 2f;
-        Width = diameter;
-        Height = diameter;
+        Width = GizmoDiameter;
+        Height = GizmoDiameter;
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
         VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top;
-        // Keep the visual center anchored where it was when the control used 100x100 bounds.
-        var edgeInset = 32d - ((diameter - 100d) * 0.5d);
-        Margin = new Thickness(0, edgeInset, edgeInset, 0);
-        IsHitTestVisible = true;
 
+        // Keep the visual center anchored where it was when the control used 100x100 bounds.
+        var edgeInset = 32d - ((GizmoDiameter - 100d) * 0.5d);
+        Margin = new Thickness(0, edgeInset, edgeInset, 0);
+
+        IsHitTestVisible = true;
         animationTimer.Tick += (_, _) => OnAnimationTick();
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
+
         TryGetActiveRenderer(out _);
         AttachTopLevel();
         EnsureAnimationRunning(resetClock: true);
@@ -119,173 +135,93 @@ public sealed class RotateViewGizmoControl : ContentControl
     {
         if (PointerCapture.IsOwnedBy(this))
             PointerCapture.End(this);
+
         DetachObservedScene();
         DetachTopLevel();
         animationTimer.Stop();
+
         base.OnDetachedFromVisualTree(e);
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == SourceProperty)
-        {
-            if (Source?.Scene is { } scene)
-                AttachObservedScene(scene);
-            else
-                DetachObservedScene();
-            InvalidateVisual();
-        }
+
+        if (change.Property != SourceProperty)
+            return;
+
+        if (Source?.Scene is { } scene)
+            AttachObservedScene(scene);
+        else
+            DetachObservedScene();
+
+        InvalidateVisual();
     }
 
     public override void Render(DrawingContext context)
     {
         base.Render(context);
+
         if (!TryGetActiveRenderer(out var activeRenderer))
             return;
 
         var center = GetCenter();
-        var labelTypeface = new Typeface(
-            TextElement.GetFontFamily(this),
-            TextElement.GetFontStyle(this),
-            TextElement.GetFontWeight(this));
         var scene = activeRenderer.Scene!;
         var cameraView = scene.GetCameraViewSnapshot();
+        var labelTypeface = GetLabelTypeface();
 
         BuildHandles(cameraView.Rotation, center, GizmoAxisLineLength, handles, drawOrder);
 
-        if (hoveredCenter || rotating || centerFadeCurrent > 0.001f)
-        {
-            var fill = new SolidColorBrush(Color.FromArgb((byte)(Math.Clamp(centerFadeCurrent, 0f, 1f) * 255f), 255, 255, 255));
-            context.DrawEllipse(fill, null, center, GizmoBigCircleRadius, GizmoBigCircleRadius);
-        }
+        DrawCenterFade(context, center);
 
-        for (var i = 0; i < drawOrder.Length; i++)
-        {
-            var h = handles[drawOrder[i]];
-            var hover = axisHoverFade[h.Id];
-            var colorFactor = GizmoFadeFactor + ((1f - GizmoFadeFactor) * ((h.Depth + 1f) * 0.5f));
-            var animatedRadius = GizmoCircleRadius + (GizmoCircleHoverRadiusBoost * hover);
-            var animatedLineWidth = GizmoLineWidth + (GizmoLineHoverWidthBoost * hover);
-            var lineColor = WithAlpha(AxisColors[h.AxisIndex], colorFactor);
-
-            var fillColor = IsPrimaryAxisHandle(h.Id)
-                ? LerpColor(lineColor, Colors.White, 0.08f * hover)
-                : WithAlpha(Darken(AxisColors[h.AxisIndex], 0.2f), colorFactor * 0.92f);
-
-            Pen? circlePen = IsPrimaryAxisHandle(h.Id)
-                ? null
-                : new Pen(
-                    new SolidColorBrush(LerpColor(WithAlpha(AxisColors[h.AxisIndex], colorFactor * 0.95f), Colors.White, 0.12f * hover)),
-                    GizmoOutlineWidth);
-
-            var handlePos = h.ScreenPosition;
-            var radialDir = new Avalonia.Vector(handlePos.X - center.X, handlePos.Y - center.Y);
-            var radialLen = Math.Sqrt((radialDir.X * radialDir.X) + (radialDir.Y * radialDir.Y));
-            if (radialLen > 0.000001d)
-                radialDir = new Avalonia.Vector(radialDir.X / radialLen, radialDir.Y / radialLen);
-            else
-                radialDir = default;
-
-            var lineEnd = new Point(handlePos.X - radialDir.X * animatedRadius, handlePos.Y - radialDir.Y * animatedRadius);
-            if (IsPrimaryAxisHandle(h.Id))
-                context.DrawLine(new Pen(new SolidColorBrush(lineColor), animatedLineWidth), center, lineEnd);
-
-            context.DrawEllipse(new SolidColorBrush(fillColor), circlePen, handlePos, animatedRadius, animatedRadius);
-
-            var isPrimary = IsPrimaryAxisHandle(h.Id);
-            var labelAlpha = isPrimary ? 1f : negativeLabelFade[h.Id];
-            if (!isPrimary && labelAlpha <= 0.01f)
-                continue;
-
-            var hoverWhiten = 0.85f * hover;
-            var baseLabelColor = WithAlpha(LabelColor, labelAlpha);
-            var labelColor = LerpColor(baseLabelColor, Colors.White, hoverWhiten);
-            var text = new FormattedText(
-                AxisLabels[h.Id],
-                CultureInfo.InvariantCulture,
-                FlowDirection.LeftToRight,
-                labelTypeface,
-                GizmoLabelSize,
-                new SolidColorBrush(labelColor));
-
-            context.DrawText(text, new Point(handlePos.X - text.WidthIncludingTrailingWhitespace * 0.5, handlePos.Y - text.Height * 0.5));
-        }
+        foreach (var orderIndex in drawOrder)
+            DrawHandle(context, handles[orderIndex], center, labelTypeface);
     }
 
     protected override void OnPointerEntered(PointerEventArgs e)
     {
         base.OnPointerEntered(e);
-        localPointer = e.GetPosition(this);
-        hasTrackedPointer = true;
+        TrackPointer(e);
         RecomputeHover(localPointer, startAnimations: true);
     }
 
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (PointerCapture.IsOwnedBy(this))
-            return;
 
-        ClearHoverState();
+        if (!PointerCapture.IsOwnedBy(this))
+            ClearHoverState();
     }
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
+
         var props = e.GetCurrentPoint(this).Properties;
         if (!props.IsLeftButtonPressed && !props.IsRightButtonPressed)
             return;
 
-        localPointer = e.GetPosition(this);
-        hasTrackedPointer = true;
+        TrackPointer(e);
         RecomputeHover(localPointer, startAnimations: true);
 
         if (hoveredCenter)
         {
-            if (TryGetActiveRenderer(out var activeRenderer))
-                activeRenderer.Scene!.SetArcballPivot(GetDefaultArcballPivot(activeRenderer));
-
-            snapAnimating = false;
-            if (!PointerCapture.TryBegin(this, e.Pointer, localPointer))
-                return;
-
-            rotating = true;
-            orbitCaptureMode = true;
-            centerFadeTarget = CenterFadeStrength;
-            EnsureAnimationRunning(resetClock: true);
-            InvalidateVisual();
-            e.Handled = true;
+            BeginOrbitCapture(e);
             return;
         }
 
         if (hoveredAxisId >= 0)
-        {
-            pressedAxisId = hoveredAxisId;
-            pressedPointer = localPointer;
-            pressedAxisWorldDirection = AxisDirections[pressedAxisId];
-            orbitCaptureMode = false;
-            if (!PointerCapture.TryBegin(this, e.Pointer, localPointer))
-                return;
-            e.Handled = true;
-        }
+            BeginAxisPress(e);
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        localPointer = e.GetPosition(this);
-        hasTrackedPointer = true;
+        TrackPointer(e);
 
         if (!PointerCapture.IsOwnedBy(this))
         {
             RecomputeHover(localPointer, startAnimations: true);
-            return;
-        }
-
-        if (!TryGetActiveRenderer(out var activeRenderer))
-        {
-            e.Handled = true;
             return;
         }
 
@@ -295,11 +231,16 @@ public sealed class RotateViewGizmoControl : ContentControl
             return;
         }
 
+        if (!TryGetActiveRenderer(out var activeRenderer))
+        {
+            e.Handled = true;
+            return;
+        }
+
         var delta = PointerCapture.UpdateMove(this, localPointer);
         if (Math.Abs(delta.X) > double.Epsilon || Math.Abs(delta.Y) > double.Epsilon)
         {
             activeRenderer.Scene!.OrbitAroundPivot((float)(-delta.X * 0.01), (float)(-delta.Y * 0.01));
-
             EnsureAnimationRunning();
             InvalidateVisual();
         }
@@ -314,11 +255,13 @@ public sealed class RotateViewGizmoControl : ContentControl
         if (PointerCapture.IsOwnedBy(this))
         {
             PointerCapture.End(this, e.Pointer);
+
             var wasOrbitCapture = orbitCaptureMode;
             orbitCaptureMode = false;
             rotating = false;
-            localPointer = e.GetPosition(this);
-            hasTrackedPointer = true;
+
+            TrackPointer(e);
+
             if (wasOrbitCapture)
             {
                 if (IsPointerOver)
@@ -332,34 +275,194 @@ public sealed class RotateViewGizmoControl : ContentControl
         }
 
         if (pressedAxisId >= 0)
-        {
-            var releasePointer = e.GetPosition(this);
-            localPointer = releasePointer;
-            hasTrackedPointer = true;
-            RecomputeHover(localPointer, startAnimations: true);
-
-            var dx = releasePointer.X - pressedPointer.X;
-            var dy = releasePointer.Y - pressedPointer.Y;
-            var clickDistanceSq = (dx * dx) + (dy * dy);
-            if (clickDistanceSq <= AxisClickMoveThreshold * AxisClickMoveThreshold &&
-                TryGetActiveRenderer(out var activeRenderer))
-                StartSnapToAxis(activeRenderer, pressedAxisWorldDirection);
-
-            pressedAxisId = -1;
-            e.Handled = true;
-        }
+            CompleteAxisPress(e);
     }
 
-    protected override void OnLostFocus(FocusChangedEventArgs e)
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
-        base.OnLostFocus(e);
+        base.OnPointerCaptureLost(e);
+
         if (PointerCapture.IsOwnedBy(this))
             PointerCapture.End(this);
 
         orbitCaptureMode = false;
         rotating = false;
         pressedAxisId = -1;
+
+        if (hasTrackedPointer)
+            RecomputeHover(localPointer, startAnimations: false);
+
+        InvalidateVisual();
+    }
+
+    protected override void OnLostFocus(FocusChangedEventArgs e)
+    {
+        base.OnLostFocus(e);
+
+        if (PointerCapture.IsOwnedBy(this))
+            PointerCapture.End(this);
+
+        orbitCaptureMode = false;
+        rotating = false;
+        pressedAxisId = -1;
+
         ClearHoverState();
+    }
+
+    private void DrawCenterFade(DrawingContext context, Point center)
+    {
+        if (!hoveredCenter && !rotating && centerFadeCurrent <= 0.001f)
+            return;
+
+        var alpha = (byte)(Math.Clamp(centerFadeCurrent, 0f, 1f) * 255f);
+        var fill = new SolidColorBrush(Color.FromArgb(alpha, 255, 255, 255));
+
+        context.DrawEllipse(fill, null, center, GizmoBigCircleRadius, GizmoBigCircleRadius);
+    }
+
+    private void DrawHandle(DrawingContext context, AxisHandle handle, Point center, Typeface labelTypeface)
+    {
+        var hover = axisHoverFade[handle.Id];
+        var colorFactor = GizmoFadeFactor + ((1f - GizmoFadeFactor) * ((handle.Depth + 1f) * 0.5f));
+        var lineColor = WithAlpha(AxisColors[handle.AxisIndex], colorFactor);
+
+        var animatedRadius = GizmoCircleRadius + GizmoCircleHoverRadiusBoost * hover;
+        var animatedLineWidth = GizmoLineWidth + GizmoLineHoverWidthBoost * hover;
+
+        var isPrimary = IsPrimaryAxisHandle(handle.Id);
+        var fillColor = isPrimary
+            ? LerpColor(lineColor, Colors.White, 0.08f * hover)
+            : WithAlpha(Darken(AxisColors[handle.AxisIndex], 0.2f), colorFactor * 0.92f);
+
+        var circlePen = isPrimary
+            ? null
+            : new Pen(
+                new SolidColorBrush(LerpColor(WithAlpha(AxisColors[handle.AxisIndex], colorFactor * 0.95f), Colors.White, 0.12f * hover)),
+                GizmoOutlineWidth);
+
+        if (isPrimary)
+            DrawAxisLine(context, center, handle.ScreenPosition, animatedRadius, lineColor, animatedLineWidth);
+
+        context.DrawEllipse(new SolidColorBrush(fillColor), circlePen, handle.ScreenPosition, animatedRadius, animatedRadius);
+        DrawHandleLabel(context, handle, hover, isPrimary, labelTypeface);
+    }
+
+    private static void DrawAxisLine(
+        DrawingContext context,
+        Point center,
+        Point handlePosition,
+        float handleRadius,
+        Color lineColor,
+        float lineWidth)
+    {
+        var radialDir = new Avalonia.Vector(handlePosition.X - center.X, handlePosition.Y - center.Y);
+        var radialLen = Math.Sqrt(radialDir.X * radialDir.X + radialDir.Y * radialDir.Y);
+
+        if (radialLen > 0.000001d)
+            radialDir = new Avalonia.Vector(radialDir.X / radialLen, radialDir.Y / radialLen);
+        else
+            radialDir = default;
+
+        var lineEnd = new Point(
+            handlePosition.X - radialDir.X * handleRadius,
+            handlePosition.Y - radialDir.Y * handleRadius);
+
+        context.DrawLine(new Pen(new SolidColorBrush(lineColor), lineWidth), center, lineEnd);
+    }
+
+    private void DrawHandleLabel(
+        DrawingContext context,
+        AxisHandle handle,
+        float hover,
+        bool isPrimary,
+        Typeface labelTypeface)
+    {
+        var labelAlpha = isPrimary ? 1f : negativeLabelFade[handle.Id];
+        if (!isPrimary && labelAlpha <= 0.01f)
+            return;
+
+        var baseLabelColor = WithAlpha(LabelColor, labelAlpha);
+        var labelColor = LerpColor(baseLabelColor, Colors.White, 0.85f * hover);
+
+        var text = new FormattedText(
+            AxisLabels[handle.Id],
+            CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            labelTypeface,
+            GizmoLabelSize,
+            new SolidColorBrush(labelColor));
+
+        context.DrawText(
+            text,
+            new Point(
+                handle.ScreenPosition.X - text.WidthIncludingTrailingWhitespace * 0.5,
+                handle.ScreenPosition.Y - text.Height * 0.5));
+    }
+
+    private Typeface GetLabelTypeface() =>
+        new(
+            TextElement.GetFontFamily(this),
+            TextElement.GetFontStyle(this),
+            TextElement.GetFontWeight(this));
+
+    private void BeginOrbitCapture(PointerPressedEventArgs e)
+    {
+        if (TryGetActiveRenderer(out var activeRenderer))
+            activeRenderer.Scene!.SetArcballPivot(GetDefaultArcballPivot(activeRenderer));
+
+        snapAnimating = false;
+
+        if (!PointerCapture.TryBegin(this, e.Pointer, localPointer))
+            return;
+
+        rotating = true;
+        orbitCaptureMode = true;
+        centerFadeTarget = CenterFadeStrength;
+
+        EnsureAnimationRunning(resetClock: true);
+        InvalidateVisual();
+
+        e.Handled = true;
+    }
+
+    private void BeginAxisPress(PointerPressedEventArgs e)
+    {
+        pressedAxisId = hoveredAxisId;
+        pressedPointer = localPointer;
+        pressedAxisWorldDirection = AxisDirections[pressedAxisId];
+        orbitCaptureMode = false;
+
+        if (PointerCapture.TryBegin(this, e.Pointer, localPointer))
+            e.Handled = true;
+    }
+
+    private void CompleteAxisPress(PointerReleasedEventArgs e)
+    {
+        var releasePointer = e.GetPosition(this);
+
+        localPointer = releasePointer;
+        hasTrackedPointer = true;
+
+        RecomputeHover(localPointer, startAnimations: true);
+
+        var dx = releasePointer.X - pressedPointer.X;
+        var dy = releasePointer.Y - pressedPointer.Y;
+        var clickDistanceSq = dx * dx + dy * dy;
+
+        if (clickDistanceSq <= AxisClickMoveThreshold * AxisClickMoveThreshold &&
+            TryGetActiveRenderer(out var activeRenderer))
+        {
+            StartSnapToAxis(activeRenderer, pressedAxisWorldDirection);
+        }
+
+        pressedAxisId = -1;
+        e.Handled = true;
+    }
+
+    private void TrackPointer(PointerEventArgs e)
+    {
+        localPointer = e.GetPosition(this);
+        hasTrackedPointer = true;
     }
 
     private void OnAnimationTick()
@@ -373,11 +476,13 @@ public sealed class RotateViewGizmoControl : ContentControl
         if (!PointerCapture.IsOwnedBy(this) && hasTrackedPointer)
             RecomputeHover(localPointer, startAnimations: false);
 
-        var deltaSeconds = GetTickDeltaSeconds();
-        var changed = AdvanceAnimations(deltaSeconds);
+        var changed = AdvanceAnimations(GetTickDeltaSeconds());
 
         if (changed || rotating || PointerCapture.IsOwnedBy(this))
             InvalidateVisual();
+
+        if (!NeedsAnimation())
+            animationTimer.Stop();
     }
 
     private bool NeedsAnimation()
@@ -390,15 +495,15 @@ public sealed class RotateViewGizmoControl : ContentControl
 
         for (var i = 0; i < axisHoverFade.Length; i++)
         {
-            var hoverTarget = hoveredAxisId == i ? 1f : 0f;
-            if (Math.Abs(axisHoverFade[i] - hoverTarget) > AnimationEpsilon)
+            var target = hoveredAxisId == i ? 1f : 0f;
+            if (Math.Abs(axisHoverFade[i] - target) > AnimationEpsilon)
                 return true;
         }
 
         for (var i = 1; i < negativeLabelFade.Length; i += 2)
         {
-            var negativeTarget = hoveredAxisId == i ? 1f : 0f;
-            if (Math.Abs(negativeLabelFade[i] - negativeTarget) > AnimationEpsilon)
+            var target = hoveredAxisId == i ? 1f : 0f;
+            if (Math.Abs(negativeLabelFade[i] - target) > AnimationEpsilon)
                 return true;
         }
 
@@ -417,26 +522,19 @@ public sealed class RotateViewGizmoControl : ContentControl
         var previousHoveredCenter = hoveredCenter;
 
         hoveredAxisId = -1;
-        hoveredCenter = false;
-
-        var center = GetCenter();
-        var dx = pointerPosition.X - center.X;
-        var dy = pointerPosition.Y - center.Y;
-        var centerDistanceSq = (dx * dx) + (dy * dy);
-        if (centerDistanceSq <= GizmoBigCircleRadius * GizmoBigCircleRadius)
-            hoveredCenter = true;
+        hoveredCenter = IsInsideCenter(pointerPosition);
 
         var axisRadiusSq = GizmoCircleRadius * GizmoCircleRadius;
-        for (var i = 0; i < handles.Length; i++)
+        foreach (var handle in handles)
         {
-            var h = handles[i];
-            var hx = pointerPosition.X - h.ScreenPosition.X;
-            var hy = pointerPosition.Y - h.ScreenPosition.Y;
-            if ((hx * hx) + (hy * hy) <= axisRadiusSq)
-                hoveredAxisId = h.Id;
+            var dx = pointerPosition.X - handle.ScreenPosition.X;
+            var dy = pointerPosition.Y - handle.ScreenPosition.Y;
+
+            if (dx * dx + dy * dy <= axisRadiusSq)
+                hoveredAxisId = handle.Id;
         }
 
-        centerFadeTarget = (hoveredCenter || rotating) ? CenterFadeStrength : 0f;
+        centerFadeTarget = hoveredCenter || rotating ? CenterFadeStrength : 0f;
 
         var hoverChanged = previousHoveredAxis != hoveredAxisId || previousHoveredCenter != hoveredCenter;
         if (startAnimations && (hoverChanged || NeedsAnimation()))
@@ -446,48 +544,80 @@ public sealed class RotateViewGizmoControl : ContentControl
             InvalidateVisual();
     }
 
+    private static bool IsInsideCenter(Point pointerPosition)
+    {
+        var center = GetCenter();
+        var dx = pointerPosition.X - center.X;
+        var dy = pointerPosition.Y - center.Y;
+
+        return dx * dx + dy * dy <= GizmoBigCircleRadius * GizmoBigCircleRadius;
+    }
+
     private void ClearHoverState()
     {
         hoveredAxisId = -1;
         hoveredCenter = false;
         centerFadeTarget = 0f;
-        EnsureAnimationRunning();
-        InvalidateVisual();
-    }
 
-    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
-    {
-        base.OnPointerCaptureLost(e);
-        if (PointerCapture.IsOwnedBy(this))
-            PointerCapture.End(this);
-        orbitCaptureMode = false;
-        rotating = false;
-        pressedAxisId = -1;
-        if (!PointerCapture.IsOwnedBy(this) && hasTrackedPointer)
-            RecomputeHover(localPointer, startAnimations: false);
+        EnsureAnimationRunning();
         InvalidateVisual();
     }
 
     private bool AdvanceAnimations(float deltaSeconds)
     {
         var changed = false;
+
         changed |= AnimateCenterFade(deltaSeconds);
         changed |= AnimateSnap(deltaSeconds);
         changed |= AnimateNegativeLabels(deltaSeconds);
         changed |= AnimateAxisHover(deltaSeconds);
+
         return changed;
     }
 
     private bool AnimateCenterFade(float deltaSeconds)
     {
-        var next = StepToward(centerFadeCurrent, centerFadeTarget, CenterFadeRate, deltaSeconds);
-        if (Math.Abs(next - centerFadeCurrent) <= AnimationEpsilon)
+        return AnimateValue(ref centerFadeCurrent, centerFadeTarget, CenterFadeRate, deltaSeconds);
+    }
+
+    private bool AnimateNegativeLabels(float deltaSeconds)
+    {
+        var changed = false;
+
+        for (var i = 1; i < negativeLabelFade.Length; i += 2)
         {
-            centerFadeCurrent = centerFadeTarget;
-            return false;
+            var target = hoveredAxisId == i ? 1f : 0f;
+            changed |= AnimateValue(ref negativeLabelFade[i], target, NegativeLabelFadeRate, deltaSeconds);
         }
 
-        centerFadeCurrent = next;
+        return changed;
+    }
+
+    private bool AnimateAxisHover(float deltaSeconds)
+    {
+        var changed = false;
+
+        for (var i = 0; i < axisHoverFade.Length; i++)
+        {
+            var target = hoveredAxisId == i ? 1f : 0f;
+            changed |= AnimateValue(ref axisHoverFade[i], target, HoverFadeRate, deltaSeconds);
+        }
+
+        return changed;
+    }
+
+    private static bool AnimateValue(ref float value, float target, float rate, float deltaSeconds)
+    {
+        var next = StepToward(value, target, rate, deltaSeconds);
+
+        if (Math.Abs(next - value) <= AnimationEpsilon)
+        {
+            var changed = Math.Abs(value - target) > AnimationEpsilon;
+            value = target;
+            return changed;
+        }
+
+        value = next;
         return true;
     }
 
@@ -501,57 +631,18 @@ public sealed class RotateViewGizmoControl : ContentControl
             return false;
 
         snapTimeSeconds += deltaSeconds;
+
         var t = Math.Clamp(snapTimeSeconds / SnapDurationSeconds, 0f, 1f);
         var eased = 1f - MathF.Pow(1f - t, 3f);
-        var position = Vector3.Lerp(snapStartPosition, snapTargetPosition, eased);
-        var rotation = Quaternion.Slerp(snapStartRotation, snapTargetRotation, eased);
 
-        scene.SetCameraView(position, rotation);
+        scene.SetCameraView(
+            Vector3.Lerp(snapStartPosition, snapTargetPosition, eased),
+            Quaternion.Slerp(snapStartRotation, snapTargetRotation, eased));
 
         if (t >= 1f)
             snapAnimating = false;
 
         return true;
-    }
-
-    private bool AnimateNegativeLabels(float deltaSeconds)
-    {
-        var changed = false;
-        for (var i = 1; i < negativeLabelFade.Length; i += 2)
-        {
-            var target = hoveredAxisId == i ? 1f : 0f;
-            var next = StepToward(negativeLabelFade[i], target, NegativeLabelFadeRate, deltaSeconds);
-            if (Math.Abs(next - negativeLabelFade[i]) <= AnimationEpsilon)
-            {
-                negativeLabelFade[i] = target;
-                continue;
-            }
-
-            negativeLabelFade[i] = next;
-            changed = true;
-        }
-
-        return changed;
-    }
-
-    private bool AnimateAxisHover(float deltaSeconds)
-    {
-        var changed = false;
-        for (var i = 0; i < axisHoverFade.Length; i++)
-        {
-            var target = hoveredAxisId == i ? 1f : 0f;
-            var next = StepToward(axisHoverFade[i], target, HoverFadeRate, deltaSeconds);
-            if (Math.Abs(next - axisHoverFade[i]) <= AnimationEpsilon)
-            {
-                axisHoverFade[i] = target;
-                continue;
-            }
-
-            axisHoverFade[i] = next;
-            changed = true;
-        }
-
-        return changed;
     }
 
     private void EnsureAnimationRunning(bool resetClock = false)
@@ -566,6 +657,7 @@ public sealed class RotateViewGizmoControl : ContentControl
     private float GetTickDeltaSeconds()
     {
         var nowSeconds = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+
         if (lastTickSeconds <= 0d)
         {
             lastTickSeconds = nowSeconds;
@@ -574,15 +666,13 @@ public sealed class RotateViewGizmoControl : ContentControl
 
         var deltaSeconds = Math.Clamp(nowSeconds - lastTickSeconds, 0d, TickDeltaClampSeconds);
         lastTickSeconds = nowSeconds;
+
         return (float)deltaSeconds;
     }
 
     private void StartSnapToAxis(VulkanViewerControl activeViewer, Vector3 axisDirectionFromPivot)
     {
-        if (axisDirectionFromPivot.LengthSquared() < 0.000001f)
-            return;
-
-        if (activeViewer.Scene is null)
+        if (axisDirectionFromPivot.LengthSquared() < 0.000001f || activeViewer.Scene is null)
             return;
 
         activeViewer.Scene.SetArcballPivot(GetDefaultArcballPivot(activeViewer));
@@ -591,15 +681,15 @@ public sealed class RotateViewGizmoControl : ContentControl
         var pivot = cameraView.ArcballPivot;
         var currentPosition = cameraView.Position;
         var currentRotation = cameraView.Rotation;
+
         var distance = Math.Max(1f, Vector3.Distance(currentPosition, pivot));
         var targetDirection = Vector3.Normalize(axisDirectionFromPivot);
         var targetPosition = pivot + targetDirection * distance;
 
         var currentDirection = currentPosition - pivot;
-        if (currentDirection.LengthSquared() < 0.000001f)
-            currentDirection = -targetDirection;
-        else
-            currentDirection = Vector3.Normalize(currentDirection);
+        currentDirection = currentDirection.LengthSquared() < 0.000001f
+            ? -targetDirection
+            : Vector3.Normalize(currentDirection);
 
         var deltaRotation = FromToRotation(currentDirection, targetDirection);
         var targetRotation = Quaternion.Normalize(deltaRotation * currentRotation);
@@ -618,12 +708,13 @@ public sealed class RotateViewGizmoControl : ContentControl
     private bool TryGetActiveRenderer(out VulkanViewerControl activeViewer)
     {
         var resolved = Source;
-        if (resolved is not null && resolved.Scene is not null)
+
+        if (resolved?.Scene is { } scene)
         {
             if (!ReferenceEquals(viewer, resolved))
                 viewer = resolved;
 
-            AttachObservedScene(resolved.Scene);
+            AttachObservedScene(scene);
             activeViewer = resolved;
             return true;
         }
@@ -640,6 +731,7 @@ public sealed class RotateViewGizmoControl : ContentControl
             return;
 
         DetachObservedScene();
+
         observedScene = scene;
         observedScene.CameraChanged += OnObservedSceneCameraChanged;
     }
@@ -676,6 +768,7 @@ public sealed class RotateViewGizmoControl : ContentControl
             return;
 
         DetachTopLevel();
+
         observedTopLevel = topLevel;
         if (observedTopLevel is not null)
             observedTopLevel.PointerMoved += OnTopLevelPointerMoved;
@@ -699,46 +792,46 @@ public sealed class RotateViewGizmoControl : ContentControl
         hasTrackedPointer = true;
     }
 
-    private Point GetCenter() => new(Bounds.Width * 0.5, Bounds.Height * 0.5);
+    private static Point GetCenter() => new(GizmoBigCircleRadius, GizmoBigCircleRadius);
 
-    private static void BuildHandles(Quaternion cameraRotation, Point center, double axisLength, AxisHandle[] targetHandles, int[] targetDrawOrder)
+    private static void BuildHandles(
+        Quaternion cameraRotation,
+        Point center,
+        double axisLength,
+        AxisHandle[] targetHandles,
+        int[] targetDrawOrder)
     {
         var inverse = Quaternion.Inverse(cameraRotation);
+
         for (var i = 0; i < AxisDirections.Length; i++)
         {
             var axisIndex = i / 2;
             var viewDir = Vector3.Transform(AxisDirections[i], inverse);
-            var screen = new Point(center.X - viewDir.X * axisLength, center.Y - viewDir.Y * axisLength);
-            targetHandles[i] = new AxisHandle(i, axisIndex, viewDir.Z, screen);
+
+            targetHandles[i] = new AxisHandle(
+                i,
+                axisIndex,
+                viewDir.Z,
+                new Point(center.X - viewDir.X * axisLength, center.Y - viewDir.Y * axisLength));
+
             targetDrawOrder[i] = i;
         }
 
-        for (var i = 0; i < targetDrawOrder.Length - 1; i++)
-        {
-            for (var j = i + 1; j < targetDrawOrder.Length; j++)
-            {
-                var left = targetDrawOrder[i];
-                var right = targetDrawOrder[j];
-                if (targetHandles[left].Depth <= targetHandles[right].Depth)
-                    continue;
-
-                targetDrawOrder[i] = right;
-                targetDrawOrder[j] = left;
-            }
-        }
+        Array.Sort(targetDrawOrder, (left, right) =>
+            targetHandles[left].Depth.CompareTo(targetHandles[right].Depth));
     }
 
     private static Vector3 GetDefaultArcballPivot(VulkanViewerControl activeViewer)
     {
         var scene = activeViewer.Scene!;
         var cameraView = scene.GetCameraViewSnapshot();
-        var forward = Vector3.Transform(Vector3.UnitZ, cameraView.Rotation);
-        if (forward.LengthSquared() < 0.000001f)
-            forward = Vector3.UnitZ;
-        else
-            forward = Vector3.Normalize(forward);
 
-        return cameraView.Position + (forward * DefaultArcballPivotDistance);
+        var forward = Vector3.Transform(Vector3.UnitZ, cameraView.Rotation);
+        forward = forward.LengthSquared() < 0.000001f
+            ? Vector3.UnitZ
+            : Vector3.Normalize(forward);
+
+        return cameraView.Position + forward * DefaultArcballPivotDistance;
     }
 
     private static Quaternion FromToRotation(Vector3 from, Vector3 to)
@@ -756,13 +849,11 @@ public sealed class RotateViewGizmoControl : ContentControl
             if (axis.LengthSquared() < 0.000001f)
                 axis = Vector3.Cross(fromNorm, Vector3.UnitX);
 
-            axis = Vector3.Normalize(axis);
-            return Quaternion.CreateFromAxisAngle(axis, MathF.PI);
+            return Quaternion.CreateFromAxisAngle(Vector3.Normalize(axis), MathF.PI);
         }
 
         var rotationAxis = Vector3.Normalize(Vector3.Cross(fromNorm, toNorm));
-        var angle = MathF.Acos(dot);
-        return Quaternion.CreateFromAxisAngle(rotationAxis, angle);
+        return Quaternion.CreateFromAxisAngle(rotationAxis, MathF.Acos(dot));
     }
 
     private static float StepToward(float value, float target, float rate, float deltaSeconds)
@@ -771,30 +862,36 @@ public sealed class RotateViewGizmoControl : ContentControl
             return value;
 
         var t = 1f - MathF.Exp(-rate * deltaSeconds);
-        return value + ((target - value) * t);
+        return value + (target - value) * t;
     }
 
     private static bool IsPrimaryAxisHandle(int id) => (id & 1) == 0;
 
-    private static Color WithAlpha(Color c, float alphaScale)
+    private static Color WithAlpha(Color color, float alphaScale)
     {
-        var a = (byte)(c.A * Math.Clamp(alphaScale, 0f, 1f));
-        return Color.FromArgb(a, c.R, c.G, c.B);
+        var alpha = (byte)(color.A * Math.Clamp(alphaScale, 0f, 1f));
+        return Color.FromArgb(alpha, color.R, color.G, color.B);
     }
 
-    private static Color Darken(Color c, float factor)
+    private static Color Darken(Color color, float factor)
     {
         factor = Math.Clamp(factor, 0f, 1f);
-        return Color.FromArgb(c.A, (byte)(c.R * factor), (byte)(c.G * factor), (byte)(c.B * factor));
+
+        return Color.FromArgb(
+            color.A,
+            (byte)(color.R * factor),
+            (byte)(color.G * factor),
+            (byte)(color.B * factor));
     }
 
     private static Color LerpColor(Color a, Color b, float t)
     {
         t = Math.Clamp(t, 0f, 1f);
-        var alpha = (byte)(a.A + ((b.A - a.A) * t));
-        var red = (byte)(a.R + ((b.R - a.R) * t));
-        var green = (byte)(a.G + ((b.G - a.G) * t));
-        var blue = (byte)(a.B + ((b.B - a.B) * t));
-        return Color.FromArgb(alpha, red, green, blue);
+
+        return Color.FromArgb(
+            (byte)(a.A + (b.A - a.A) * t),
+            (byte)(a.R + (b.R - a.R) * t),
+            (byte)(a.G + (b.G - a.G) * t),
+            (byte)(a.B + (b.B - a.B) * t));
     }
 }

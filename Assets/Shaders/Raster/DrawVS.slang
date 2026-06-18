@@ -1,18 +1,6 @@
 #include "../Shared.slang"
 #include "../Bindings.slang"
 
-[[vk::binding(11, 0)]] StructuredBuffer<uint, Std430DataLayout> visibleInstanceIds;
-
-struct RasterPushConstants
-{
-    uint MeshId;
-    uint VisibleOffset;
-    uint Pad0;
-    uint Pad1;
-};
-
-[[vk::push_constant]] ConstantBuffer<RasterPushConstants> rasterPushConstants;
-
 struct VsOutput
 {
     float4 Position : SV_Position;
@@ -24,33 +12,40 @@ struct VsOutput
     nointerpolation uint InstanceId : TEXCOORD5;
     nointerpolation uint MeshId : TEXCOORD6;
     nointerpolation uint TriangleIndex : TEXCOORD7;
+    float4 PrevClipPosition : TEXCOORD8;
 };
 
 [shader("vertex")]
-VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+VsOutput main(uint vertexId : SV_VulkanVertexID, uint instanceId : SV_VulkanInstanceID)
 {
     VsOutput output;
 
-    uint sceneInstanceId = visibleInstanceIds[rasterPushConstants.VisibleOffset + instanceId];
-    InstanceGpu instanceData = instances[sceneInstanceId];
-    MeshAddressesGpu mesh = meshes[rasterPushConstants.MeshId];
+    uint sceneInstanceId = visibleInstanceIds[instanceId];
+    InstanceGpu inst = instances[sceneInstanceId];
+    MeshAddressesGpu mesh = meshes[inst.MeshId];
 
-    uint vertexIndex = reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[vertexId];
-    Vertex vertex = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[vertexIndex];
+    uint vi = reinterpret<IndexBuffer*>(mesh.IndexAddress)->data[vertexId];
+    Vertex vert = reinterpret<VertexBuffer*>(mesh.VertexAddress)->data[vi];
+    float3 worldPos = mul(float4(vert.Position, 1.0), inst.Transform).xyz;
 
-    float3 worldPosition = mul(float4(vertex.Position, 1.0), instanceData.Transform).xyz;
-    float3x3 normalMatrix = (float3x3)instanceData.NormalTransform;
-    float3 worldNormal = normalize(mul(vertex.Normal, normalMatrix));
-    float3 worldTangent = normalize(mul(vertex.Tangent, normalMatrix));
+    float3x3 normalMat = (float3x3)inst.NormalTransform;
+    float3 worldNormal = normalize(mul(vert.Normal, normalMat));
+    float3 worldTangent = normalize(mul(vert.Tangent, normalMat));
 
-    output.Position = mul(float4(worldPosition, 1.0), sceneSettings.RasterCamera.WorldToClip);
-    output.WorldPosition = worldPosition;
+    float4 clip = mul(float4(worldPos, 1.0), sceneSettings.RasterCamera.WorldToClip);
+    float4 prevClip = mul(float4(worldPos, 1.0), sceneSettings.RasterCamera.PrevWorldToClip);
+    clip.xy += sceneSettings.RasterCamera.JitterNdc * clip.w;
+    prevClip.xy += sceneSettings.RasterCamera.PrevJitterNdc * prevClip.w;
+
+    output.Position = clip;
+    output.PrevClipPosition = prevClip;
+    output.WorldPosition = worldPos;
     output.WorldNormal = worldNormal;
     output.WorldTangent = worldTangent;
-    output.UV = vertex.UV;
-    output.TangentSign = vertex.TangentSign;
+    output.UV = vert.UV;
+    output.TangentSign = vert.TangentSign;
     output.InstanceId = sceneInstanceId;
-    output.MeshId = rasterPushConstants.MeshId;
+    output.MeshId = inst.MeshId;
     output.TriangleIndex = vertexId / 3u;
     return output;
 }

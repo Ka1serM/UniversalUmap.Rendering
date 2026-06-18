@@ -15,6 +15,7 @@ struct VsOutput
     nointerpolation uint InstanceId : TEXCOORD5;
     nointerpolation uint MeshId : TEXCOORD6;
     nointerpolation uint TriangleIndex : TEXCOORD7;
+    float4 PrevClipPosition : TEXCOORD8;
 };
 
 struct FsOutput
@@ -24,7 +25,8 @@ struct FsOutput
     float4 Normal : SV_Target2;
     uint Crypto : SV_Target3;
     float4 Position : SV_Target4;
-    float4 Adaptive : SV_Target5;
+    float4 Material : SV_Target5;
+    float2 Velocity : SV_Target6;
 };
 
 [shader("fragment")]
@@ -43,25 +45,26 @@ FsOutput main(VsOutput input)
     float opacity;
     float transmission;
     samplePbrMaterial(material, input.UV, albedo, emission, metallic, specular, roughness, opacity, transmission);
-    transmission = transmission;
-    if (opacity < 0.5)
-        discard;
+
+    if (opacity < 0.5) discard;
 
     float3 viewDir = fastNormalize(sceneSettings.RasterCamera.Position - input.WorldPosition);
-    float3 geometricFacingNormal = computeFacingGeometricNormal(normalize(input.WorldNormal), viewDir);
+    float3 geometricNormal = computeFacingGeometricNormal(normalize(input.WorldNormal), viewDir);
     float3 shadingNormal = sampleMaterialShadingNormal(
-        material.NormalIndex,
-        input.UV,
-        normalize(input.WorldNormal),
-        normalize(input.WorldTangent),
-        input.TangentSign);
-    float3 facingNormal = computeFacingShadingNormal(shadingNormal, viewDir, geometricFacingNormal);
+        material.NormalIndex, input.UV,
+        normalize(input.WorldNormal), normalize(input.WorldTangent), input.TangentSign);
+    float3 facingNormal = computeFacingShadingNormal(shadingNormal, viewDir, geometricNormal);
 
     output.Color = float4(emission, opacity);
     output.Albedo = float4(albedo, 1.0);
-    output.Normal = float4(facingNormal * 0.5 + 0.5, roughness);
+    output.Normal = float4(facingNormal * 0.5 + 0.5, 0.0);
     output.Crypto = input.InstanceId;
     output.Position = float4(input.WorldPosition, 1.0);
-    output.Adaptive = float4(metallic, specular, roughness, transmission);
+    output.Material = float4(metallic, specular, roughness, transmission);
+
+    float2 currNdc = input.Position.xy / max(input.Position.w, 1.0e-6);
+    float2 prevNdc = input.PrevClipPosition.xy / max(input.PrevClipPosition.w, 1.0e-6);
+    output.Velocity = (prevNdc - currNdc) * 0.5;
+
     return output;
 }

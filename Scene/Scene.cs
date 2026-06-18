@@ -45,6 +45,7 @@ public sealed class Scene : IDisposable, IScene
 
     private readonly Context context;
     private readonly List<SceneHierarchyNode> hierarchyRoots = [];
+    private readonly Dictionary<int, SceneHierarchyNode> hierarchyNodesById = [];
     private readonly object sync = new();
     private readonly List<MeshInstance> meshInstances = [];
     private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
@@ -56,7 +57,10 @@ public sealed class Scene : IDisposable, IScene
     private ulong tlasRevision;
     private ulong texturesRevision;
     private ulong settingsRevision;
+    private int nextHierarchyNodeId;
     private Func<Func<object?>, object?>? gpuDispatcher;
+    private Matrix4x4 prevWorldToClip = Matrix4x4.Identity;
+    private Vector2 prevRasterJitterNdc = Vector2.Zero;
 
     public int SelectedInstanceIndex { get; private set; } = -1;
     public MeshInstance? SelectedInstance =>
@@ -263,18 +267,28 @@ public sealed class Scene : IDisposable, IScene
             Environment.ToStruct()));
     }
 
-    internal RasterCameraDataGpu CaptureRasterCameraData()
+    internal RasterCameraDataGpu CaptureRasterCameraData(Vector2 jitterNdc = default)
     {
-        return Synchronize(() => new RasterCameraDataGpu
+        return Synchronize(() =>
         {
-            Position = Camera.Position,
-            Direction = Camera.ToStruct().Direction,
-            Horizontal = Camera.ToStruct().Horizontal,
-            Vertical = Camera.ToStruct().Vertical,
-            FocalLength = Camera.ToStruct().FocalLength,
-            NearPlane = 0.01f,
-            FarPlane = 10_000f,
-            WorldToClip = Camera.WorldToClip
+            var currentWTC = Camera.WorldToClip;
+            var result = new RasterCameraDataGpu
+            {
+                Position = Camera.Position,
+                Direction = Camera.ToStruct().Direction,
+                Horizontal = Camera.ToStruct().Horizontal,
+                Vertical = Camera.ToStruct().Vertical,
+                FocalLength = Camera.ToStruct().FocalLength,
+                NearPlane = 0.01f,
+                FarPlane = 10_000f,
+                JitterNdc = jitterNdc,
+                PrevJitterNdc = prevRasterJitterNdc,
+                WorldToClip = currentWTC,
+                PrevWorldToClip = prevWorldToClip
+            };
+            prevWorldToClip = currentWTC;
+            prevRasterJitterNdc = jitterNdc;
+            return result;
         });
     }
 
@@ -283,21 +297,15 @@ public sealed class Scene : IDisposable, IScene
         return Synchronize(() =>
         {
             const float atlasSize = 4096f;
-            const float pageSize = 256f;
             const int cascadeCount = 4;
 
             var environment = Environment.ToStruct();
-            var enabled = RenderSettings.RasterVirtualShadowMapsEnabled &&
-                          environment.DirectionalIntensity > 0.0001f &&
+            var enabled = environment.DirectionalIntensity > 0.0001f &&
                           environment.DirectionalDirection.LengthSquared() > 0.0001f;
             var result = new RasterShadowDataGpu
             {
-                UvScaleOffset0 = new Vector4(0.5f, 0.5f, 0.0f, 0.0f),
-                UvScaleOffset1 = new Vector4(0.5f, 0.5f, 0.5f, 0.0f),
-                UvScaleOffset2 = new Vector4(0.5f, 0.5f, 0.0f, 0.5f),
-                UvScaleOffset3 = new Vector4(0.5f, 0.5f, 0.5f, 0.5f),
                 CascadeFarDistances = new Vector4(18f, 55f, 160f, 480f),
-                AtlasSizePageSizeCascadeCountEnabled = new Vector4(atlasSize, pageSize, cascadeCount, enabled ? 1f : 0f)
+                AtlasSizeCascadeCountEnabled = new Vector4(atlasSize, cascadeCount, enabled ? 1f : 0f, 0f)
             };
 
             if (!enabled)
@@ -444,9 +452,14 @@ public sealed class Scene : IDisposable, IScene
 
     public bool TryCreateMeshInstance(MeshAsset mesh, string name, FTransform unrealTransform, out MeshInstance? instance)
     {
+        return TryCreateMeshInstance(mesh, name, unrealTransform, SceneHierarchyHandle.Invalid, out instance);
+    }
+
+    public bool TryCreateMeshInstance(MeshAsset mesh, string name, FTransform unrealTransform, SceneHierarchyHandle ownerNode, out MeshInstance? instance)
+    {
         instance = Synchronize(() =>
         {
-            if (!MeshInstance.TryCreateFromUnrealTransform(this, name, mesh, unrealTransform, out var created) || created is null)
+            if (!MeshInstance.TryCreateFromUnrealTransform(this, name, mesh, unrealTransform, out var created, ownerNode.Id) || created is null)
                 return null;
 
             return Add(created);
@@ -791,15 +804,41 @@ public sealed class Scene : IDisposable, IScene
 
     public void ClearHierarchy()
     {
-        hierarchyRoots.Clear();
+        Synchronize(() =>
+        {
+            hierarchyRoots.Clear();
+            hierarchyNodesById.Clear();
+            nextHierarchyNodeId = 0;
+        });
     }
 
-    public void AddHierarchyRoot(SceneHierarchyNode root)
+    public SceneHierarchyHandle AddHierarchyRoot(SceneHierarchyNode root)
     {
         if (root is null)
             throw new ArgumentNullException(nameof(root));
 
-        hierarchyRoots.Add(root);
+        return Synchronize(() =>
+        {
+            hierarchyRoots.Add(root);
+            if (root.Id >= 0)
+                hierarchyNodesById[root.Id] = root;
+            return new SceneHierarchyHandle(root.Id);
+        });
+    }
+
+    public SceneHierarchyHandle AddHierarchyRoot(
+        string name,
+        string type,
+        string ownerName,
+        string sourcePath,
+        string? assetPath,
+        SceneNodeRole role,
+        SceneHierarchyNodeKind kind,
+        FTransform localTransform,
+        FTransform worldTransform,
+        int instanceCount = 1)
+    {
+        return AddHierarchyNode(SceneHierarchyHandle.Invalid, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount);
     }
 
     public void AddHierarchyChild(SceneHierarchyNode parent, SceneHierarchyNode child)
@@ -809,13 +848,136 @@ public sealed class Scene : IDisposable, IScene
         if (child is null)
             throw new ArgumentNullException(nameof(child));
 
-        parent.Children.Add(child);
+        Synchronize(() =>
+        {
+            parent.Children.Add(child);
+            if (child.Id >= 0)
+                hierarchyNodesById[child.Id] = child;
+        });
+    }
+
+    public SceneHierarchyHandle AddHierarchyChild(
+        SceneHierarchyHandle parent,
+        string name,
+        string type,
+        string ownerName,
+        string sourcePath,
+        string? assetPath,
+        SceneNodeRole role,
+        SceneHierarchyNodeKind kind,
+        FTransform localTransform,
+        FTransform worldTransform,
+        int instanceCount = 1)
+    {
+        return AddHierarchyNode(parent, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount);
+    }
+
+    private SceneHierarchyHandle AddHierarchyNode(
+        SceneHierarchyHandle parent,
+        string name,
+        string type,
+        string ownerName,
+        string sourcePath,
+        string? assetPath,
+        SceneNodeRole role,
+        SceneHierarchyNodeKind kind,
+        FTransform localTransform,
+        FTransform worldTransform,
+        int instanceCount)
+    {
+        return Synchronize(() =>
+        {
+            var id = nextHierarchyNodeId++;
+            var parentId = parent.IsValid ? parent.Id : -1;
+            var node = new SceneHierarchyNode(
+                id,
+                parentId,
+                name,
+                type,
+                ownerName,
+                sourcePath,
+                assetPath,
+                role,
+                kind,
+                localTransform,
+                worldTransform,
+                role == SceneNodeRole.Actor,
+                instanceCount);
+            hierarchyNodesById[id] = node;
+            if (parent.IsValid && hierarchyNodesById.TryGetValue(parent.Id, out var parentNode))
+                parentNode.Children.Add(node);
+            else
+                hierarchyRoots.Add(node);
+            return new SceneHierarchyHandle(id);
+        });
+    }
+
+    public void AddInstanceRange(SceneHierarchyHandle nodeHandle, int startIndex, int count)
+    {
+        if (!nodeHandle.IsValid || count <= 0)
+            return;
+
+        Synchronize(() =>
+        {
+            if (hierarchyNodesById.TryGetValue(nodeHandle.Id, out var node))
+                node.AddInstanceRange(startIndex, count);
+        });
     }
 
     public void SetHierarchyRoots(IReadOnlyList<SceneHierarchyNode> roots)
     {
-        hierarchyRoots.Clear();
-        hierarchyRoots.AddRange(roots);
+        Synchronize(() =>
+        {
+            hierarchyRoots.Clear();
+            hierarchyNodesById.Clear();
+            hierarchyRoots.AddRange(roots);
+            nextHierarchyNodeId = 0;
+            foreach (var root in roots)
+                IndexHierarchyNode(root);
+        });
+    }
+
+    private void IndexHierarchyNode(SceneHierarchyNode node)
+    {
+        if (node.Id >= 0)
+        {
+            hierarchyNodesById[node.Id] = node;
+            nextHierarchyNodeId = Math.Max(nextHierarchyNodeId, node.Id + 1);
+        }
+
+        foreach (var child in node.Children)
+            IndexHierarchyNode(child);
+    }
+
+    public bool TryGetHierarchyNode(SceneHierarchyHandle handle, out SceneHierarchyNode? node)
+    {
+        if (!handle.IsValid)
+        {
+            node = null;
+            return false;
+        }
+
+        var result = Synchronize(() =>
+        {
+            hierarchyNodesById.TryGetValue(handle.Id, out var found);
+            return found;
+        });
+        node = result;
+        return node is not null;
+    }
+
+    public bool TryGetHierarchyNodeForInstance(int instanceIndex, out SceneHierarchyNode? node)
+    {
+        var result = Synchronize(() =>
+        {
+            if (instanceIndex < 0 || instanceIndex >= meshInstances.Count)
+                return null;
+
+            var nodeId = meshInstances[instanceIndex].HierarchyNodeId;
+            return nodeId >= 0 && hierarchyNodesById.TryGetValue(nodeId, out var found) ? found : null;
+        });
+        node = result;
+        return node is not null;
     }
 
     public void ClearGeometry(bool keepDefaultTestCube = false)
@@ -833,6 +995,9 @@ public sealed class Scene : IDisposable, IScene
 
             context.WaitForSubmittedCommandBuffers();
             meshInstances.Clear();
+            hierarchyRoots.Clear();
+            hierarchyNodesById.Clear();
+            nextHierarchyNodeId = 0;
 
             foreach (var mesh in meshAssetsByName.Values)
                 mesh.Dispose();
@@ -1064,9 +1229,8 @@ public sealed class Scene : IDisposable, IScene
                 return null;
 
             var result = new MeshAddressesGpu[meshAssetsByName.Count];
-            var index = 0;
             foreach (var meshAsset in meshAssetsByName.Values)
-                result[index++] = meshAsset.GetBufferAddresses();
+                result[meshAsset.MeshIndex] = meshAsset.GetBufferAddresses();
 
             return result;
         });

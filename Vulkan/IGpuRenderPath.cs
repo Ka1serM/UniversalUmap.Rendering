@@ -12,8 +12,6 @@ internal interface IGpuRenderPath : IDisposable
     VulkanImage OutputPosition { get; }
     VulkanImage OutputAdaptiveState { get; }
     Avalonia.PixelSize RenderImageSize { get; }
-    bool PickBuffersFlippedY { get; }
-
     void Record(Avalonia.PixelSize renderSize, VulkanImage image, Context.CommandBuffer commandBuffer, Scene.RenderDataGpu renderData);
     bool QueryPixelUInt(VulkanImage image, int pixelX, int pixelY, out uint value);
     bool QueryPixelHalf4(VulkanImage image, int pixelX, int pixelY, out Vector4 value);
