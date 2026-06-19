@@ -11,7 +11,6 @@ using Avalonia.Rendering.Composition;
 using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
-using UniversalUmap.Rendering.Rasterizing;
 using UniversalUmap.Rendering.Raytracing;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
@@ -34,7 +33,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     private OffscreenPresentationBuffer? presentationBuffer;
     private VulkanCompositor? vulkanCompositor;
     private GpuRaytracer? raytracer;
-    private GpuRasterizer? rasterizer;
 
     // Scene
     private Scene? scene;
@@ -69,12 +67,9 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         set
         {
             if (scene is null) return;
-            var effective = ToSupportedRenderMode(value);
-            if (scene.RenderSettings.RenderMode == effective) return;
-            if (effective != value)
-                Log.Warning("Render mode {Requested} unavailable; falling back to {Fallback}.", value, effective);
-            Log.Information("Render mode set to {Mode}.", effective);
-            scene.SetRenderMode(effective);
+            if (scene.RenderSettings.RenderMode == value) return;
+            Log.Information("Render mode set to {Mode}.", value);
+            scene.SetRenderMode(value);
             QueueNextFrame();
         }
     }
@@ -99,14 +94,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         {
             scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
             vulkanCompositor?.Dispose();
-            rasterizer?.Dispose();
             raytracer?.Dispose();
             scene.Dispose();
         });
         presentationBuffer?.Dispose();
         _ = swapchain?.DisposeAsync();
         vulkanCompositor = null;
-        rasterizer = null;
         raytracer = null;
         picker = null;
         scene = null;
@@ -136,12 +129,10 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             {
                 scene.EnvironmentChanged -= OnSceneEnvironmentChanged;
                 vulkanCompositor?.Dispose();
-                rasterizer?.Dispose();
                 raytracer?.Dispose();
                 scene.Dispose();
             });
             vulkanCompositor = null;
-            rasterizer = null;
             raytracer = null;
             picker = null;
             scene = null;
@@ -180,22 +171,19 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             scene = new Scene(context, input);
             scene.EnvironmentChanged += OnSceneEnvironmentChanged;
             scene.TryLoadDefaultEnvironment();
+            scene.LoadDebugScene();
             scene.SetRenderMode(RenderMode.AmbientOcclusion);
 
             try
             {
                 raytracer = GpuRaytracer.Create(context, scene);
-                rasterizer = new GpuRasterizer(context, scene);
                 vulkanCompositor = new VulkanCompositor(context);
-                picker = new GpuScenePicker(scene, ResolveRenderPath(scene.RenderSettings.RenderMode));
-                if (scene.RenderSettings.RenderMode != ToSupportedRenderMode(scene.RenderSettings.RenderMode))
-                    scene.SetRenderMode(ToSupportedRenderMode(scene.RenderSettings.RenderMode));
+                picker = new GpuScenePicker(scene, raytracer ?? throw new InvalidOperationException("Raytracing renderer is not initialized."));
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to create Vulkan raytracing renderer.");
                 vulkanCompositor?.Dispose(); vulkanCompositor = null;
-                rasterizer?.Dispose(); rasterizer = null;
                 raytracer?.Dispose(); raytracer = null;
                 picker = null;
             }
@@ -236,7 +224,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             return;
 
         if (visual is null || swapchain is null || context is null ||
-            scene is null || raytracer is null || rasterizer is null || vulkanCompositor is null)
+            scene is null || raytracer is null || vulkanCompositor is null)
             return;
 
         try
@@ -283,7 +271,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
     private Context.CommandBuffer? RenderFrame(VulkanImage target)
     {
-        if (scene is null || context is null || raytracer is null || rasterizer is null || vulkanCompositor is null)
+        if (scene is null || context is null || raytracer is null || vulkanCompositor is null)
             return null;
 
         var now = renderTimer.ElapsedTicks;
@@ -306,15 +294,14 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 
             var cmd = context.CreateCommandBuffer();
             context.BeginCommandBuffer(cmd);
-            var renderPath = ResolveRenderPath(scene.RenderSettings.RenderMode);
-            var selectionRenderPath = ResolveSelectionRenderPath(scene.RenderSettings.RenderMode, renderPath);
-            picker!.RenderPath = selectionRenderPath;
+            var renderPath = (IGpuRenderPath)raytracer;
+            picker!.RenderPath = renderPath;
             renderPath.ShaderPixelSizePercent = (int)pixelSize;
             renderPath.Record(target.Size, presentationBuffer.ColorImage, cmd, rd);
             vulkanCompositor.Record(
                 cmd,
                 renderPath.OutputColor, renderPath.OutputAlbedo, renderPath.OutputNormal,
-                selectionRenderPath.OutputCrypto, selectionRenderPath.OutputPosition, renderPath.OutputAdaptiveState,
+                renderPath.OutputCrypto, renderPath.OutputPosition, renderPath.OutputAdaptiveState,
                 (int)rd.BufferVisualization,
                 rd.RenderSettings.AdaptiveTargetError, rd.RenderSettings.AdaptiveMinSamples,
                 rd.SelectedInstanceId, presentationBuffer.ColorImage,
@@ -405,18 +392,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     }
 
     private void OnSceneEnvironmentChanged(EnvironmentSettings settings) => EnvironmentSettingsChanged?.Invoke(settings);
-
-    private IGpuRenderPath ResolveRenderPath(RenderMode mode) =>
-        mode is RenderMode.Rasterized
-            ? rasterizer ?? throw new InvalidOperationException("Raster renderer is not initialized.")
-            : raytracer ?? throw new InvalidOperationException("Raytracing renderer is not initialized.");
-
-    private IGpuRenderPath ResolveSelectionRenderPath(RenderMode mode, IGpuRenderPath activeRenderPath) =>
-        mode is RenderMode.Rasterized
-            ? rasterizer ?? throw new InvalidOperationException("Raster renderer is not initialized.")
-            : activeRenderPath;
-
-    private static RenderMode ToSupportedRenderMode(RenderMode mode) => mode;
 
     private static async Task DisposeSwapchainAsync(Task prev, VulkanSwapchain s)
     {

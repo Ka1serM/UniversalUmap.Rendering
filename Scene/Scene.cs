@@ -4,7 +4,6 @@ using System.ComponentModel;
 using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
-using System.Threading;
 using Avalonia;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Serilog;
@@ -59,9 +58,6 @@ public sealed class Scene : IDisposable, IScene
     private ulong settingsRevision;
     private int nextHierarchyNodeId;
     private Func<Func<object?>, object?>? gpuDispatcher;
-    private Matrix4x4 prevWorldToClip = Matrix4x4.Identity;
-    private Vector2 prevRasterJitterNdc = Vector2.Zero;
-
     public int SelectedInstanceIndex { get; private set; } = -1;
     public MeshInstance? SelectedInstance =>
         SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
@@ -267,115 +263,6 @@ public sealed class Scene : IDisposable, IScene
             Environment.ToStruct()));
     }
 
-    internal RasterCameraDataGpu CaptureRasterCameraData(Vector2 jitterNdc = default)
-    {
-        return Synchronize(() =>
-        {
-            var currentWTC = Camera.WorldToClip;
-            var result = new RasterCameraDataGpu
-            {
-                Position = Camera.Position,
-                Direction = Camera.ToStruct().Direction,
-                Horizontal = Camera.ToStruct().Horizontal,
-                Vertical = Camera.ToStruct().Vertical,
-                FocalLength = Camera.ToStruct().FocalLength,
-                NearPlane = 0.01f,
-                FarPlane = 10_000f,
-                JitterNdc = jitterNdc,
-                PrevJitterNdc = prevRasterJitterNdc,
-                WorldToClip = currentWTC,
-                PrevWorldToClip = prevWorldToClip
-            };
-            prevWorldToClip = currentWTC;
-            prevRasterJitterNdc = jitterNdc;
-            return result;
-        });
-    }
-
-    internal RasterShadowDataGpu CaptureRasterShadowData()
-    {
-        return Synchronize(() =>
-        {
-            const float atlasSize = 4096f;
-            const int cascadeCount = 4;
-
-            var environment = Environment.ToStruct();
-            var enabled = environment.DirectionalIntensity > 0.0001f &&
-                          environment.DirectionalDirection.LengthSquared() > 0.0001f;
-            var result = new RasterShadowDataGpu
-            {
-                CascadeFarDistances = new Vector4(18f, 55f, 160f, 480f),
-                AtlasSizeCascadeCountEnabled = new Vector4(atlasSize, cascadeCount, enabled ? 1f : 0f, 0f)
-            };
-
-            if (!enabled)
-                return result;
-
-            var cameraData = Camera.ToStruct();
-            var lightDirection = Vector3.Normalize(environment.DirectionalDirection);
-            var cameraForward = Vector3.Normalize(cameraData.Direction);
-            var cameraHorizontalTan = MathF.Max(0.001f, cameraData.Horizontal.Length());
-            var cameraVerticalTan = MathF.Max(0.001f, cameraData.Vertical.Length());
-            var shadowMatrices = new[]
-            {
-                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 18f, cameraHorizontalTan, cameraVerticalTan),
-                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 55f, cameraHorizontalTan, cameraVerticalTan),
-                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 160f, cameraHorizontalTan, cameraVerticalTan),
-                BuildDirectionalShadowWorldToClip(cameraData.Position, cameraForward, lightDirection, 480f, cameraHorizontalTan, cameraVerticalTan)
-            };
-
-            result.WorldToClip0 = shadowMatrices[0];
-            result.WorldToClip1 = shadowMatrices[1];
-            result.WorldToClip2 = shadowMatrices[2];
-            result.WorldToClip3 = shadowMatrices[3];
-            return result;
-        });
-    }
-
-    private static Matrix4x4 BuildDirectionalShadowWorldToClip(
-        Vector3 cameraPosition,
-        Vector3 cameraForward,
-        Vector3 lightDirection,
-        float cascadeFar,
-        float cameraHorizontalTan,
-        float cameraVerticalTan)
-    {
-        var halfDepth = cascadeFar * 0.5f;
-        var center = cameraPosition + cameraForward * halfDepth;
-        var halfExtent = MathF.Max(cascadeFar * cameraHorizontalTan, cascadeFar * cameraVerticalTan);
-        halfExtent = MathF.Max(halfExtent, 4f);
-
-        var lightForward = Vector3.Normalize(-lightDirection);
-        var upCandidate = MathF.Abs(Vector3.Dot(lightForward, Vector3.UnitY)) > 0.95f
-            ? Vector3.UnitZ
-            : Vector3.UnitY;
-        var right = Vector3.Normalize(Vector3.Cross(upCandidate, lightForward));
-        var up = Vector3.Normalize(Vector3.Cross(lightForward, right));
-        var lightDepth = MathF.Max(cascadeFar + halfExtent * 2f, 16f);
-        var lightPosition = center - lightForward * (lightDepth * 0.5f);
-
-        var view = new Matrix4x4(
-            right.X, up.X, lightForward.X, 0f,
-            right.Y, up.Y, lightForward.Y, 0f,
-            right.Z, up.Z, lightForward.Z, 0f,
-            -Vector3.Dot(lightPosition, right),
-            -Vector3.Dot(lightPosition, up),
-            -Vector3.Dot(lightPosition, lightForward),
-            1f);
-
-        var width = halfExtent * 2f;
-        var height = halfExtent * 2f;
-        var nearPlane = 0f;
-        var farPlane = lightDepth;
-        var projection = new Matrix4x4(
-            2f / width, 0f, 0f, 0f,
-            0f, 2f / height, 0f, 0f,
-            0f, 0f, 1f / MathF.Max(0.0001f, farPlane - nearPlane), 0f,
-            0f, 0f, -nearPlane / MathF.Max(0.0001f, farPlane - nearPlane), 1f);
-
-        return Matrix4x4.Transpose(view * projection);
-    }
-
     public TextureAsset Add(TextureAsset texture)
     {
         var added = AddNamedAsset(
@@ -421,6 +308,7 @@ public sealed class Scene : IDisposable, IScene
             if (!ContainsMeshAsset(instance.MeshAsset))
                 throw new InvalidOperationException($"Mesh asset '{instance.MeshAsset.Name}' must be added before creating instances.");
 
+            instance.SetOwner(this);
             meshInstances.Add(instance);
             SetDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
             return instance;
@@ -518,6 +406,25 @@ public sealed class Scene : IDisposable, IScene
     {
         Synchronize(() => deferredUpdateDepth++);
         return new DeferredUpdateScope(this);
+    }
+
+    // DEBUG: Uncomment the call in VulkanViewerControl.Initialize() to populate the scene with test primitives on startup.
+    public void LoadDebugScene()
+    {
+        var redMaterial = new MaterialData { Albedo = new System.Numerics.Vector3(0.9f, 0.15f, 0.1f), Roughness = 0.4f };
+        var blueMaterial = new MaterialData { Albedo = new System.Numerics.Vector3(0.1f, 0.3f, 0.9f), Roughness = 0.15f, Metallic = 1f };
+
+        var cube = MeshAsset.CreateCube(context, "DebugCube", redMaterial);
+        var sphere = MeshAsset.CreateSphere(context, "DebugSphere", 32, 32, blueMaterial);
+        Add(cube);
+        Add(sphere);
+
+        var cubeInstance = new MeshInstance(cube, "DebugCubeInstance", Matrix4x4.CreateTranslation(-0.75f, 0f, 0f));
+        var sphereInstance = new MeshInstance(sphere, "DebugSphereInstance", Matrix4x4.CreateTranslation(0.75f, 0f, 0f));
+        cubeInstance.AddChild(sphereInstance);
+
+        Add(cubeInstance);
+        Add(sphereInstance);
     }
 
     public void TryLoadDefaultEnvironment()
@@ -1242,45 +1149,6 @@ public sealed class Scene : IDisposable, IScene
         }
 
         return StructPacking.ToBytes(addresses);
-    }
-
-    internal byte[] BuildMeshRasterMetadata()
-    {
-        var metadata = Synchronize(() =>
-        {
-            if (meshAssetsByName.Count == 0)
-                return null;
-
-            var instanceCapacities = new uint[meshAssetsByName.Count];
-            for (var i = 0; i < meshInstances.Count; i++)
-            {
-                var meshIndex = meshInstances[i].GetMeshIndex();
-                if (meshIndex < instanceCapacities.Length)
-                    instanceCapacities[meshIndex]++;
-            }
-
-            var result = new MeshRasterMetadataGpu[meshAssetsByName.Count];
-            uint runningOffset = 0;
-            foreach (var meshAsset in meshAssetsByName.Values)
-            {
-                var meshIndex = meshAsset.MeshIndex;
-                var capacity = meshIndex < instanceCapacities.Length ? instanceCapacities[meshIndex] : 0u;
-                result[meshIndex] = new MeshRasterMetadataGpu
-                {
-                    VisibleInstanceOffset = runningOffset,
-                    InstanceCapacity = capacity,
-                    IndexCount = meshAsset.GetBufferAddresses().IndexCount
-                };
-                runningOffset += capacity;
-            }
-
-            return result;
-        });
-
-        if (metadata is null)
-            return StructPacking.ToBytes(new[] { new MeshRasterMetadataGpu() });
-
-        return StructPacking.ToBytes(metadata);
     }
 
     internal byte[] BuildRtxInstanceData()

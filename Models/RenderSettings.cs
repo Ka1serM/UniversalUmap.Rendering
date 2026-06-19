@@ -4,8 +4,8 @@ namespace UniversalUmap.Rendering.Scenes;
 public partial class RenderSettings : ObservableObject
     , IGpuSnapshot<RenderSettingsDataGpu>
 {
-    [ObservableProperty] private RenderMode renderMode = RenderMode.Rasterized;
-    [ObservableProperty] private RenderPixelSize pixelSize = RenderPixelSize.X2;
+    [ObservableProperty] private RenderMode renderMode = RenderMode.AmbientOcclusion;
+    [ObservableProperty] private RenderPixelSize pixelSize = RenderPixelSize.X1;
     [ObservableProperty] private float exposure = 0f;
     [ObservableProperty] private bool transparentBackground = false;
     [ObservableProperty] private BufferVisualizationMode bufferVisualization = BufferVisualizationMode.FinalColor;
@@ -14,7 +14,6 @@ public partial class RenderSettings : ObservableObject
     [ObservableProperty] private int samplesPerPixel = 1;
     [ObservableProperty] private int pathDepth = 8;
     [ObservableProperty] private bool aoSampleAlbedo = false;
-    [ObservableProperty] private bool rasterGpuCullingEnabled = false;
 
     RenderSettingsDataGpu IGpuSnapshot<RenderSettingsDataGpu>.ToStruct() => ToStruct();
 
@@ -36,11 +35,6 @@ public partial class RenderSettings : ObservableObject
             BufferVisualization = (int)BufferVisualization,
             TaaEnabled = TaaEnabled ? 1 : 0,
             AoSampleAlbedo = AoSampleAlbedo ? 1 : 0,
-            RasterRtAmbientOcclusionEnabled = 1,
-            RasterRtShadowsEnabled = 1,
-            RasterGtaoEnabled = 1,
-            RasterScreenSpaceReflectionsEnabled = 1,
-            RasterGpuCullingEnabled = RasterGpuCullingEnabled ? 1 : 0
         };
     }
 }

@@ -281,7 +281,6 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         {
             RenderSettings = renderData.RenderSettings,
             Environment = renderData.Environment,
-            RasterCamera = Scene.CaptureRasterCameraData()
         };
 
         Span<SceneSettingsDataGpu> settingsSpan = stackalloc SceneSettingsDataGpu[1];

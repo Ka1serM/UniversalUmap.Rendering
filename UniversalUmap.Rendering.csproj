@@ -120,8 +120,6 @@
     </PathRtxShader>
 
     <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Compositing/Compositor.slang" />
-    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/CullInstances.slang;$(ProjectDir)Assets/Shaders/Raster/CopyAllInstances.slang;$(ProjectDir)Assets/Shaders/Raster/BuildIndirect.slang;$(ProjectDir)Assets/Shaders/Raster/DeferredLighting.slang;$(ProjectDir)Assets/Shaders/Raster/TemporalResolve.slang;$(ProjectDir)Assets/Shaders/Raster/HdriBackground.slang;$(ProjectDir)Assets/Shaders/Raster/RtAmbientOcclusion.slang;$(ProjectDir)Assets/Shaders/Raster/RtShadowOverlay.slang" />
-    <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Raster/*VS.slang;$(ProjectDir)Assets/Shaders/Raster/*FS.slang" />
     <ShaderVariant Include="$(ProjectDir)Assets/Shaders/Widgets/*VS.slang;$(ProjectDir)Assets/Shaders/Widgets/*FS.slang" />
 
     <EnvironmentPrecompile Include="$(ProjectDir)Assets\Source\kiara_1_dawn_4k.hdr">

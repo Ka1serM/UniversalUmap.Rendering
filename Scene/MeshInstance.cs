@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CUE4Parse.UE4.Objects.Core.Math;
@@ -6,7 +7,7 @@ using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Scenes;
 
-public sealed class MeshInstance
+public sealed class MeshInstance : SceneObject
 {
     private const float UnrealToRendererScale = 0.01f;
     private static readonly Matrix4x4 UnrealToRendererBasis = new()
@@ -31,16 +32,23 @@ public sealed class MeshInstance
 
     private static readonly Matrix4x4 RendererToUnrealBasis = Matrix4x4.Transpose(UnrealToRendererBasis);
 
-    private readonly IScene owner;
-    public string Name { get; }
+    private IScene? owner;
     public MeshAsset MeshAsset { get; }
     public int HierarchyNodeId { get; }
     public Matrix4x4 Transform { get; private set; }
 
+    public MeshInstance(MeshAsset meshAsset, string? name = null, Matrix4x4? transform = null)
+        : base(name ?? (meshAsset ?? throw new ArgumentNullException(nameof(meshAsset))).Name)
+    {
+        MeshAsset = meshAsset;
+        Transform = transform ?? Matrix4x4.Identity;
+        HierarchyNodeId = -1;
+    }
+
     internal MeshInstance(IScene owner, string name, MeshAsset meshAsset, Matrix4x4 transform, int hierarchyNodeId = -1)
+        : base(name)
     {
         this.owner = owner;
-        Name = name;
         MeshAsset = meshAsset;
         Transform = transform;
         HierarchyNodeId = hierarchyNodeId;
@@ -64,6 +72,8 @@ public sealed class MeshInstance
             return false;
         }
     }
+
+    internal void SetOwner(IScene scene) => owner ??= scene;
 
     public static bool TryConvertUnrealTransform(FTransform transform, out Matrix4x4 matrix)
     {
@@ -107,7 +117,7 @@ public sealed class MeshInstance
     public void SetTransform(Matrix4x4 transform)
     {
         Transform = transform;
-        owner.SetTlasDirty();
+        owner?.SetTlasDirty();
     }
 
     internal InstanceGpu BuildInstanceData()
@@ -142,8 +152,7 @@ public sealed class MeshInstance
         {
             Transform = vkTransform,
             AccelerationStructureReference = MeshAsset.GetBlasAddress(),
-            // Use instance array index (set by caller) for unique identification
-            InstanceCustomIndex = 0, // Will be set by Scene.BuildRtxInstanceData
+            InstanceCustomIndex = 0,
             Mask = 0xFF,
             InstanceShaderBindingTableRecordOffset = 0,
             Flags = GeometryInstanceFlagsKHR.TriangleFacingCullDisableBitKhr
@@ -151,8 +160,6 @@ public sealed class MeshInstance
 
         return instance;
     }
-
-    internal uint GetMeshIndex() => MeshAsset.MeshIndex;
 
     private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 

@@ -14,21 +14,6 @@
 #define sceneSettings sceneSettingsBuffer[0]
 [[vk::binding(9, 0)]] Sampler2D textureSamplers[];
 
-// Raster-only bindings beyond 9
-[[vk::binding(10, 0)]] StructuredBuffer<MeshRasterMetadataGpu, Std430DataLayout> rasterMeshes;
-[[vk::binding(11, 0)]] RWStructuredBuffer<uint> visibleInstanceIds;
-[[vk::binding(12, 0)]] RWStructuredBuffer<uint> visibleCounts;
-[[vk::binding(13, 0)]] RWStructuredBuffer<DrawIndirectCommandGpu> indirectCommands;
-[[vk::binding(14, 0)]] [format("r32f")] RWTexture2D<float> rasterShadowDepth; // CSM atlas
-
-// Light probe
-[[vk::binding(16, 0)]] RWStructuredBuffer<float4> lightProbeData;
-
-// TAA resources
-[[vk::binding(19, 0)]] Sampler2D<float2> rasterVelocity;
-[[vk::binding(20, 0)]] Sampler2D<float4> rasterHistory;
-[[vk::binding(21, 0)]] [format("rgba32f")] RWTexture2D<float4> taaOutputColor;
-
 // Pointer wrappers
 struct VertexBuffer { Vertex data[]; };
 struct IndexBuffer { uint data[]; };

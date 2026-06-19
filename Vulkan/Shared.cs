@@ -112,28 +112,6 @@ internal struct MeshAddressesGpu
     public ulong MaterialAddress;
     public ulong BvhNodeAddress;
     public ulong BvhIndexAddress;
-    public Vector3 LocalBoundsMin;
-    public uint IndexCount;
-    public Vector3 LocalBoundsMax;
-    public uint Pad0;  // Struct padding to 16 bytes
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct MeshRasterMetadataGpu
-{
-    public uint VisibleInstanceOffset;
-    public uint InstanceCapacity;
-    public uint IndexCount;
-    public uint Pad0;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct DrawIndirectCommandGpu
-{
-    public uint VertexCount;
-    public uint InstanceCount;
-    public uint FirstVertex;
-    public uint FirstInstance;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -203,14 +181,14 @@ internal struct RenderSettingsDataGpu
     public int BufferVisualization;
     public int TaaEnabled;
     public int AoSampleAlbedo;
-    public int RasterRtAmbientOcclusionEnabled;
-    public int RasterRtShadowsEnabled;
-    public int RasterGtaoEnabled;
-    public int RasterScreenSpaceReflectionsEnabled;
-    public int RasterGpuCullingEnabled;
     public int Pad0;
     public int Pad1;
     public int Pad2;
+    public int Pad3;
+    public int Pad4;
+    public int Pad5;
+    public int Pad6;
+    public int Pad7;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -259,66 +237,10 @@ internal struct CameraDataGpu
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct RasterCameraDataGpu
-{
-    public Vector3 Position;
-    public float Pad0;
-    public Vector3 Direction;
-    public float Pad1;
-    public Vector3 Horizontal;
-    public float Pad2;
-    public Vector3 Vertical;
-    public float Pad3;
-    public float FocalLength;
-    public float NearPlane;
-    public float FarPlane;
-    public float Pad4;
-    public Vector2 JitterNdc;
-    public Vector2 PrevJitterNdc;
-    public Matrix4x4 WorldToClip;
-    public Matrix4x4 PrevWorldToClip;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct RasterShadowDataGpu
-{
-    public Matrix4x4 WorldToClip0;
-    public Matrix4x4 WorldToClip1;
-    public Matrix4x4 WorldToClip2;
-    public Matrix4x4 WorldToClip3;
-    public Vector4 CascadeFarDistances;
-    public Vector4 AtlasSizeCascadeCountEnabled;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct LightProbeGpu
-{
-    public Vector3 Position;
-    public int Pad0;
-    // 8 float4 slots for SH data (9 coeffs × 3 channels packed)
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct LightProbeGridDataGpu
-{
-    public Vector3 GridMin;
-    public int Pad0;
-    public Vector3 GridMax;
-    public int Pad1;
-    public int GridDimX;
-    public int GridDimY;
-    public int GridDimZ;
-    public int Pad2;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct SceneSettingsDataGpu
 {
     public RenderSettingsDataGpu RenderSettings;
     public EnvironmentDataGpu Environment;
-    public RasterCameraDataGpu RasterCamera;
-    public RasterShadowDataGpu RasterShadow;
-    public LightProbeGridDataGpu LightProbeGrid;
 }
 
 internal static class StructPacking

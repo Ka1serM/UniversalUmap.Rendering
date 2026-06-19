@@ -7,7 +7,6 @@ public sealed class RenderSettingsPanelViewModel : ScenePanelViewModel<RenderSet
     public IReadOnlyList<RenderMode> RenderModes { get; } =
     [
         RenderMode.AmbientOcclusion,
-        RenderMode.Rasterized,
         RenderMode.PathTracing
     ];
     public IReadOnlyList<RenderPixelSize> PixelSizes { get; } = Enum.GetValues<RenderPixelSize>();

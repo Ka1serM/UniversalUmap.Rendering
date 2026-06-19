@@ -36,18 +36,12 @@ public partial class RenderModeSwitcher : UserControl
     private void UpdateSelectionClasses()
     {
         AoButton.Classes.Set("selected", SelectedMode == RenderMode.AmbientOcclusion);
-        RasterButton.Classes.Set("selected", SelectedMode == RenderMode.Rasterized);
         PathTracingButton.Classes.Set("selected", SelectedMode == RenderMode.PathTracing);
     }
 
     private void AoButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         SelectedMode = RenderMode.AmbientOcclusion;
-    }
-
-    private void RasterButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        SelectedMode = RenderMode.Rasterized;
     }
 
     private void PathTracingButton_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

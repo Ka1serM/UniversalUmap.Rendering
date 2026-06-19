@@ -42,9 +42,6 @@ public sealed class MeshAsset : IDisposable
     private readonly Accel? blasRtx;
     private readonly VulkanBuffer? bvhNodesBuffer;
     private readonly VulkanBuffer? bvhIndicesBuffer;
-    private readonly Vector3 localBoundsMin;
-    private readonly Vector3 localBoundsMax;
-    private readonly uint indexCount;
 
     public string Name { get; }
     public uint MeshIndex { get; internal set; } = uint.MaxValue;
@@ -53,8 +50,6 @@ public sealed class MeshAsset : IDisposable
     internal VulkanBuffer IndexBuffer { get; }
     internal VulkanBuffer FaceBuffer { get; }
     internal VulkanBuffer MaterialBuffer { get; }
-
-    public bool Dirty { get; private set; }
 
     public MeshAsset(
         Context context,
@@ -107,8 +102,6 @@ public sealed class MeshAsset : IDisposable
         IndexBuffer = indexBuffer;
         FaceBuffer = faceBuffer;
         MaterialBuffer = materialBuffer;
-        indexCount = (uint)indexArray.Length;
-        ComputeLocalBounds(vertexArray, out localBoundsMin, out localBoundsMax);
 
         // Compute traversal path uses a CPU-built BVH with GPU addresses.
         BvhBuilder.Build(vertexArray, indexArray, out var bvhNodes, out var bvhIndices);
@@ -130,7 +123,6 @@ public sealed class MeshAsset : IDisposable
 
         context.SubmitAndWait(uploadCommandBuffer);
 
-        // RTX path uses per-mesh BLAS.
         if (context.RayTracingSupported &&
             context.Api.TryGetDeviceExtension<KhrAccelerationStructure>(context.Instance, context.Device, out var accelExt))
         {
@@ -150,7 +142,6 @@ public sealed class MeshAsset : IDisposable
             blasRtx = accel;
         }
 
-        Dirty = true;
     }
 
     public static MeshAsset Create(
@@ -227,7 +218,7 @@ public sealed class MeshAsset : IDisposable
         }
     }
 
-    public static MeshAsset CreateCube(Context context, string name)
+    public static MeshAsset CreateCube(Context context, string name, MaterialData material)
     {
         var h = 0.5f;
         var vertices = new List<Vertex>();
@@ -303,14 +294,15 @@ public sealed class MeshAsset : IDisposable
             vertexStart += 4;
         }
 
-        return new MeshAsset(context, name, vertices, indices, faces, [new MaterialData()]);
+        return new MeshAsset(context, name, vertices, indices, faces, [material]);
     }
 
     public static MeshAsset CreateSphere(
         Context context,
         string name,
         uint latitudeSegments,
-        uint longitudeSegments)
+        uint longitudeSegments,
+        MaterialData? material = null)
     {
         if (latitudeSegments < 2 || longitudeSegments < 3)
             throw new ArgumentException("Sphere segments too low. Use at least 2 latitude and 3 longitude segments.");
@@ -376,14 +368,14 @@ public sealed class MeshAsset : IDisposable
             }
         }
 
-        return new MeshAsset(context, name, vertices, indices, faces, [new MaterialData()]);
+        return new MeshAsset(context, name, vertices, indices, faces, [material ?? new MaterialData()]);
     }
 
-    public static bool TryCreateCube(Context context, string name, out MeshAsset? mesh)
+    public static bool TryCreateCube(Context context, string name, out MeshAsset? mesh, MaterialData material)
     {
         try
         {
-            mesh = CreateCube(context, name);
+            mesh = CreateCube(context, name, material);
             return true;
         }
         catch
@@ -398,11 +390,12 @@ public sealed class MeshAsset : IDisposable
         string name,
         uint latitudeSegments,
         uint longitudeSegments,
-        out MeshAsset? mesh)
+        out MeshAsset? mesh,
+        MaterialData? material = null)
     {
         try
         {
-            mesh = CreateSphere(context, name, latitudeSegments, longitudeSegments);
+            mesh = CreateSphere(context, name, latitudeSegments, longitudeSegments, material);
             return true;
         }
         catch
@@ -422,9 +415,6 @@ public sealed class MeshAsset : IDisposable
             MaterialAddress = MaterialBuffer.DeviceAddress,
             BvhNodeAddress = bvhNodesBuffer?.DeviceAddress ?? 0,
             BvhIndexAddress = bvhIndicesBuffer?.DeviceAddress ?? 0,
-            LocalBoundsMin = localBoundsMin,
-            IndexCount = indexCount,
-            LocalBoundsMax = localBoundsMax
         };
     }
 
@@ -432,9 +422,6 @@ public sealed class MeshAsset : IDisposable
     {
         return blasRtx?.GetDeviceAddress() ?? 0;
     }
-
-    internal void ClearDirty() => Dirty = false;
-    internal void MarkDirty() => Dirty = true;
 
     public void Dispose()
     {
@@ -451,24 +438,6 @@ public sealed class MeshAsset : IDisposable
     {
         var remapped = Vector3.TransformNormal(unrealPosition, UnrealToRendererBasis);
         return remapped * UnrealToRendererScale;
-    }
-
-    private static void ComputeLocalBounds(IReadOnlyList<Vertex> vertices, out Vector3 min, out Vector3 max)
-    {
-        if (vertices.Count == 0)
-        {
-            min = Vector3.Zero;
-            max = Vector3.Zero;
-            return;
-        }
-
-        min = vertices[0].Position;
-        max = vertices[0].Position;
-        for (var i = 1; i < vertices.Count; i++)
-        {
-            min = Vector3.Min(min, vertices[i].Position);
-            max = Vector3.Max(max, vertices[i].Position);
-        }
     }
 
     private static Vector3 ConvertUnrealDirection(Vector3 unrealDirection)

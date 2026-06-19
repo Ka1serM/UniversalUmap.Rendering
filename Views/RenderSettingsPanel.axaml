@@ -73,9 +73,6 @@
 
             <CheckBox Content="Transparent Background" VerticalAlignment="Center"
                       IsChecked="{Binding Model.TransparentBackground, Mode=TwoWay}" />
-
-            <CheckBox Content="GPU Culling" VerticalAlignment="Center"
-                      IsChecked="{Binding Model.RasterGpuCullingEnabled, Mode=TwoWay}" />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

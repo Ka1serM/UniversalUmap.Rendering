@@ -65,26 +65,6 @@ struct MeshAddressesGpu
     uint64_t MaterialAddress;
     uint64_t BvhNodeAddress;
     uint64_t BvhIndexAddress;
-    float3 LocalBoundsMin;
-    uint IndexCount;
-    float3 LocalBoundsMax;
-    uint Pad0;
-};
-
-struct MeshRasterMetadataGpu
-{
-    uint VisibleInstanceOffset;
-    uint InstanceCapacity;
-    uint IndexCount;
-    uint Pad0;
-};
-
-struct DrawIndirectCommandGpu
-{
-    uint VertexCount;
-    uint InstanceCount;
-    uint FirstVertex;
-    uint FirstInstance;
 };
 
 struct DispatchIndirectCommandGpu
@@ -148,14 +128,14 @@ struct RenderSettingsDataGpu
     int BufferVisualization;
     int TaaEnabled;
     int AoSampleAlbedo;
-    int RasterRtAmbientOcclusionEnabled;
-    int RasterRtShadowsEnabled;
-    int RasterGtaoEnabled;
-    int RasterScreenSpaceReflectionsEnabled;
-    int RasterGpuCullingEnabled;
     int Pad0;
     int Pad1;
     int Pad2;
+    int Pad3;
+    int Pad4;
+    int Pad5;
+    int Pad6;
+    int Pad7;
 };
 
 struct EnvironmentDataGpu
@@ -198,61 +178,10 @@ struct CameraDataGpu
     float BokehBias;
 };
 
-struct RasterCameraDataGpu
-{
-    float3 Position;
-    float Pad0;
-    float3 Direction;
-    float Pad1;
-    float3 Horizontal;
-    float Pad2;
-    float3 Vertical;
-    float Pad3;
-    float FocalLength;
-    float NearPlane;
-    float FarPlane;
-    float Pad4;
-    float2 JitterNdc;
-    float2 PrevJitterNdc;
-    float4x4 WorldToClip;
-    float4x4 PrevWorldToClip;
-};
-
-struct RasterShadowDataGpu
-{
-    float4x4 WorldToClip0;
-    float4x4 WorldToClip1;
-    float4x4 WorldToClip2;
-    float4x4 WorldToClip3;
-    float4 CascadeFarDistances;
-    float4 AtlasSizeCascadeCountEnabled;
-};
-
-struct LightProbeGpu
-{
-    float3 Position;
-    int Pad0;
-};
-
-struct LightProbeGridDataGpu
-{
-    float3 GridMin;
-    int Pad0;
-    float3 GridMax;
-    int Pad1;
-    int GridDimX;
-    int GridDimY;
-    int GridDimZ;
-    int Pad2;
-};
-
 struct SceneSettingsDataGpu
 {
     RenderSettingsDataGpu RenderSettings;
     EnvironmentDataGpu Environment;
-    RasterCameraDataGpu RasterCamera;
-    RasterShadowDataGpu RasterShadow;
-    LightProbeGridDataGpu LightProbeGrid;
 };
 
 
