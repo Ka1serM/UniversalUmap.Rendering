@@ -1,6 +1,4 @@
 
-/obj
-/bin
 /.idea
 *.spv
 
@@ -8,5 +6,5 @@
 *.hdr binary
 *.png binary
 /Assets/Precomputed
-/Tools/EnvMapPrecompute/obj
-/Tools/SlangGenerator/bin
+**/bin/**
+**/obj/**
