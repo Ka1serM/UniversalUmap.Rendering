@@ -1,8 +1,5 @@
 namespace UniversalUmap.Rendering.Models;
 
-/// <summary>
-/// Defines a rule for automatically matching textures to material slots.
-/// </summary>
 public sealed class AutoTextureItem
 {
     public string Parameter { get; set; }

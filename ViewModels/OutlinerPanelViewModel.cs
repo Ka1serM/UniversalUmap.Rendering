@@ -1,4 +1,6 @@
 using System.Collections.Specialized;
+using System.Linq;
+using System.Threading;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using UniversalUmap.Rendering.Scenes;
@@ -14,6 +16,7 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
     private Scene? scene;
     private bool syncingSelectionFromScene;
     private SceneHierarchyNode? selectedItemRef;
+    private int refreshQueued;
 
     public OutlinerPanelViewModel()
     {
@@ -27,12 +30,18 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
             return;
 
         if (this.scene is not null)
-            this.scene.SelectedInstanceChanged -= OnSceneSelectedInstanceChanged;
+        {
+            this.scene.SelectedHierarchyNodeChanged -= OnSceneSelectedHierarchyNodeChanged;
+            this.scene.HierarchyChanged -= OnSceneHierarchyChanged;
+        }
 
         this.scene = scene;
 
         if (this.scene is not null)
-            this.scene.SelectedInstanceChanged += OnSceneSelectedInstanceChanged;
+        {
+            this.scene.SelectedHierarchyNodeChanged += OnSceneSelectedHierarchyNodeChanged;
+            this.scene.HierarchyChanged += OnSceneHierarchyChanged;
+        }
 
         Refresh();
     }
@@ -40,16 +49,19 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
     public void Refresh()
     {
         if (scene is null)
+        {
+            Clear();
             return;
+        }
 
         var roots = scene.GetHierarchyRootsSnapshot();
-        Dispatcher.UIThread.Post(() =>
+        if (Dispatcher.UIThread.CheckAccess())
         {
-            Items.Clear();
-            foreach (var root in roots)
-                Items.Add(root);
-            SyncSelectionFromScene();
-        }, DispatcherPriority.Background);
+            RefreshOnUiThread(roots);
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() => RefreshOnUiThread(roots), DispatcherPriority.Background);
     }
 
     public void Clear()
@@ -78,16 +90,42 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         if (syncingSelectionFromScene || scene is null)
             return;
 
-        var instanceIndex = value?.FirstInstanceIndexOrDefault() ?? -1;
-        if (instanceIndex >= 0)
-            scene.SelectInstance(instanceIndex);
-        else
+        if (value is null)
             scene.ClearSelection();
+        else
+            scene.SelectHierarchyNode(new SceneHierarchyHandle(value.Id));
     }
 
-    private void OnSceneSelectedInstanceChanged(int selectedInstanceIndex)
+    private void OnSceneSelectedHierarchyNodeChanged(int selectedHierarchyNodeId)
     {
         Dispatcher.UIThread.Post(SyncSelectionFromScene, DispatcherPriority.Background);
+    }
+
+    private void OnSceneHierarchyChanged()
+    {
+        if (Interlocked.Exchange(ref refreshQueued, 1) == 1)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref refreshQueued, 0);
+            if (scene is null)
+            {
+                Clear();
+                return;
+            }
+
+            RefreshOnUiThread(scene.GetHierarchyRootsSnapshot());
+        }, DispatcherPriority.Background);
+    }
+
+    private void RefreshOnUiThread(IReadOnlyList<SceneHierarchyNode> roots)
+    {
+        if (!Items.SequenceEqual(roots))
+            Items.ReplaceAllSuppressed(roots.ToArray());
+
+        SyncSelectionFromScene();
+        UpdateIsSceneEmpty();
     }
 
     private void SyncSelectionFromScene()
@@ -98,9 +136,9 @@ public sealed partial class OutlinerPanelViewModel : ViewModelBase
         syncingSelectionFromScene = true;
         try
         {
-            var selectedInstanceIndex = scene.SelectedInstanceIndex;
+            var selectedHierarchyNodeId = scene.SelectedHierarchyNodeId;
 
-            if (selectedInstanceIndex < 0 || !scene.TryGetHierarchyNodeForInstance(selectedInstanceIndex, out var node))
+            if (selectedHierarchyNodeId < 0 || !scene.TryGetHierarchyNode(new SceneHierarchyHandle(selectedHierarchyNodeId), out var node))
                 SelectedItem = null;
             else if (!ReferenceEquals(SelectedItem, node))
                 SelectedItem = node;

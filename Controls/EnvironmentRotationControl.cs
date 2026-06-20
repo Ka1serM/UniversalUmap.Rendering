@@ -26,7 +26,7 @@ public sealed class EnvironmentRotationControl : VulkanShaderControl
     [StructLayout(LayoutKind.Sequential)]
     private struct PushConstants
     {
-        public Vector4 Params0; // x = rotationDeg
+        public Vector4 Params0;
     }
 
     private VulkanRasterShaderProgram? shaderProgram;

@@ -183,7 +183,7 @@
   <Target Name="GeneratePrecompiledEnvironmentMaps"
           BeforeTargets="PrepareResources"
           Inputs="@(EnvironmentPrecompile);$(ProjectDir)Tools\EnvMapPrecompute\Program.cs;$(ProjectDir)Tools\EnvMapPrecompute\EnvMapPrecompute.csproj"
-          Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_irradiance.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_radiance.bin.br');@(EnvironmentPrecompile -> '$(ProjectDir)Assets\Precomputed\$(DefaultEnvironmentMapName)_$(DefaultEnvironmentMaxTextureResolution)_%(Filename).stamp')">
+          Outputs="@(EnvironmentPrecompile -> '%(OutputPrefix)_env.bin.br');@(EnvironmentPrecompile -> '%(OutputPrefix)_cdf.bin.br');@(EnvironmentPrecompile -> '$(ProjectDir)Assets\Precomputed\$(DefaultEnvironmentMapName)_$(DefaultEnvironmentMaxTextureResolution)_%(Filename).stamp')">
 
     <MakeDir Directories="@(EnvironmentPrecompile -> '$([System.IO.Path]::GetDirectoryName(&quot;%(OutputPrefix)&quot;))')" />
 

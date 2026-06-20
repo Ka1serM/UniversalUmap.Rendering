@@ -38,6 +38,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         referenceColor = loadTemporalReferenceColor(blockStart, exposureScale);
 
     float3 accumulatedColor = float3(0.0);
+    // The first accumulated sample is deterministic: no subpixel jitter and no lens offset.
+    // Keep ID/position outputs tied to that sample so later AA/DOF samples only converge color.
     PathState stableState = pathStates[baseSlot];
     AdaptiveSamplingFrameContext adaptiveFrameContext = loadAdaptiveSamplingFrameContext();
     AdaptiveSamplingFrameState adaptiveFrameState = createAdaptiveSamplingFrameState();
@@ -73,15 +75,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 finalColorData,
                 finalAdaptiveData);
 
-            outputCrypto[outputPixel] = stableState.PrimaryObjectIndex;
-            outputPosition[outputPixel] = stableState.PrimaryObjectIndex != InvalidInstance
-                ? float4(stableState.PrimaryPosition, 1.0)
-                : float4(0.0);
+            if (pushConstants.Frame == 0) {
+                outputCrypto[outputPixel] = stableState.PrimaryObjectIndex;
+                outputPosition[outputPixel] = stableState.PrimaryObjectIndex != InvalidInstance
+                    ? float4(stableState.PrimaryPosition, 1.0)
+                    : float4(0.0);
+                outputAlbedo[outputPixel] = float4(stableState.PrimaryAlbedo, 1.0);
+                outputNormal[outputPixel] = float4(stableState.PrimaryNormal, 0.0);
+            }
 
             outputColor[outputPixel] = finalColorData;
             outputAdaptiveState[outputPixel] = finalAdaptiveData;
-            outputAlbedo[outputPixel] = float4(stableState.PrimaryAlbedo, 1.0);
-            outputNormal[outputPixel] = float4(stableState.PrimaryNormal, 0.0);
         }
     }
 }

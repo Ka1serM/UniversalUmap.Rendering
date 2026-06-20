@@ -219,7 +219,6 @@ public sealed class Context : IDisposable
         if (interop is null)
             return null;
 
-        // Determine interop mode following GpuInterop sample pattern
         bool useD3D11Interop = false;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -626,7 +625,6 @@ public sealed class Context : IDisposable
             if (candidates.Count == 0)
                 throw new InvalidOperationException("No compatible Vulkan device/queue found");
 
-            // Never pick software/CPU devices when at least one hardware GPU is available.
             var hasHardwareGpu = candidates.Any(c =>
                 c.DeviceType is PhysicalDeviceType.DiscreteGpu or
                     PhysicalDeviceType.IntegratedGpu or
@@ -725,11 +723,10 @@ public sealed class Context : IDisposable
                     api.CreateDevice(candidate.PhysicalDevice, in deviceInfo, default, out createdDevice).ThrowOnError();
                     api.GetDeviceQueue(createdDevice, candidate.QueueFamilyIndex, 0, out var queue);
 
-                    // Create a global descriptor pool large enough for all raytracing and compositing needs
                     var poolSizes = stackalloc DescriptorPoolSize[5];
                     poolSizes[0] = new DescriptorPoolSize(DescriptorType.StorageBuffer, 40);
                     poolSizes[1] = new DescriptorPoolSize(DescriptorType.StorageImage, 30);
-                    poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 20_000); // 2 * MaxTextures
+                    poolSizes[2] = new DescriptorPoolSize(DescriptorType.CombinedImageSampler, 20_000);
                     poolSizes[3] = new DescriptorPoolSize(DescriptorType.AccelerationStructureKhr, 2);
                     poolSizes[4] = new DescriptorPoolSize(DescriptorType.Sampler, 10);
                     var descriptorPoolInfo = new DescriptorPoolCreateInfo
@@ -742,7 +739,7 @@ public sealed class Context : IDisposable
                     };
                     var createdDescriptorPool = default(DescriptorPool);
                     api.CreateDescriptorPool(createdDevice, in descriptorPoolInfo, default, out createdDescriptorPool).ThrowOnError();
-                    
+
                     success = true;
 
                     Api = api;

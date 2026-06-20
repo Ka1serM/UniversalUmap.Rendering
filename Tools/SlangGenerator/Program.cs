@@ -224,7 +224,7 @@ internal static class SlangGenerator
                     return Map(nullable.ElementType);
 
                 case ArrayTypeSyntax:
-                    return null; // raw C# arrays do not map cleanly to a plain Slang field
+                    return null;
 
                 case PointerTypeSyntax:
                     return null;
@@ -239,8 +239,6 @@ internal static class SlangGenerator
             if (TypeMap.TryGetValue(name, out var mapped))
                 return mapped;
 
-            // Pass through user-defined struct names unchanged.
-            // This lets one C# struct reference another C# struct.
             if (LooksLikeUserDefinedType(name))
                 return ExtractSimpleName(name);
 
@@ -249,7 +247,6 @@ internal static class SlangGenerator
 
         private static string? MapGeneric(GenericNameSyntax generic)
         {
-            // Extend here if you have custom generic wrappers that map to GPU types.
             return null;
         }
 

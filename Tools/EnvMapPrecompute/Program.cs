@@ -3,8 +3,8 @@ using System.IO.Compression;
 using System.Numerics;
 using StbImageSharp;
 
-const int PackedEnvironmentMagic = 0x504D4555; // UEMP
-const int PackedEnvironmentMipChainMagic = 0x324D4555; // UEM2
+const int PackedEnvironmentMagic = 0x504D4555;
+const int PackedEnvironmentMipChainMagic = 0x324D4555;
 const float MaxHalfFloat = 65504f;
 
 if (args.Length is < 2 or > 3)
@@ -33,14 +33,11 @@ Directory.CreateDirectory(Path.GetDirectoryName(outputPrefix)!);
 using var stream = File.OpenRead(hdrPath);
 var decoded = ImageResultFloat.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
 var downsampled = DownsampleToMaxResolution(decoded.Data, decoded.Width, decoded.Height, maxTextureResolution);
-var derived = EnvironmentPrecompute.BuildDerivedMaps(downsampled.Rgba32f, downsampled.Width, downsampled.Height);
+var cdfMap = EnvironmentPrecompute.BuildCdfMap(downsampled.Rgba32f, downsampled.Width, downsampled.Height);
 var environmentMipChain = CreateBlurredMipChain(downsampled.Rgba32f, downsampled.Width, downsampled.Height);
-var radianceMipChain = CreateBlurredMipChain(derived.Radiance.Rgba32f, derived.Radiance.Width, derived.Radiance.Height);
 
 WritePackedCompressedMipChain($"{outputPrefix}_env.bin.br", environmentMipChain, PackedTextureFormat.Rgb16Float);
-WritePackedCompressed($"{outputPrefix}_cdf.bin.br", derived.Cdf.Rgba32f, derived.Cdf.Width, derived.Cdf.Height, PackedTextureFormat.Rgba16Float);
-WritePackedCompressed($"{outputPrefix}_irradiance.bin.br", derived.Irradiance.Rgba32f, derived.Irradiance.Width, derived.Irradiance.Height, PackedTextureFormat.Rgb16Float);
-WritePackedCompressedMipChain($"{outputPrefix}_radiance.bin.br", radianceMipChain, PackedTextureFormat.Rgb16Float);
+WritePackedCompressed($"{outputPrefix}_cdf.bin.br", cdfMap.Rgba32f, cdfMap.Width, cdfMap.Height, PackedTextureFormat.Rgba16Float);
 
 Console.WriteLine($"Generated compressed environment maps for {Path.GetFileName(hdrPath)} at {downsampled.Width}x{downsampled.Height}.");
 return 0;
@@ -279,13 +276,10 @@ internal enum PackedTextureFormat
 internal static class EnvironmentPrecompute
 {
     private const float LuminanceEpsilon = 1e-8f;
-    public const int IrradianceMapSize = 32;
-    public const int RadianceMapSize = 256;
 
     public readonly record struct MapData(float[] Rgba32f, int Width, int Height);
-    public readonly record struct DerivedMaps(MapData Cdf, MapData Irradiance, MapData Radiance);
 
-    public static DerivedMaps BuildDerivedMaps(float[] rgba32f, int width, int height)
+    public static MapData BuildCdfMap(float[] rgba32f, int width, int height)
     {
         if (rgba32f is null)
             throw new ArgumentNullException(nameof(rgba32f));
@@ -294,10 +288,7 @@ internal static class EnvironmentPrecompute
         if (rgba32f.Length != width * height * 4)
             throw new ArgumentException("RGBA32F payload size does not match width*height*4.", nameof(rgba32f));
 
-        return new DerivedMaps(
-            new MapData(BuildEnvironmentCdfTexture(rgba32f, width, height), width, height),
-            new MapData(CreateIrradianceMap(rgba32f, width, height), IrradianceMapSize, IrradianceMapSize),
-            new MapData(CreateRadianceMap(rgba32f, width, height), RadianceMapSize, RadianceMapSize));
+        return new MapData(BuildEnvironmentCdfTexture(rgba32f, width, height), width, height);
     }
 
     private static float[] BuildEnvironmentCdfTexture(float[] rgba32f, int width, int height)
@@ -380,99 +371,5 @@ internal static class EnvironmentPrecompute
         }
 
         return outPixels;
-    }
-
-    private static float[] CreateIrradianceMap(float[] rgba32f, int srcWidth, int srcHeight)
-    {
-        const int dstSize = IrradianceMapSize;
-        const int sampleCount = 128;
-        var irradiancePixels = new float[dstSize * dstSize * 4];
-
-        Parallel.For(0, dstSize, y =>
-        {
-            for (var x = 0; x < dstSize; x++)
-            {
-                var u = (x + 0.5f) / dstSize;
-                var v = (y + 0.5f) / dstSize;
-                var phi = (u - 0.5f) * (2.0f * MathF.PI);
-                var theta = (1.0f - v) * MathF.PI;
-
-                var sinTheta = MathF.Sin(theta);
-                var normal = new Vector3(
-                    MathF.Cos(phi) * sinTheta,
-                    MathF.Cos(theta),
-                    MathF.Sin(phi) * sinTheta);
-
-                var irradiance = Vector3.Zero;
-                for (var i = 0; i < sampleCount; i++)
-                {
-                    var u1 = (i + 0.5f) / sampleCount;
-                    var u2 = (i * 0.618033988749895f) % 1f;
-
-                    var r = MathF.Sqrt(u1);
-                    var thetaSample = 2.0f * MathF.PI * u2;
-                    var xSample = r * MathF.Cos(thetaSample);
-                    var ySample = r * MathF.Sin(thetaSample);
-                    var zSample = MathF.Sqrt(MathF.Max(0f, 1f - u1));
-
-                    Vector3 tangent;
-                    if (MathF.Abs(normal.Y) < 0.99f)
-                        tangent = Vector3.Normalize(Vector3.Cross(new Vector3(0, 1, 0), normal));
-                    else
-                        tangent = Vector3.Normalize(Vector3.Cross(new Vector3(1, 0, 0), normal));
-
-                    var bitangent = Vector3.Cross(normal, tangent);
-                    var sampleDir = Vector3.Normalize(tangent * xSample + bitangent * ySample + normal * zSample);
-
-                    var clampedY = MathF.Max(-1f, MathF.Min(1f, sampleDir.Y));
-                    var sampleU = MathF.Atan2(sampleDir.Z, sampleDir.X) / (2.0f * MathF.PI) + 0.5f;
-                    var sampleV = 1.0f - MathF.Acos(clampedY) / MathF.PI;
-
-                    var srcX = Math.Clamp((int)(sampleU * srcWidth), 0, srcWidth - 1);
-                    var srcY = Math.Clamp((int)(sampleV * srcHeight), 0, srcHeight - 1);
-                    var srcIdx = (srcY * srcWidth + srcX) * 4;
-
-                    var radiance = new Vector3(rgba32f[srcIdx], rgba32f[srcIdx + 1], rgba32f[srcIdx + 2]);
-                    irradiance += radiance;
-                }
-
-                irradiance *= MathF.PI / sampleCount;
-
-                var dstIdx = (y * dstSize + x) * 4;
-                irradiancePixels[dstIdx + 0] = irradiance.X;
-                irradiancePixels[dstIdx + 1] = irradiance.Y;
-                irradiancePixels[dstIdx + 2] = irradiance.Z;
-                irradiancePixels[dstIdx + 3] = 1f;
-            }
-        });
-
-        return irradiancePixels;
-    }
-
-    private static float[] CreateRadianceMap(float[] rgba32f, int srcWidth, int srcHeight)
-    {
-        const int dstSize = RadianceMapSize;
-        var radiancePixels = new float[dstSize * dstSize * 4];
-
-        var scaleX = srcWidth / (float)dstSize;
-        var scaleY = srcHeight / (float)dstSize;
-
-        for (var y = 0; y < dstSize; y++)
-        {
-            for (var x = 0; x < dstSize; x++)
-            {
-                var srcX = (int)MathF.Min(x * scaleX, srcWidth - 1);
-                var srcY = (int)MathF.Min(y * scaleY, srcHeight - 1);
-                var srcIdx = (srcY * srcWidth + srcX) * 4;
-                var dstIdx = (y * dstSize + x) * 4;
-
-                radiancePixels[dstIdx + 0] = rgba32f[srcIdx + 0];
-                radiancePixels[dstIdx + 1] = rgba32f[srcIdx + 1];
-                radiancePixels[dstIdx + 2] = rgba32f[srcIdx + 2];
-                radiancePixels[dstIdx + 3] = 1f;
-            }
-        }
-
-        return radiancePixels;
     }
 }

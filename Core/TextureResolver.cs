@@ -11,20 +11,8 @@ using UniversalUmap.Rendering.Models;
 
 namespace UniversalUmap.Rendering;
 
-/// <summary>
-/// Resolves texture paths from materials using AutoTexture rules.
-/// </summary>
 public static class TextureResolver
 {
-    /// <summary>
-    /// Resolves a texture path for a given material slot using AutoTexture rules.
-    /// </summary>
-    /// <param name="material">The material to resolve textures from.</param>
-    /// <param name="autoTextureParameter">The parameter name (e.g., "Color", "Normal").</param>
-    /// <param name="autoTextureEnabled">Whether AutoTexture matching is enabled.</param>
-    /// <param name="autoTextureItems">The AutoTexture rules to apply.</param>
-    /// <param name="fallbackKeys">Fallback texture keys to try if AutoTexture doesn't match.</param>
-    /// <returns>The resolved texture path, or null if not found.</returns>
     public static string? ResolveTexturePath(
         UObject material,
         string autoTextureParameter,
@@ -47,14 +35,6 @@ public static class TextureResolver
         return FindTexturePath(material, fallbackKeys);
     }
 
-    /// <summary>
-    /// Builds a complete material data structure by resolving all texture slots.
-    /// </summary>
-    /// <param name="material">The material to process.</param>
-    /// <param name="autoTextureEnabled">Whether AutoTexture matching is enabled.</param>
-    /// <param name="autoTextureItems">The AutoTexture rules to apply.</param>
-    /// <param name="textureLoader">Function to load a texture path and return its index (-1 if failed).</param>
-    /// <returns>The populated MaterialData structure.</returns>
     public static MaterialData BuildMaterialData(
         UObject material,
         bool autoTextureEnabled,
@@ -82,14 +62,6 @@ public static class TextureResolver
         return data;
     }
 
-    /// <summary>
-    /// Builds material data for a UStaticMesh using AutoTexture rules.
-    /// </summary>
-    /// <param name="staticMesh">The static mesh containing material references.</param>
-    /// <param name="autoTextureEnabled">Whether AutoTexture matching is enabled.</param>
-    /// <param name="autoTextureItems">The AutoTexture rules to apply.</param>
-    /// <param name="textureLoader">Function to load a texture path and return its index (-1 if failed).</param>
-    /// <returns>Array of MaterialData, one per material slot.</returns>
     public static MaterialData[] BuildMaterialDataForStaticMesh(
         CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh staticMesh,
         bool autoTextureEnabled,
@@ -117,14 +89,6 @@ public static class TextureResolver
         return materials;
     }
 
-    /// <summary>
-    /// Builds material data for a landscape using AutoTexture rules.
-    /// </summary>
-    /// <param name="landscapeMaterial">The landscape material interface.</param>
-    /// <param name="autoTextureEnabled">Whether AutoTexture matching is enabled.</param>
-    /// <param name="autoTextureItems">The AutoTexture rules to apply.</param>
-    /// <param name="textureLoader">Function to load a texture path and return its index (-1 if failed).</param>
-    /// <returns>Array of MaterialData (single element for landscape).</returns>
     public static MaterialData[] BuildMaterialDataForLandscape(
         UMaterialInterface? landscapeMaterial,
         bool autoTextureEnabled,
@@ -178,10 +142,6 @@ public static class TextureResolver
         return null;
     }
 
-    /// <summary>
-    /// Deep texture discovery via the shared <see cref="MaterialExtractor"/> so preview and the
-    /// glTF exporter resolve textures from the same flattened material data.
-    /// </summary>
     private static IReadOnlyDictionary<string, ExtractedTexture> ExtractTexturesFromMaterial(UObject material)
     {
         if (MaterialExtractor.TryExtract(material, out var extracted))

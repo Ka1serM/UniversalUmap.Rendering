@@ -3,11 +3,12 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Silk.NET.Vulkan;
+using UniversalUmap.Rendering.Inspector;
 using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Scenes;
 
-public sealed class MeshInstance : SceneObject
+public sealed class MeshInstance : SceneObject, IInspectable
 {
     private const float UnrealToRendererScale = 0.01f;
     private static readonly Matrix4x4 UnrealToRendererBasis = new()
@@ -36,6 +37,17 @@ public sealed class MeshInstance : SceneObject
     public MeshAsset MeshAsset { get; }
     public int HierarchyNodeId { get; }
     public Matrix4x4 Transform { get; private set; }
+
+    public string InspectorTitle => Name;
+
+    [Detail("Name", Group = "Instance", Order = 0)]
+    public string DisplayName => Name;
+
+    [Detail("Location", Group = "Transform", Order = 0)]
+    public Vector3 Location => Transform.Translation;
+
+    [DetailRef("Mesh", Order = 0)]
+    public MeshAsset Mesh => MeshAsset;
 
     public MeshInstance(MeshAsset meshAsset, string? name = null, Matrix4x4? transform = null)
         : base(name ?? (meshAsset ?? throw new ArgumentNullException(nameof(meshAsset))).Name)

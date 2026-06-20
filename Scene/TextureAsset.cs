@@ -13,7 +13,7 @@ namespace UniversalUmap.Rendering.Scenes;
 
 public sealed unsafe class TextureAsset : IDisposable
 {
-    public readonly record struct HdrTextureSet(TextureAsset Environment, TextureAsset Cdf, TextureAsset IrradianceMap, TextureAsset RadianceMap);
+    public readonly record struct HdrTextureSet(TextureAsset Environment, TextureAsset Cdf);
     private readonly record struct MipUploadData(byte[] PixelBytes, uint Width, uint Height);
 
     private readonly Context context;
@@ -197,7 +197,6 @@ public sealed unsafe class TextureAsset : IDisposable
         if (encodedHdrBytes.IsEmpty)
             throw new ArgumentException("Texture byte payload is empty", nameof(encodedHdrBytes));
 
-        // HDR files are encoded (Radiance .hdr), so decode first, then upload raw float pixels.
         using var stream = new MemoryStream(encodedHdrBytes.ToArray(), writable: false);
         var result = ImageResultFloat.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
         Log.Information("Decoded embedded HDR texture '{TextureName}': {Width}x{Height} RGBA32F.", name, result.Width, result.Height);
@@ -368,7 +367,6 @@ public sealed unsafe class TextureAsset : IDisposable
 
     internal static void DisposeSharedStagingRing()
     {
-        // No-op: shared staging ring was removed in favor of per-upload retained staging buffers.
     }
 
     public void Dispose()
@@ -396,39 +394,18 @@ public sealed unsafe class TextureAsset : IDisposable
             Format.R32G32B32A32Sfloat,
             generateMipmaps: true);
 
-        var derivedMaps = EnvironmentPrecompute.BuildDerivedMaps(rgba32f, width, height);
-        var cdfBytes = MemoryMarshal.AsBytes(derivedMaps.Cdf.Rgba32f.AsSpan()).ToArray();
+        var cdfMap = EnvironmentPrecompute.BuildCdfMap(rgba32f, width, height);
+        var cdfBytes = MemoryMarshal.AsBytes(cdfMap.Rgba32f.AsSpan()).ToArray();
         var cdf = new TextureAsset(
             context,
             $"{name}_cdf",
             sourcePath,
             cdfBytes,
-            (uint)derivedMaps.Cdf.Width,
-            (uint)derivedMaps.Cdf.Height,
+            (uint)cdfMap.Width,
+            (uint)cdfMap.Height,
             Format.R32G32B32A32Sfloat);
 
-        var irradianceBytes = MemoryMarshal.AsBytes(derivedMaps.Irradiance.Rgba32f.AsSpan()).ToArray();
-        var irradianceMap = new TextureAsset(
-            context,
-            $"{name}_irradiance",
-            sourcePath,
-            irradianceBytes,
-            (uint)derivedMaps.Irradiance.Width,
-            (uint)derivedMaps.Irradiance.Height,
-            Format.R32G32B32A32Sfloat);
-
-        var radianceBytes = MemoryMarshal.AsBytes(derivedMaps.Radiance.Rgba32f.AsSpan()).ToArray();
-        var radianceMap = new TextureAsset(
-            context,
-            $"{name}_radiance",
-            sourcePath,
-            radianceBytes,
-            (uint)derivedMaps.Radiance.Width,
-            (uint)derivedMaps.Radiance.Height,
-            Format.R32G32B32A32Sfloat,
-            generateMipmaps: true);
-
-        return new HdrTextureSet(environment, cdf, irradianceMap, radianceMap);
+        return new HdrTextureSet(environment, cdf);
     }
 
     private static uint CalculateMipLevels(uint width, uint height)

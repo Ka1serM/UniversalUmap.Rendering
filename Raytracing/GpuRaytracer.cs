@@ -205,7 +205,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     protected virtual uint OutputImageBindingBase => 1;
     protected virtual uint SceneSettingsBinding => 8;
     protected virtual uint TextureArrayBinding => 9;
-    protected virtual uint RtxInstanceBufferBinding => 1; // Only used by RTX path
+    protected virtual uint RtxInstanceBufferBinding => 1;
 
     protected RenderMode EffectiveRenderMode
     {
@@ -907,8 +907,6 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     private void CopyImagePixelToBuffer(VulkanImage image, VulkanBuffer stagingBuffer, int pixelX, int pixelY)
     {
-        // Picking is latency-sensitive but infrequent. Drain older submissions first so
-        // the readback runs against a fully produced image instead of racing startup or resize work.
         Context.WaitForSubmittedCommandBuffers();
 
         var commandBuffer = Context.CreateCommandBuffer();

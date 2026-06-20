@@ -23,29 +23,24 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
 {
     private static readonly IBrush HitTestBrush = Brushes.Transparent;
 
-    // Composition
     private CompositionSurfaceVisual? visual;
     private AvaloniaCompositor? avaloniaCompositor;
 
-    // Vulkan
     private Context? context;
     private VulkanSwapchain? swapchain;
     private OffscreenPresentationBuffer? presentationBuffer;
     private VulkanCompositor? vulkanCompositor;
     private GpuRaytracer? raytracer;
 
-    // Scene
     private Scene? scene;
     private GpuScenePicker? picker;
 
-    // Lifecycle — matching GpuInterop DrawingSurfaceDemoBase exactly
     private readonly Action update;
     private bool updateQueued;
     private bool initialized;
     private long lifecycleVersion;
     private Task pendingDisposeTask = Task.CompletedTask;
 
-    // Rendering
     private readonly Input input;
     private readonly Stopwatch renderTimer = Stopwatch.StartNew();
     private long lastRenderTicks;
@@ -58,7 +53,7 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     protected override bool UseTimedHoldCapture => true;
 
     public Scene? Scene => scene;
-    public Camera? Camera => scene?.Camera;
+    public CameraBase? Camera => scene?.Camera;
     public Context? VulkanContext => context;
 
     public RenderMode RenderMode
@@ -106,8 +101,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         presentationBuffer = null;
         swapchain = null;
     }
-
-    // --- Lifecycle — matching GpuInterop DrawingSurfaceDemoBase ---
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
@@ -208,8 +201,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     }
 
     private bool IsCurrentLifecycle() => lifecycleVersion == 0 || true;
-
-    // --- Rendering — matching GpuInterop DrawingSurfaceDemoBase ---
 
     void UpdateFrame()
     {
@@ -322,8 +313,6 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         }
     }
 
-    // --- Input ---
-
     public override void Render(DrawingContext context)
     {
         base.Render(context);
@@ -342,6 +331,12 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
     {
         base.OnKeyDown(e);
         if (e.Key == Key.F3) { DebugOverlayToggleRequested?.Invoke(); e.Handled = true; return; }
+        if (e.Key == Key.F && scene is not null)
+        {
+            scene.FrameSelectedInstance();
+            e.Handled = true;
+            return;
+        }
         input.OnKeyDown(e.Key);
         e.Handled = true;
     }
@@ -359,6 +354,25 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
             input.OnPointerDelta(new Vector2((float)delta.X, (float)delta.Y));
     }
 
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        var position = e.GetPosition(this);
+        var props = e.GetCurrentPoint(this).Properties;
+
+        if (e.ClickCount >= 2 && props.IsLeftButtonPressed)
+        {
+            var size = Bounds.Size;
+            if (picker is not null && TryPickPosition(position, size, out var worldPos, out _, out _))
+            {
+                scene?.FocusCameraOnWorldPosition(worldPos);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        base.OnPointerPressed(e);
+    }
+
     protected override void OnHoldQuickClick(PointerReleasedEventArgs e, Point releasePosition)
     {
         input.SetModifierState(e.KeyModifiers);
@@ -373,7 +387,11 @@ public sealed class VulkanViewerControl : CapturingControlBase, IDisposable
         return picker is not null && picker.TryPickInstance(localPosition, viewportSize, out instance, out instanceId, out pixelX, out pixelY);
     }
 
-    // --- Helpers ---
+    internal bool TryPickPosition(Point localPosition, Size viewportSize, out Vector3 worldPosition, out int pixelX, out int pixelY)
+    {
+        worldPosition = default; pixelX = 0; pixelY = 0;
+        return picker is not null && picker.TryPickPosition(localPosition, viewportSize, out worldPosition, out pixelX, out pixelY);
+    }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {

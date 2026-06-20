@@ -2,75 +2,75 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using Avalonia;
-using CommunityToolkit.Mvvm.ComponentModel;
 using Serilog;
 using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Inspector;
 
 namespace UniversalUmap.Rendering.Scenes;
 
-public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGpu>
+public abstract class CameraBase : IGpuSnapshot<CameraDataGpu>, IInspectable
 {
-    private const float FixedSensorWidthMm = 32f;
     private static readonly Vector3 WorldUp = new(0f, -1f, 0f);
-    private static readonly Vector3 LocalForward = new(0f, 0f, 1f);
-    private static readonly Vector3 LocalUp = new(0f, -1f, 0f);
-    private static readonly Vector3 LocalRight = new(1f, 0f, 0f);
+    protected static readonly Vector3 LocalForward = new(0f, 0f, 1f);
+    protected static readonly Vector3 LocalUp = new(0f, -1f, 0f);
+    protected static readonly Vector3 LocalRight = new(1f, 0f, 0f);
     private const float FlySensitivityDegrees = 0.1f;
     private const float SpeedBoostMultiplier = 10f;
-    private const float DataEpsilon = 0.0001f;
+    protected const float DataEpsilon = 0.0001f;
     private const float WheelDollyScale = 0.8f;
     private const double DirectInteractionHoldSeconds = 0.15d;
 
     private readonly Input input;
     private CameraDataGpu data = new();
-    private Matrix4x4 worldToClip = Matrix4x4.Identity;
     private Vector3 position = new(0f, 0f, -2f);
     private Quaternion rotation = Quaternion.Identity;
-    private PixelSize lastRenderSize = new(1, 1);
+    protected PixelSize lastRenderSize = new(1, 1);
     private double lastInputLogSeconds;
     private long directInteractionUntilTicks;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HorizontalFovDegrees))]
-    private float focalLengthMm = 21f;
+    public abstract CameraProjectionType Projection { get; }
 
-    [ObservableProperty] private float aperture;
-    [ObservableProperty] private float focusDistance = 4f;
-    [ObservableProperty] private float bokehBias = 1f;
+    public string InspectorTitle => "Camera";
 
-    internal Camera(Input input)
+    internal event Action<CameraProjectionType>? ProjectionChangeRequested;
+
+    [Detail("Projection", Group = "Camera", Order = -100)]
+    public CameraProjectionType ProjectionSetting
+    {
+        get => Projection;
+        set
+        {
+            if (value != Projection)
+                ProjectionChangeRequested?.Invoke(value);
+        }
+    }
+
+    [DetailInline]
+    public CameraSettings Settings { get; }
+
+    internal CameraBase(Input input, CameraSettings settings)
     {
         this.input = input ?? throw new ArgumentNullException(nameof(input));
+        Settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        Settings.Changed += RebuildData;
         RebuildData();
     }
 
-    public float HorizontalFovDegrees
-    {
-        get
-        {
-            var focal = Math.Max(0.001f, FocalLengthMm);
-            return 2f * MathF.Atan(FixedSensorWidthMm / (2f * focal)) * (180f / MathF.PI);
-        }
-        set
-        {
-            var clampedFov = Math.Clamp(value, 1f, 179f);
-            var halfAngleRadians = (clampedFov * MathF.PI / 180f) * 0.5f;
-            FocalLengthMm = FixedSensorWidthMm / (2f * MathF.Tan(halfAngleRadians));
-        }
-    }
-
     public float MoveSpeed { get; private set; } = 12f;
-    public Vector3 ArcballPivot { get; private set; } = Vector3.Zero;
+    public Vector3 ArcballPivot { get; protected set; } = Vector3.Zero;
+
+    [Detail("Position", Group = "Transform")]
     public Vector3 Position => position;
     public Quaternion Rotation => rotation;
     public int IsMoving { get; private set; }
     internal CameraDataGpu Data => data;
-    internal Matrix4x4 WorldToClip => worldToClip;
     internal event Action? Changed;
 
     CameraDataGpu IGpuSnapshot<CameraDataGpu>.ToStruct() => ToStruct();
 
     internal CameraDataGpu ToStruct() => data;
+
+    internal void DetachSettings() => Settings.Changed -= RebuildData;
 
     public void SetArcballPivot(Vector3 pivot)
     {
@@ -109,7 +109,7 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         RebuildData();
     }
 
-    public void Dolly(float amount)
+    public virtual void Dolly(float amount)
     {
         if (Math.Abs(amount) < 0.000001f)
             return;
@@ -139,6 +139,24 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
             return;
 
         rotation = normalizedValue;
+        MarkDirectInteraction();
+        RebuildData();
+    }
+
+    public void FocusOnWorldPosition(Vector3 worldPosition)
+    {
+        ArcballPivot = worldPosition;
+        Settings.SetFocusDistanceSilent(Vector3.Distance(position, worldPosition));
+        MarkDirectInteraction();
+        RebuildData();
+    }
+
+    public virtual void FrameBoundingBox(Vector3 center, float radius)
+    {
+        var forward = Vector3.Transform(LocalForward, rotation);
+        position = center - forward * (radius * 3f);
+        ArcballPivot = center;
+        Settings.SetFocusDistanceSilent(Vector3.Distance(Position, center));
         MarkDirectInteraction();
         RebuildData();
     }
@@ -207,10 +225,15 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
                MathF.Abs(a.FocalLength - b.FocalLength) <= DataEpsilon &&
                MathF.Abs(a.FocusDistance - b.FocusDistance) <= DataEpsilon &&
                MathF.Abs(a.Aperture - b.Aperture) <= DataEpsilon &&
-               MathF.Abs(a.BokehBias - b.BokehBias) <= DataEpsilon;
+               MathF.Abs(a.BokehBias - b.BokehBias) <= DataEpsilon &&
+               a.CameraType == b.CameraType &&
+               MathF.Abs(a.OrthoHeight - b.OrthoHeight) <= DataEpsilon &&
+               MathF.Abs(a.FisheyeFov - b.FisheyeFov) <= DataEpsilon &&
+               MathF.Abs(a.NearPlane - b.NearPlane) <= DataEpsilon &&
+               MathF.Abs(a.FarPlane - b.FarPlane) <= DataEpsilon;
     }
 
-    private void RebuildData() => UpdateData(lastRenderSize);
+    protected void RebuildData() => UpdateData(lastRenderSize);
 
     private void UpdateData(PixelSize renderSize)
     {
@@ -221,32 +244,40 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
         var up = Vector3.Normalize(Vector3.Transform(LocalUp, rotation));
         var right = Vector3.Normalize(Vector3.Cross(direction, up));
 
-        // Calculate half-FOV tangents for proper perspective projection
-        // tan(halfFov) = (sensorDimension/2) / (focalLength/2) = sensorDimension / focalLength
-        var halfSensorWidthMm = FixedSensorWidthMm * 0.5f;
-        var halfSensorHeightMm = halfSensorWidthMm / aspectRatio;
-        var halfFocalLengthMm = FocalLengthMm * 0.5f;
-        var tanHalfHorizontalFov = halfSensorWidthMm / halfFocalLengthMm;
-        var tanHalfVerticalFov = halfSensorHeightMm / halfFocalLengthMm;
-
         var next = data;
-
         next.Position = position;
         next.Direction = direction;
-        // Store basis vectors scaled by tan(half-FOV); shader multiplies by focalLength for image plane offset
-        next.Horizontal = right * tanHalfHorizontalFov;
-        next.Vertical = up * tanHalfVerticalFov;
-        next.FocalLength = FocalLengthMm * 0.001f;
-        next.FocusDistance = FocusDistance;
-        next.Aperture = Aperture > 0f ? (FocalLengthMm / Aperture) * 0.5f * 0.001f : 0f;
-        next.BokehBias = BokehBias;
-        worldToClip = BuildWorldToClipMatrix(position, direction, up, width, height, FocalLengthMm);
+        next.CameraType = (int)Projection;
+        next.NearPlane = 0.01f;
+        next.FarPlane = 10000f;
+
+        ComputeProjectionData(ref next, direction, up, right, width, height, aspectRatio);
 
         if (IsDataEquivalent(data, next))
             return;
 
         data = next;
         Changed?.Invoke();
+    }
+
+    protected abstract void ComputeProjectionData(
+        ref CameraDataGpu next, Vector3 direction, Vector3 up, Vector3 right,
+        int width, int height, float aspectRatio);
+
+    protected void ApplyDepthOfField(ref CameraDataGpu next, float focalLengthMm)
+    {
+        next.FocusDistance = Settings.FocusDistance;
+        next.BokehBias = Settings.BokehBias;
+        next.Aperture = Settings.Aperture > 0f
+            ? (focalLengthMm / Settings.Aperture) * 0.5f * 0.001f
+            : 0f;
+    }
+
+    protected static void ClearDepthOfField(ref CameraDataGpu next)
+    {
+        next.FocusDistance = 0f;
+        next.BokehBias = 0f;
+        next.Aperture = 0f;
     }
 
     private bool UpdateFly(Vector2 mouseDeltaPixels, float deltaTimeSeconds, Input.FrameSnapshot frameInput)
@@ -290,89 +321,9 @@ public sealed partial class Camera : ObservableObject, IGpuSnapshot<CameraDataGp
 
     private static float DegreesToRadians(float degrees) => degrees * (MathF.PI / 180f);
 
-    private void MarkDirectInteraction()
+    protected void MarkDirectInteraction()
     {
         directInteractionUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * DirectInteractionHoldSeconds);
         IsMoving = 1;
     }
-
-    partial void OnFocalLengthMmChanged(float value)
-    {
-        if (EnsureClamped(value, 0.001f, FocalLengthMm, static (camera, next) => camera.FocalLengthMm = next))
-            return;
-
-        RebuildData();
-    }
-
-    partial void OnApertureChanged(float value)
-    {
-        if (EnsureClamped(value, 0f, Aperture, static (camera, next) => camera.Aperture = next))
-            return;
-
-        RebuildData();
-    }
-
-    partial void OnFocusDistanceChanged(float value)
-    {
-        if (EnsureClamped(value, 0.001f, FocusDistance, static (camera, next) => camera.FocusDistance = next))
-            return;
-
-        RebuildData();
-    }
-
-    partial void OnBokehBiasChanged(float value)
-    {
-        if (EnsureClamped(value, 0.001f, BokehBias, static (camera, next) => camera.BokehBias = next))
-            return;
-
-        RebuildData();
-    }
-
-    private bool EnsureClamped(float value, float minimum, float current, Action<Camera, float> setValue)
-    {
-        var clamped = Math.Max(minimum, value);
-        if (MathF.Abs(value - clamped) <= DataEpsilon)
-            return false;
-        if (MathF.Abs(current - clamped) <= DataEpsilon)
-            return true;
-
-        setValue(this, clamped);
-        return true;
-    }
-
-    private static Matrix4x4 BuildWorldToClipMatrix(Vector3 cameraPosition, Vector3 direction, Vector3 up, int width, int height, float focalLengthMm)
-    {
-        var aspectRatio = Math.Max(1f, (float)width / Math.Max(1, height));
-        var halfSensorWidthMm = FixedSensorWidthMm * 0.5f;
-        var halfSensorHeightMm = halfSensorWidthMm / aspectRatio;
-        var halfFocalLengthMm = Math.Max(0.0005f, focalLengthMm * 0.5f);
-        var horizontalExtent = Math.Max(0.000001f, halfSensorWidthMm / halfFocalLengthMm);
-        var verticalExtent = Math.Max(0.000001f, halfSensorHeightMm / halfFocalLengthMm);
-
-        var forward = Vector3.Normalize(direction);
-        var cameraUp = Vector3.Normalize(up);
-        var right = Vector3.Normalize(Vector3.Cross(forward, cameraUp));
-
-        var view = new Matrix4x4(
-            right.X, cameraUp.X, forward.X, 0f,
-            right.Y, cameraUp.Y, forward.Y, 0f,
-            right.Z, cameraUp.Z, forward.Z, 0f,
-            -Vector3.Dot(cameraPosition, right),
-            -Vector3.Dot(cameraPosition, cameraUp),
-            -Vector3.Dot(cameraPosition, forward),
-            1f);
-
-        const float nearPlane = 0.01f;
-        const float farPlane = 10_000f;
-        var projection = new Matrix4x4(
-            2f / horizontalExtent, 0f, 0f, 0f,
-            0f, 2f / verticalExtent, 0f, 0f,
-            0f, 0f, farPlane / (farPlane - nearPlane), 1f,
-            0f, 0f, -(nearPlane * farPlane) / (farPlane - nearPlane), 0f);
-
-        // Slang emits the shared float4x4 operations as matrix * vector in SPIR-V.
-        // Instance transforms are uploaded transposed for the same reason.
-        return Matrix4x4.Transpose(view * projection);
-    }
-
 }

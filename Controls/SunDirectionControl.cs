@@ -202,7 +202,6 @@ public sealed class SunDirectionControl : VulkanShaderControl
 
             if (!suppressUiEvents && Source is { } source)
             {
-                // Keep quaternion continuity while dragging; ignore immediate echo callbacks.
                 suppressUiEvents = true;
                 try
                 {

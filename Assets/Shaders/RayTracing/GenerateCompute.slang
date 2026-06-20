@@ -4,6 +4,8 @@
 #include "../Shared.slang"
 #include "../Bindings.slang"
 
+// CAMERA_* projection identifiers live in Shared.slang alongside CameraDataGpu.
+
 [[vk::push_constant]] ConstantBuffer<PushDataGpu> pushConstants;
 
 #include "Common.slang"
@@ -32,42 +34,63 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     int2 blockCenterPixel = clamp((blockStart + (blockEnd - int2(1))) / 2, int2(0), screenSize - 1);
 
     uint sampleCount = integratorSampleCount();
-    bool useThinLens = !isInteractiveFrame();
+        int cameraType = pushConstants.Camera.CameraType;
+        bool useThinLens = !isInteractiveFrame() && cameraType == CAMERA_PERSPECTIVE;
 
-    for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
-        uint slot = computeSampleSlot(shadingPixel, shadingScreenSize, sampleIndex, sampleCount);
-        uint2 seed = pcg2d(uint2(blockCenterPixel) ^ uint2((pushConstants.Frame + int(sampleIndex)) * 16777619));
-        uint rngState = seed.x ^ (sampleIndex * 747796405u + 2891336453u);
+        for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
+            uint slot = computeSampleSlot(shadingPixel, shadingScreenSize, sampleIndex, sampleCount);
+            uint2 seed = pcg2d(uint2(blockCenterPixel) ^ uint2((pushConstants.Frame + int(sampleIndex)) * 16777619));
+            uint rngState = seed.x ^ (sampleIndex * 747796405u + 2891336453u);
 
-        R2Sampler sampler;
-        SamplerState samplerState;
-        sampler.startPixel(blockCenterPixel, pushConstants.Frame + int(sampleIndex), samplerState);
+            R2Sampler sampler;
+            SamplerState samplerState;
+            sampler.startPixel(blockCenterPixel, pushConstants.Frame + int(sampleIndex), samplerState);
 
-        bool deterministicSample = sampleIndex == 0u;
-        float3 rayOrigin;
-        float3 rayDirection;
+            bool deterministicSample = pushConstants.Frame == 0 && sampleIndex == 0u;
+            float3 rayOrigin;
+            float3 rayDirection;
 
-        if (useThinLens) {
-            ThinLensCamera<R2Sampler> camera;
-            camera.generateRay(
-                blockCenterPixel,
-                screenSize,
-                samplerState,
-                sampler,
-                deterministicSample,
-                rayOrigin,
-                rayDirection);
-        } else {
-            PerspectiveCamera<R2Sampler> camera;
-            camera.generateRay(
-                blockCenterPixel,
-                screenSize,
-                samplerState,
-                sampler,
-                deterministicSample,
-                rayOrigin,
-                rayDirection);
-        }
+            if (cameraType == CAMERA_ORTHOGRAPHIC) {
+                OrthographicCamera<R2Sampler> camera;
+                camera.generateRay(
+                    blockCenterPixel,
+                    screenSize,
+                    samplerState,
+                    sampler,
+                    deterministicSample,
+                    rayOrigin,
+                    rayDirection);
+            } else if (cameraType == CAMERA_FISHEYE) {
+                FisheyeCamera<R2Sampler> camera;
+                camera.generateRay(
+                    blockCenterPixel,
+                    screenSize,
+                    samplerState,
+                    sampler,
+                    deterministicSample,
+                    rayOrigin,
+                    rayDirection);
+            } else if (useThinLens) {
+                ThinLensCamera<R2Sampler> camera;
+                camera.generateRay(
+                    blockCenterPixel,
+                    screenSize,
+                    samplerState,
+                    sampler,
+                    deterministicSample,
+                    rayOrigin,
+                    rayDirection);
+            } else {
+                PerspectiveCamera<R2Sampler> camera;
+                camera.generateRay(
+                    blockCenterPixel,
+                    screenSize,
+                    samplerState,
+                    sampler,
+                    deterministicSample,
+                    rayOrigin,
+                    rayDirection);
+            }
 
         initializePathState(slot, rayOrigin, rayDirection, rngState);
 

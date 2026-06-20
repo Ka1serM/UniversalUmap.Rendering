@@ -11,6 +11,10 @@ internal static class ShaderDefines
     public const int GROUP_SIZE = 16;
     public const int MAXLEAFSIZE = 8;
     public const int SAHBINS = 16;
+
+    public const int CAMERA_PERSPECTIVE = 0;
+    public const int CAMERA_ORTHOGRAPHIC = 1;
+    public const int CAMERA_FISHEYE = 2;
 }
 
 [Flags]
@@ -24,34 +28,40 @@ public enum SceneDirtyFlags : byte
     Settings = 1 << 4
 }
 
+// Read on the GPU via buffer-reference pointers (reinterpret<VertexBuffer*>) under
+// Slang's natural/scalar layout, where a float3 packs to 12 bytes. The int pads put
+// each float3 (Position/Normal/Tangent) on a 16-byte boundary so the GPU can issue a
+// single aligned 128-bit load per vector instead of a split load — this struct is read
+// three times per surface hit, so the alignment is worth the 16 bytes. Total: 64 bytes.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct Vertex
 {
     public Vector3 Position;
-    public int Pad0;  // Vector3 padding
+    public int Pad0;
     public Vector3 Normal;
-    public int Pad1;  // Vector3 padding
+    public int Pad1;
     public Vector3 Tangent;
-    public int Pad2;  // Vector3 padding
+    public int Pad2;
     public float TangentSign;
     public Vector2 UV;
-    public int Pad3;  // Struct padding to 16 bytes
+    public int Pad3;
 }
 
+// A single index per triangle. There is no float3 to align, so padding would only
+// quadruple the per-triangle bandwidth of the material lookup — kept at 4 bytes.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct Face
 {
     public int MaterialIndex;
-    public int Pad0;  // Struct padding to 16 bytes
-    public int Pad1;  // Struct padding to 16 bytes
-    public int Pad2;  // Struct padding to 16 bytes
 }
 
+// Fetched once per surface hit. Each float3 (Albedo/TransmissionColor/Emission) is
+// paired with an index/pad so the vectors stay 16-byte aligned for single-fetch loads.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct MaterialData
 {
     public Vector3 Albedo;
-    public int AlbedoIndex;  // Also serves as padding for Albedo
+    public int AlbedoIndex;
 
     public float Specular;
     public float Metallic;
@@ -64,16 +74,16 @@ public struct MaterialData
     public int NormalIndex;
 
     public Vector3 TransmissionColor;
-    public int Pad0;  // Vector3 padding
+    public int Pad0;
 
     public float Transmission;
-    public float Pad1;  // Alignment padding
+    public float Pad1;
 
     public Vector3 Emission;
-    public int Pad2;  // Vector3 padding
+    public int Pad2;
 
     public float EmissionStrength;
-    public int Pad3;  // Alignment padding
+    public int Pad3;
 
     public int EmissionIndex;
     public int TransmissionIndex;
@@ -122,6 +132,9 @@ internal struct DispatchIndirectCommandGpu
     public uint GroupCountZ;
 }
 
+// Bound as StructuredBuffer<InstanceGpu, Std430DataLayout>: std430 rounds the struct
+// (alignment 16 from the mat4 members) up to a 208-byte array stride, so the trailing
+// 12 bytes of padding are required for the C# elements to match the GPU stride.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct InstanceGpu
 {
@@ -134,15 +147,19 @@ internal struct InstanceGpu
     public uint Pad3;
 }
 
+// The pads 16-byte-align MinBounds/MaxBounds so the AABB slab test in BVH traversal —
+// one of the hottest GPU loops — loads each bound as a single aligned 128-bit fetch.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct AabbGpu
 {
     public Vector3 MinBounds;
-    public int Pad0;  // Vector3 padding
+    public int Pad0;
     public Vector3 MaxBounds;
-    public int Pad1;  // Vector3 padding
+    public int Pad1;
 }
 
+// 80 bytes: two 32-byte AABBs (bounds stay 16-aligned) plus the child/prim words, with
+// a trailing pad keeping the node a multiple of 16 for coalesced traversal reads.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal unsafe struct BvhNodeGpu
 {
@@ -151,19 +168,26 @@ internal unsafe struct BvhNodeGpu
     public uint RightChildOrPrimIndex;
     public uint PrimCount;
     public uint SplitAxis;
-    public uint Pad0;  // Struct padding to 16 bytes
+    public uint Pad0;
 }
 
+// Uploaded as a push constant (ConstantBuffer<PushDataGpu>), which uses std430: float3
+// members get 16-byte alignment, so the padding below and in CameraDataGpu is required
+// to keep the C# Pack=4 offsets in sync with the layout the shader expects. Pad1 aligns
+// the embedded Camera (whose first member is a float3) to a 16-byte boundary.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct PushDataGpu
 {
     public int Frame;
     public int IsMoving;
     public int PixelSizePercent;
-    public int Pad1;  // Vulkan alignment padding
+    public int Pad1;
     public CameraDataGpu Camera;
 }
 
+// Part of SceneSettingsDataGpu, bound with ScalarDataLayout and read once per frame into
+// registers. There is no per-element stride and no hot vector load here, so alignment
+// padding would buy nothing — kept tightly packed.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct RenderSettingsDataGpu
 {
@@ -181,23 +205,15 @@ internal struct RenderSettingsDataGpu
     public int BufferVisualization;
     public int TaaEnabled;
     public int AoSampleAlbedo;
-    public int Pad0;
-    public int Pad1;
-    public int Pad2;
-    public int Pad3;
-    public int Pad4;
-    public int Pad5;
-    public int Pad6;
-    public int Pad7;
 }
 
+// Also ScalarDataLayout and read once per frame (see RenderSettingsDataGpu): scalar
+// layout packs DirectionalDirection's float3 with no gap, so no padding is needed.
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct EnvironmentDataGpu
 {
     public int TextureIndex;
     public int CdfTextureIndex;
-    public int IrradianceMapIndex;
-    public int RadianceMapIndex;
     public float RotationSin;
     public float RotationCos;
     public float VisibleExposureScale;
@@ -206,34 +222,42 @@ public struct EnvironmentDataGpu
     public int Visible;
 
     public Vector3 DirectionalDirection;
-    public int Pad4;  // Vector3 padding
 
     public float DirectionalIntensity;
     public float Rotation;
     public float VisibleExposure;
     public float LightingExposure;
 
-    public int Pad0;
-    public int Pad1;
-    public int Pad2;
-    public int Pad3;  // Struct padding to 16 bytes
+    public float DirectionalSoftAngle;
+}
+
+public enum CameraProjectionType : int
+{
+    Perspective = 0,
+    Orthographic = 1,
+    Fisheye = 2
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct CameraDataGpu
+public struct CameraDataGpu
 {
     public Vector3 Position;
-    public float Pad0;  // Vector3 padding
+    public float Pad0;
     public Vector3 Direction;
-    public float Pad1;  // Vector3 padding
+    public float Pad1;
     public Vector3 Horizontal;
-    public float Pad2;  // Vector3 padding
+    public float Pad2;
     public Vector3 Vertical;
-    public float Pad3;  // Vector3 padding
+    public float Pad3;
     public float FocalLength;
     public float FocusDistance;
     public float Aperture;
     public float BokehBias;
+    public int CameraType;
+    public float OrthoHeight;
+    public float FisheyeFov;
+    public float NearPlane;
+    public float FarPlane;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]

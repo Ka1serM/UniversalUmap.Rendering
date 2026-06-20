@@ -11,9 +11,6 @@ using CUE4Parse.UE4.Objects.UObject;
 
 namespace UniversalUmap.Rendering;
 
-/// <summary>
-/// A texture reference resolved from a material, with the sampler-relevant metadata.
-/// </summary>
 public sealed record ExtractedTexture(
     string Path,
     bool SRGB,
@@ -23,12 +20,6 @@ public sealed record ExtractedTexture(
 
 public sealed record ComponentMask(bool R, bool G, bool B, bool A);
 
-/// <summary>
-/// A material flattened by walking the MaterialInstance → parent → base UMaterial chain,
-/// collecting textures, scalars, vectors, switches and component masks. This is the single
-/// source of truth shared by the glTF exporter and the preview renderer so both resolve
-/// identical materials.
-/// </summary>
 public sealed class ExtractedMaterial
 {
     public string Type = "Material";
@@ -99,7 +90,6 @@ public static class MaterialExtractor
                     }
                     catch
                     {
-                        // Ignore malformed texture references.
                     }
                 }
 
@@ -148,25 +138,20 @@ public static class MaterialExtractor
             {
                 result.Parent = currentMaterial.GetPathName();
 
-                //base material core settings
                 result.ShadingModel ??= mat.GetOrDefault("ShadingModel", EMaterialShadingModel.MSM_DefaultLit);
                 result.BlendMode ??= mat.GetOrDefault("BlendMode", EBlendMode.BLEND_Opaque);
                 result.TwoSided |= mat.TwoSided;
 
-                //cached entry parameters
                 if (mat.CachedExpressionData!.TryGetValue(out FStructFallback cached, "Parameters") && cached.TryGetAllValues(out FStructFallback[] entries, "RuntimeEntries"))
                 {
-                    //scalars
                     if (cached.TryGetValue(out float[] scalarVals, "ScalarValues") && entries.ElementAtOrDefault(0)?.TryGetValue(out FMaterialParameterInfo[] scalarInfos, "ParameterInfos") == true)
                         for (var i = 0; i < scalarInfos.Length && i < scalarVals.Length; i++)
                             result.Scalars.TryAdd(scalarInfos[i].Name.Text, scalarVals[i]);
 
-                    //vectors
                     if (cached.TryGetValue(out FLinearColor[] vecVals, "VectorValues") && entries.ElementAtOrDefault(1)?.TryGetValue(out FMaterialParameterInfo[] vecInfos, "ParameterInfos") == true)
                         for (var i = 0; i < vecInfos.Length && i < vecVals.Length; i++)
                             result.Vectors.TryAdd(vecInfos[i].Name.Text, vecVals[i]);
 
-                    //textures
                     if (cached.TryGetValue(out FPackageIndex[] texVals, "TextureValues") && entries.ElementAtOrDefault(2)?.TryGetValue(out FMaterialParameterInfo[] texInfos, "ParameterInfos") == true)
                         for (var i = 0; i < texInfos.Length && i < texVals.Length; i++)
                         {
@@ -179,12 +164,10 @@ public static class MaterialExtractor
                             }
                             catch
                             {
-                                // Ignore malformed texture references.
                             }
                         }
                 }
 
-                //referenced-textures
                 foreach (var texture in mat.ReferencedTextures)
                 {
                     if (texture is null)
@@ -196,11 +179,9 @@ public static class MaterialExtractor
                     }
                     catch
                     {
-                        // Ignore malformed texture references.
                     }
                 }
 
-                //material-expression parameters
                 for (var i = 0; i < mat.Expressions.Length; i++)
                 {
                     if (mat.Expressions[i] == null || !mat.Expressions[i].TryLoad(out var expr))
@@ -219,7 +200,6 @@ public static class MaterialExtractor
                             }
                             catch
                             {
-                                // Ignore malformed texture references.
                             }
                             break;
                         case UMaterialExpressionVectorParameter vp:
@@ -239,7 +219,6 @@ public static class MaterialExtractor
                 throw new NotImplementedException("Material of Type " + currentMaterial.GetType().FullName + " is not supported");
         }
 
-        //fallbacks
         result.ShadingModel ??= EMaterialShadingModel.MSM_DefaultLit;
         result.BlendMode ??= EBlendMode.BLEND_Opaque;
 

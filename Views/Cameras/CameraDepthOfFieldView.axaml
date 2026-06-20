@@ -1,0 +1,44 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
+             x:Class="UniversalUmap.Rendering.Views.Cameras.CameraDepthOfFieldView"
+             x:DataType="viewModels:CameraPanelViewModel"
+             x:CompileBindings="False">
+
+    <StackPanel HorizontalAlignment="Stretch" Spacing="12">
+
+        <StackPanel Spacing="3">
+            <TextBlock Classes="renderLabel" Text="F Stop" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <Slider Grid.Column="0" Minimum="0" Maximum="32" TickFrequency="0.1" HorizontalAlignment="Stretch"
+                        Value="{Binding Model.Settings.Aperture, Mode=TwoWay}" />
+                <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                           Padding="4,0,0,0"
+                           Text="{Binding Model.Settings.Aperture, StringFormat=f/{0:0.0}}" />
+            </Grid>
+        </StackPanel>
+
+        <StackPanel Spacing="3">
+            <TextBlock Classes="renderLabel" Text="Focus Distance" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <Slider Grid.Column="0" Minimum="0.1" Maximum="100" TickFrequency="0.1" HorizontalAlignment="Stretch"
+                        Value="{Binding Model.Settings.FocusDistance, Mode=TwoWay}" />
+                <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                           Padding="4,0,0,0"
+                           Text="{Binding Model.Settings.FocusDistance, StringFormat={}{0:0.0} m}" />
+            </Grid>
+        </StackPanel>
+
+        <StackPanel Spacing="3">
+            <TextBlock Classes="renderLabel" Text="Bokeh Bias" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <Slider Grid.Column="0" Minimum="0.1" Maximum="4" TickFrequency="0.05" HorizontalAlignment="Stretch"
+                        Value="{Binding Model.Settings.BokehBias, Mode=TwoWay}" />
+                <TextBlock Grid.Column="1" FontSize="14" HorizontalAlignment="Right" TextAlignment="Right"
+                           Padding="4,0,0,0"
+                           Text="{Binding Model.Settings.BokehBias, StringFormat={}{0:0.0}}" />
+            </Grid>
+        </StackPanel>
+
+    </StackPanel>
+</UserControl>

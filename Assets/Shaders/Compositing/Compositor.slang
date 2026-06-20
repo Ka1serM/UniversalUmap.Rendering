@@ -256,7 +256,7 @@ float3 visualizeBuffer(int2 pixel, int2 outputSize, int2 inputSize, float4 hdrIm
 
 bool hasSelectionOutline(int2 pixel, int2 outputSize, int2 inputSize, bool centerSelected)
 {
-    const int outlineRadius = 2;
+    const int outlineRadius = 1;
     for (int y = -outlineRadius; y <= outlineRadius; ++y) {
         for (int x = -outlineRadius; x <= outlineRadius; ++x) {
             if (x == 0 && y == 0)

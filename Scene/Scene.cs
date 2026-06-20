@@ -9,6 +9,7 @@ using CUE4Parse.UE4.Objects.Core.Math;
 using Serilog;
 using Silk.NET.Vulkan;
 using UniversalUmap.Rendering.Core;
+using UniversalUmap.Rendering.Inspector;
 using UniversalUmap.Rendering.Scenes;
 using UniversalUmap.Rendering.Vulkan;
 
@@ -16,8 +17,8 @@ namespace UniversalUmap.Rendering;
 
 public sealed class Scene : IDisposable, IScene
 {
-    private const int PackedEnvironmentMagic = 0x504D4555; // UEMP
-    private const int PackedEnvironmentMipChainMagic = 0x324D4555; // UEM2
+    private const int PackedEnvironmentMagic = 0x504D4555;
+    private const int PackedEnvironmentMipChainMagic = 0x324D4555;
     private const int PackedEnvironmentHeaderByteLength = 16;
     private const int PackedEnvironmentMipChainHeaderByteLength = 20;
     private const ushort HalfFloatAlphaOne = 0x3C00;
@@ -43,8 +44,9 @@ public sealed class Scene : IDisposable, IScene
     }
 
     private readonly Context context;
+    private readonly Input input;
     private readonly List<SceneHierarchyNode> hierarchyRoots = [];
-    private readonly Dictionary<int, SceneHierarchyNode> hierarchyNodesById = [];
+    private readonly Dictionary<int, SceneHierarchyNode> hierarchyById = [];
     private readonly object sync = new();
     private readonly List<MeshInstance> meshInstances = [];
     private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
@@ -52,6 +54,7 @@ public sealed class Scene : IDisposable, IScene
     private SceneDirtyFlags dirtyFlags;
     private SceneDirtyFlags deferredDirtyFlags;
     private int deferredUpdateDepth;
+    private bool deferredHierarchyChanged;
     private ulong meshesRevision;
     private ulong tlasRevision;
     private ulong texturesRevision;
@@ -59,12 +62,15 @@ public sealed class Scene : IDisposable, IScene
     private int nextHierarchyNodeId;
     private Func<Func<object?>, object?>? gpuDispatcher;
     public int SelectedInstanceIndex { get; private set; } = -1;
+    public int SelectedHierarchyNodeId { get; private set; } = -1;
     public MeshInstance? SelectedInstance =>
         SelectedInstanceIndex >= 0 && SelectedInstanceIndex < meshInstances.Count
             ? meshInstances[SelectedInstanceIndex]
             : null;
     public event Action<int>? SelectedInstanceChanged;
-    public Camera Camera { get; }
+    public event Action<int>? SelectedHierarchyNodeChanged;
+    public event Action? HierarchyChanged;
+    public CameraBase Camera { get; private set; }
     public EnvironmentSettings Environment { get; }
     public RenderSettings RenderSettings { get; }
 
@@ -92,12 +98,24 @@ public sealed class Scene : IDisposable, IScene
     internal Scene(Context context, Input input)
     {
         this.context = context;
-        Camera = new Camera(input ?? throw new ArgumentNullException(nameof(input)));
+        this.input = input ?? throw new ArgumentNullException(nameof(input));
+        Camera = new PerspectiveCamera(this.input, new CameraSettings());
         Environment = new EnvironmentSettings();
         RenderSettings = new RenderSettings();
         Camera.Changed += OnCameraUpdated;
+        Camera.ProjectionChangeRequested += OnCameraProjectionChangeRequested;
         Environment.PropertyChanged += OnEnvironmentUpdated;
         RenderSettings.PropertyChanged += OnRenderSettingsUpdated;
+    }
+
+    public IInspectable? ResolveSelectedInspectable()
+    {
+        return Synchronize<IInspectable?>(() =>
+        {
+            if (SelectedInstance is { } instance)
+                return instance;
+            return null;
+        });
     }
 
     internal T Synchronize<T>(Func<T> action)
@@ -173,10 +191,6 @@ public sealed class Scene : IDisposable, IScene
         return meshAssetsByName.TryGetValue(meshAsset.Name, out var existing) && ReferenceEquals(existing, meshAsset);
     }
 
-    /// <summary>
-    /// Gets or adds a named asset using double-checked locking.
-    /// The factory is called OUTSIDE the lock to avoid blocking readers during expensive GPU allocation.
-    /// </summary>
     private TAsset? GetOrAddNamedAsset<TAsset>(
         string name,
         Func<TAsset?> factory,
@@ -190,7 +204,6 @@ public sealed class Scene : IDisposable, IScene
         if (factory is null)
             throw new ArgumentNullException(nameof(factory));
 
-        // First check without lock - fast path for existing assets
         TAsset? result;
         lock (sync)
         {
@@ -201,7 +214,6 @@ public sealed class Scene : IDisposable, IScene
             }
         }
 
-        // Factory call OUTSIDE lock - expensive GPU allocation happens here
         var created = factory();
         if (created is null)
         {
@@ -209,7 +221,6 @@ public sealed class Scene : IDisposable, IScene
             return null;
         }
 
-        // Second check with lock - another thread might have added it
         lock (sync)
         {
             if (itemsByName.TryGetValue(name, out var existing))
@@ -357,25 +368,73 @@ public sealed class Scene : IDisposable, IScene
 
     public void SelectInstance(int instanceIndex)
     {
-        var selectedInstanceIndex = Synchronize(() =>
+        var result = Synchronize(() =>
         {
-            if (!TrySetSelectedInstanceIndexUnsafe(instanceIndex))
-                return int.MinValue;
+            var changedInstance = TrySetSelectedInstanceIndexUnsafe(instanceIndex);
+            var selectedHierarchyNodeId = SelectedInstanceIndex >= 0
+                ? meshInstances[SelectedInstanceIndex].HierarchyNodeId
+                : -1;
+            var changedNode = TrySetSelectedHierarchyNodeIdUnsafe(selectedHierarchyNodeId);
 
-            return SelectedInstanceIndex;
+            return (SelectedInstanceIndex, SelectedHierarchyNodeId, changedInstance, changedNode);
         });
 
-        if (selectedInstanceIndex != int.MinValue)
-            SelectedInstanceChanged?.Invoke(selectedInstanceIndex);
+        if (result.changedInstance)
+            SelectedInstanceChanged?.Invoke(result.SelectedInstanceIndex);
+        if (result.changedNode)
+            SelectedHierarchyNodeChanged?.Invoke(result.SelectedHierarchyNodeId);
     }
 
     public void ClearSelection()
     {
-        if (Synchronize(() => TrySetSelectedInstanceIndexUnsafe(-1)))
+        var result = Synchronize(() =>
+        {
+            var changedInstance = TrySetSelectedInstanceIndexUnsafe(-1);
+            var changedNode = TrySetSelectedHierarchyNodeIdUnsafe(-1);
+            return (changedInstance, changedNode);
+        });
+
+        if (result.changedInstance)
             SelectedInstanceChanged?.Invoke(-1);
+        if (result.changedNode)
+            SelectedHierarchyNodeChanged?.Invoke(-1);
     }
 
-    public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null, TextureAsset? irradianceMap = null, TextureAsset? radianceMap = null)
+    public bool SelectHierarchyNode(SceneHierarchyHandle handle)
+    {
+        var result = Synchronize(() =>
+        {
+            if (!handle.IsValid || !hierarchyById.TryGetValue(handle.Id, out var node))
+            {
+                var changedNode = TrySetSelectedHierarchyNodeIdUnsafe(-1);
+                var changedInstance = TrySetSelectedInstanceIndexUnsafe(-1);
+                return (
+                    selectedInstanceIndex: -1,
+                    selectedHierarchyNodeId: -1,
+                    changedInstanceSelection: changedInstance,
+                    changedNodeSelection: changedNode);
+            }
+
+            var instanceIndex = node.FirstInstanceIndexOrDefault();
+            var changedNodeSelection = TrySetSelectedHierarchyNodeIdUnsafe(handle.Id);
+            var changedInstanceSelection = TrySetSelectedInstanceIndexUnsafe(instanceIndex);
+
+            return (
+                selectedInstanceIndex: SelectedInstanceIndex,
+                selectedHierarchyNodeId: SelectedHierarchyNodeId,
+                changedInstanceSelection,
+                changedNodeSelection);
+        });
+
+        if (result.changedInstanceSelection)
+            SelectedInstanceChanged?.Invoke(result.selectedInstanceIndex);
+        if (result.changedNodeSelection)
+            SelectedHierarchyNodeChanged?.Invoke(result.selectedHierarchyNodeId);
+
+        return result.selectedHierarchyNodeId >= 0;
+    }
+
+    public void SetEnvironment(TextureAsset texture, TextureAsset? cdfTexture = null)
     {
         Synchronize(() =>
         {
@@ -383,17 +442,10 @@ public sealed class Scene : IDisposable, IScene
                 Add(texture);
             if (cdfTexture is not null && cdfTexture.Index < 0)
                 Add(cdfTexture);
-            if (irradianceMap is not null && irradianceMap.Index < 0)
-                Add(irradianceMap);
-            if (radianceMap is not null && radianceMap.Index < 0)
-                Add(radianceMap);
 
             Environment.TextureIndex = texture.Index;
             Environment.CdfTextureIndex = cdfTexture?.Index ?? -1;
-            Environment.IrradianceMapIndex = irradianceMap?.Index ?? -1;
-            Environment.RadianceMapIndex = radianceMap?.Index ?? -1;
-            var lodSource = radianceMap?.Image ?? texture.Image;
-            Environment.MaxTextureLod = Math.Max(lodSource.MipLevels - 1u, 0u);
+            Environment.MaxTextureLod = Math.Max(texture.Image.MipLevels - 1u, 0u);
         });
     }
 
@@ -408,23 +460,55 @@ public sealed class Scene : IDisposable, IScene
         return new DeferredUpdateScope(this);
     }
 
-    // DEBUG: Uncomment the call in VulkanViewerControl.Initialize() to populate the scene with test primitives on startup.
     public void LoadDebugScene()
     {
-        var redMaterial = new MaterialData { Albedo = new System.Numerics.Vector3(0.9f, 0.15f, 0.1f), Roughness = 0.4f };
-        var blueMaterial = new MaterialData { Albedo = new System.Numerics.Vector3(0.1f, 0.3f, 0.9f), Roughness = 0.15f, Metallic = 1f };
+        using var deferredUpdates = DeferUpdates();
+
+        var redMaterial = new MaterialData { Albedo = new Vector3(0.9f, 0.15f, 0.1f), Roughness = 0.4f };
+        var blueMaterial = new MaterialData { Albedo = new Vector3(0.1f, 0.3f, 0.9f), Roughness = 0.15f, Metallic = 1f };
+
+        var debugRoot = AddHierarchyRoot(
+            "Debug Scene",
+            "DebugScene",
+            string.Empty,
+            "debug://scene",
+            null,
+            SceneNodeRole.World,
+            SceneHierarchyNodeKind.World,
+            FTransform.Identity,
+            FTransform.Identity,
+            instanceCount: 2);
+        var cubeNode = AddHierarchyChild(
+            debugRoot,
+            "Debug Cube",
+            "StaticMeshComponent",
+            string.Empty,
+            "debug://scene/cube",
+            "debug://mesh/cube",
+            SceneNodeRole.Component,
+            SceneHierarchyNodeKind.StaticMesh,
+            FTransform.Identity,
+            FTransform.Identity);
+        var sphereNode = AddHierarchyChild(
+            debugRoot,
+            "Debug Sphere",
+            "StaticMeshComponent",
+            string.Empty,
+            "debug://scene/sphere",
+            "debug://mesh/sphere",
+            SceneNodeRole.Component,
+            SceneHierarchyNodeKind.StaticMesh,
+            FTransform.Identity,
+            FTransform.Identity);
 
         var cube = MeshAsset.CreateCube(context, "DebugCube", redMaterial);
         var sphere = MeshAsset.CreateSphere(context, "DebugSphere", 32, 32, blueMaterial);
         Add(cube);
         Add(sphere);
 
-        var cubeInstance = new MeshInstance(cube, "DebugCubeInstance", Matrix4x4.CreateTranslation(-0.75f, 0f, 0f));
-        var sphereInstance = new MeshInstance(sphere, "DebugSphereInstance", Matrix4x4.CreateTranslation(0.75f, 0f, 0f));
-        cubeInstance.AddChild(sphereInstance);
-
-        Add(cubeInstance);
-        Add(sphereInstance);
+        var sphereInstanceStart = GetInstanceCount();
+        Add(MeshInstance.Create(this, "DebugSphereInstance", sphere, Matrix4x4.CreateTranslation(0.75f, 0f, 0f), sphereNode.Id));
+        AddInstanceRange(sphereNode, sphereInstanceStart, 1);
     }
 
     public void TryLoadDefaultEnvironment()
@@ -435,14 +519,10 @@ public sealed class Scene : IDisposable, IScene
         {
             var environment = CreateEnvironmentMapTexture(hdriName, $"Assets/Precomputed/{hdriName}_env.bin", generateMipmaps: true);
             var cdf = CreateEnvironmentMapTexture($"{hdriName}_cdf", $"Assets/Precomputed/{hdriName}_cdf.bin");
-            var irradiance = CreateEnvironmentMapTexture($"{hdriName}_irradiance", $"Assets/Precomputed/{hdriName}_irradiance.bin");
-            var radiance = CreateEnvironmentMapTexture($"{hdriName}_radiance", $"Assets/Precomputed/{hdriName}_radiance.bin", generateMipmaps: true);
 
             Add(environment);
             Add(cdf);
-            Add(irradiance);
-            Add(radiance);
-            SetEnvironment(environment, cdf, irradiance, radiance);
+            SetEnvironment(environment, cdf);
             Log.Information("Loaded precompiled default environment '{HdrName}'.", hdriName);
         }
         catch (Exception ex)
@@ -714,8 +794,10 @@ public sealed class Scene : IDisposable, IScene
         Synchronize(() =>
         {
             hierarchyRoots.Clear();
-            hierarchyNodesById.Clear();
+            hierarchyById.Clear();
             nextHierarchyNodeId = 0;
+            TrySetSelectedHierarchyNodeIdUnsafe(-1);
+            MarkHierarchyChanged();
         });
     }
 
@@ -728,7 +810,8 @@ public sealed class Scene : IDisposable, IScene
         {
             hierarchyRoots.Add(root);
             if (root.Id >= 0)
-                hierarchyNodesById[root.Id] = root;
+                hierarchyById[root.Id] = root;
+            MarkHierarchyChanged();
             return new SceneHierarchyHandle(root.Id);
         });
     }
@@ -759,7 +842,8 @@ public sealed class Scene : IDisposable, IScene
         {
             parent.Children.Add(child);
             if (child.Id >= 0)
-                hierarchyNodesById[child.Id] = child;
+                hierarchyById[child.Id] = child;
+            MarkHierarchyChanged();
         });
     }
 
@@ -810,11 +894,12 @@ public sealed class Scene : IDisposable, IScene
                 worldTransform,
                 role == SceneNodeRole.Actor,
                 instanceCount);
-            hierarchyNodesById[id] = node;
-            if (parent.IsValid && hierarchyNodesById.TryGetValue(parent.Id, out var parentNode))
+            hierarchyById[id] = node;
+            if (parent.IsValid && hierarchyById.TryGetValue(parent.Id, out var parentNode))
                 parentNode.Children.Add(node);
             else
                 hierarchyRoots.Add(node);
+            MarkHierarchyChanged();
             return new SceneHierarchyHandle(id);
         });
     }
@@ -826,7 +911,7 @@ public sealed class Scene : IDisposable, IScene
 
         Synchronize(() =>
         {
-            if (hierarchyNodesById.TryGetValue(nodeHandle.Id, out var node))
+            if (hierarchyById.TryGetValue(nodeHandle.Id, out var node))
                 node.AddInstanceRange(startIndex, count);
         });
     }
@@ -836,11 +921,12 @@ public sealed class Scene : IDisposable, IScene
         Synchronize(() =>
         {
             hierarchyRoots.Clear();
-            hierarchyNodesById.Clear();
+            hierarchyById.Clear();
             hierarchyRoots.AddRange(roots);
             nextHierarchyNodeId = 0;
             foreach (var root in roots)
                 IndexHierarchyNode(root);
+            MarkHierarchyChanged();
         });
     }
 
@@ -848,7 +934,7 @@ public sealed class Scene : IDisposable, IScene
     {
         if (node.Id >= 0)
         {
-            hierarchyNodesById[node.Id] = node;
+            hierarchyById[node.Id] = node;
             nextHierarchyNodeId = Math.Max(nextHierarchyNodeId, node.Id + 1);
         }
 
@@ -866,7 +952,7 @@ public sealed class Scene : IDisposable, IScene
 
         var result = Synchronize(() =>
         {
-            hierarchyNodesById.TryGetValue(handle.Id, out var found);
+            hierarchyById.TryGetValue(handle.Id, out var found);
             return found;
         });
         node = result;
@@ -881,7 +967,7 @@ public sealed class Scene : IDisposable, IScene
                 return null;
 
             var nodeId = meshInstances[instanceIndex].HierarchyNodeId;
-            return nodeId >= 0 && hierarchyNodesById.TryGetValue(nodeId, out var found) ? found : null;
+            return nodeId >= 0 && hierarchyById.TryGetValue(nodeId, out var found) ? found : null;
         });
         node = result;
         return node is not null;
@@ -892,6 +978,7 @@ public sealed class Scene : IDisposable, IScene
         Synchronize(() =>
         {
             SelectedInstanceIndex = -1;
+            SelectedHierarchyNodeId = -1;
 
             if (keepDefaultTestCube)
             {
@@ -903,8 +990,10 @@ public sealed class Scene : IDisposable, IScene
             context.WaitForSubmittedCommandBuffers();
             meshInstances.Clear();
             hierarchyRoots.Clear();
-            hierarchyNodesById.Clear();
+            hierarchyById.Clear();
             nextHierarchyNodeId = 0;
+            TrySetSelectedHierarchyNodeIdUnsafe(-1);
+            MarkHierarchyChanged();
 
             foreach (var mesh in meshAssetsByName.Values)
                 mesh.Dispose();
@@ -914,7 +1003,6 @@ public sealed class Scene : IDisposable, IScene
             SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
         });
     }
-
 
     public void ClearDirty(SceneDirtyFlags flags)
     {
@@ -970,12 +1058,16 @@ public sealed class Scene : IDisposable, IScene
                 : (int)instanceId;
             var changedSelection = TrySetSelectedInstanceIndexUnsafe(selectedInstanceIndex);
             var selectedInstance = selectedInstanceIndex >= 0 ? meshInstances[selectedInstanceIndex] : null;
-            return (selectedInstance, selectedInstanceIndex >= 0, changedSelection);
+            var selectedHierarchyNodeId = selectedInstance?.HierarchyNodeId ?? -1;
+            var changedNode = TrySetSelectedHierarchyNodeIdUnsafe(selectedHierarchyNodeId);
+            return (selectedInstance, selectedInstanceIndex >= 0, changedSelection, SelectedHierarchyNodeId, changedNode);
         });
 
         instance = result.Item1;
         if (result.Item3)
             SelectedInstanceChanged?.Invoke(result.Item2 ? (int)instanceId : -1);
+        if (result.changedNode)
+            SelectedHierarchyNodeChanged?.Invoke(result.SelectedHierarchyNodeId);
         return result.Item2;
     }
 
@@ -989,9 +1081,59 @@ public sealed class Scene : IDisposable, IScene
         return true;
     }
 
+    private bool TrySetSelectedHierarchyNodeIdUnsafe(int nodeId)
+    {
+        var normalizedId = nodeId >= 0 && hierarchyById.ContainsKey(nodeId) ? nodeId : -1;
+        if (SelectedHierarchyNodeId == normalizedId)
+            return false;
+
+        SelectedHierarchyNodeId = normalizedId;
+        return true;
+    }
+
     public void SetArcballPivot(Vector3 pivot)
     {
         Synchronize(() => Camera.SetArcballPivot(pivot));
+    }
+
+    public void FocusCameraOnWorldPosition(Vector3 worldPosition)
+    {
+        Synchronize(() => Camera.FocusOnWorldPosition(worldPosition));
+    }
+
+    public void FrameSelectedInstance()
+    {
+        Synchronize(() =>
+        {
+            var instance = SelectedInstance;
+            if (instance is null) return;
+
+            var mesh = instance.MeshAsset;
+            var transform = instance.Transform;
+            var min = mesh.BoundingMin;
+            var max = mesh.BoundingMax;
+
+            var c0 = new Vector3(transform.M11, transform.M21, transform.M31);
+            var c1 = new Vector3(transform.M12, transform.M22, transform.M32);
+            var c2 = new Vector3(transform.M13, transform.M23, transform.M33);
+            var t = new Vector3(transform.M14, transform.M24, transform.M34);
+
+            var localCenter = (min + max) * 0.5f;
+            var center = localCenter.X * c0 + localCenter.Y * c1 + localCenter.Z * c2 + t;
+
+            var half = (max - min) * 0.5f;
+            var radiusSq = 0f;
+            for (var i = 0; i < 8; i++)
+            {
+                var sx = (i & 1) == 0 ? -half.X : half.X;
+                var sy = (i & 2) == 0 ? -half.Y : half.Y;
+                var sz = (i & 4) == 0 ? -half.Z : half.Z;
+                var dSq = (sx * c0 + sy * c1 + sz * c2).LengthSquared();
+                if (dSq > radiusSq) radiusSq = dSq;
+            }
+
+            Camera.FrameBoundingBox(center, MathF.Sqrt(radiusSq));
+        });
     }
 
     public void OrbitAroundPivot(float yawDelta, float pitchDelta)
@@ -1023,8 +1165,6 @@ public sealed class Scene : IDisposable, IScene
         IncrementResourceRevisions(flags);
 
         SceneDirtyFlags changedFlags;
-        // Camera and settings updates must always be applied immediately to ensure
-        // the camera can update every frame regardless of batch updates.
         var immediateFlags = flags & (SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
         var deferred = flags & ~(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
 
@@ -1077,16 +1217,34 @@ public sealed class Scene : IDisposable, IScene
                 throw new InvalidOperationException("Deferred update scope is not active.");
 
             deferredUpdateDepth--;
-            if (deferredUpdateDepth != 0 || deferredDirtyFlags == SceneDirtyFlags.None)
+            if (deferredUpdateDepth != 0)
                 return;
 
-            dirtyFlags |= deferredDirtyFlags;
-            deferredDirtyFlags = SceneDirtyFlags.None;
-            
-            // Always mark accumulation as dirty after batch updates to ensure
-            // the first frame properly resets all accumulated state
-            dirtyFlags |= SceneDirtyFlags.Accumulation;
+            if (deferredDirtyFlags != SceneDirtyFlags.None)
+            {
+                dirtyFlags |= deferredDirtyFlags;
+                deferredDirtyFlags = SceneDirtyFlags.None;
+
+                dirtyFlags |= SceneDirtyFlags.Accumulation;
+            }
+
+            if (deferredHierarchyChanged)
+            {
+                deferredHierarchyChanged = false;
+                HierarchyChanged?.Invoke();
+            }
         });
+    }
+
+    private void MarkHierarchyChanged()
+    {
+        if (deferredUpdateDepth > 0)
+        {
+            deferredHierarchyChanged = true;
+            return;
+        }
+
+        HierarchyChanged?.Invoke();
     }
 
     void IScene.SetAccumulationDirty()
@@ -1162,7 +1320,6 @@ public sealed class Scene : IDisposable, IScene
             for (var i = 0; i < meshInstances.Count; i++)
             {
                 result[i] = meshInstances[i].BuildRtxInstanceData();
-                // Set InstanceCustomIndex to the instance array index for unique identification.
                 result[i].InstanceCustomIndex = (uint)i;
             }
 
@@ -1207,9 +1364,9 @@ public sealed class Scene : IDisposable, IScene
 
     public void Dispose()
     {
-        // Ensure submitted GPU work is complete before releasing scene resources.
         context.WaitForSubmittedCommandBuffers();
         Camera.Changed -= OnCameraUpdated;
+        Camera.ProjectionChangeRequested -= OnCameraProjectionChangeRequested;
         Environment.PropertyChanged -= OnEnvironmentUpdated;
         RenderSettings.PropertyChanged -= OnRenderSettingsUpdated;
         foreach (var texture in texturesByName.Values)
@@ -1236,6 +1393,38 @@ public sealed class Scene : IDisposable, IScene
         Vector3 Position,
         Quaternion Rotation,
         Vector3 ArcballPivot);
+
+    internal void SetCameraProjection(CameraProjectionType type)
+    {
+        Synchronize(() =>
+        {
+            if (Camera.Projection == type)
+                return;
+
+            Camera.Changed -= OnCameraUpdated;
+            Camera.ProjectionChangeRequested -= OnCameraProjectionChangeRequested;
+            Camera.DetachSettings();
+
+            var settings = Camera.Settings;
+            CameraBase newCamera = type switch
+            {
+                CameraProjectionType.Orthographic => new OrthographicCamera(input, settings),
+                CameraProjectionType.Fisheye => new FisheyeCamera(input, settings),
+                _ => new PerspectiveCamera(input, settings),
+            };
+
+            newCamera.SetPosition(Camera.Position);
+            newCamera.SetRotation(Camera.Rotation);
+            newCamera.SetArcballPivot(Camera.ArcballPivot);
+
+            Camera = newCamera;
+            Camera.Changed += OnCameraUpdated;
+            Camera.ProjectionChangeRequested += OnCameraProjectionChangeRequested;
+            OnCameraUpdated();
+        });
+    }
+
+    private void OnCameraProjectionChangeRequested(CameraProjectionType type) => SetCameraProjection(type);
 
     private void OnCameraUpdated()
     {

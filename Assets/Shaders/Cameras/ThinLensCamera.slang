@@ -56,7 +56,7 @@ struct ThinLensCamera<TSampler> : ICamera<TSampler>
             rayOrigin,
             rayDirection);
 
-        if (camera.Aperture > 0.0) {
+        if (!deterministicSample && camera.Aperture > 0.0) {
             float2 lensSampleRaw = sampler.get2D(samplerState);
             float2 lensSample = thinLensRoundBokeh(lensSampleRaw.x, lensSampleRaw.y, camera.BokehBias) * camera.Aperture;
             // Horizontal and Vertical now store unit basis vectors (scaled by tan(half-FOV))

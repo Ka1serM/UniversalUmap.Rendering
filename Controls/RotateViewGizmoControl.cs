@@ -113,7 +113,6 @@ public sealed class RotateViewGizmoControl : ContentControl
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
         VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top;
 
-        // Keep the visual center anchored where it was when the control used 100x100 bounds.
         var edgeInset = 32d - ((GizmoDiameter - 100d) * 0.5d);
         Margin = new Thickness(0, edgeInset, edgeInset, 0);
 

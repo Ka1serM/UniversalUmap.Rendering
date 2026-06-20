@@ -17,7 +17,7 @@ public sealed unsafe class Compositor : IDisposable
         public float AdaptiveTargetError;
         public int AdaptiveMinSamples;
         public int IsMoving;
-        public int Pad0;  // Struct padding to 16 bytes
+        public int Pad0;
     }
 
     private readonly Context context;

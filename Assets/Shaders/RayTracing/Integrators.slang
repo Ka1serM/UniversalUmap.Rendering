@@ -1,8 +1,6 @@
 #ifndef RAYTRACING_INTEGRATORS_SLANG
 #define RAYTRACING_INTEGRATORS_SLANG
 
-#include "DirectLighting.slang"
-
 static const float QUEUE_AO_MAX_DISTANCE = 1.5;
 static const int QUEUE_AO_SAMPLES = 4;
 
@@ -164,7 +162,8 @@ struct PathTracingIntegrator : IPathIntegrator
                 specular,
                 metallic,
                 roughness,
-                swSpecular);
+                swSpecular,
+                payload.RngState);
             queueEnvironmentShadowRay(
                 sampleIndex,
                 surface.WorldShadowPosition,

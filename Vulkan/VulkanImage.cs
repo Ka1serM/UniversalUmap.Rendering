@@ -56,7 +56,6 @@ public sealed unsafe class VulkanImage : IDisposable
             | ImageUsageFlags.SampledBit
             | ImageUsageFlags.StorageBit;
 
-        // Determine handle type following GpuInterop sample pattern
         var handleType = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
             ? (supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.D3D11TextureNtHandle)
                && !supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle)
@@ -70,12 +69,12 @@ public sealed unsafe class VulkanImage : IDisposable
             {
                 var supportsVulkanNt = supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.VulkanOpaqueNtHandle);
                 var supportsD3D11 = supportedHandleTypes.Contains(KnownPlatformGraphicsExternalImageHandleTypes.D3D11TextureNtHandle);
-                
+
                 if (handleType == ExternalMemoryHandleTypeFlags.D3D11TextureBit && !supportsD3D11)
                 {
                     throw new NotSupportedException("D3D11 Texture NT export is not supported by compositor");
                 }
-                
+
                 if (handleType == ExternalMemoryHandleTypeFlags.OpaqueWin32Bit && !supportsVulkanNt)
                 {
                     throw new NotSupportedException("Vulkan Opaque NT export is not supported by compositor");

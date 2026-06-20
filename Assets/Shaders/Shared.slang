@@ -9,6 +9,9 @@ static const uint InvalidInstance = INVALID_INSTANCE;
 static const int GROUP_SIZE = 16;
 static const int MAXLEAFSIZE = 8;
 static const int SAHBINS = 16;
+static const int CAMERA_PERSPECTIVE = 0;
+static const int CAMERA_ORTHOGRAPHIC = 1;
+static const int CAMERA_FISHEYE = 2;
 
 struct Vertex
 {
@@ -26,9 +29,6 @@ struct Vertex
 struct Face
 {
     int MaterialIndex;
-    int Pad0;
-    int Pad1;
-    int Pad2;
 };
 
 struct MaterialData
@@ -128,22 +128,12 @@ struct RenderSettingsDataGpu
     int BufferVisualization;
     int TaaEnabled;
     int AoSampleAlbedo;
-    int Pad0;
-    int Pad1;
-    int Pad2;
-    int Pad3;
-    int Pad4;
-    int Pad5;
-    int Pad6;
-    int Pad7;
 };
 
 struct EnvironmentDataGpu
 {
     int TextureIndex;
     int CdfTextureIndex;
-    int IrradianceMapIndex;
-    int RadianceMapIndex;
     float RotationSin;
     float RotationCos;
     float VisibleExposureScale;
@@ -151,15 +141,11 @@ struct EnvironmentDataGpu
     float MaxTextureLod;
     int Visible;
     float3 DirectionalDirection;
-    int Pad4;
     float DirectionalIntensity;
     float Rotation;
     float VisibleExposure;
     float LightingExposure;
-    int Pad0;
-    int Pad1;
-    int Pad2;
-    int Pad3;
+    float DirectionalSoftAngle;
 };
 
 struct CameraDataGpu
@@ -176,6 +162,11 @@ struct CameraDataGpu
     float FocusDistance;
     float Aperture;
     float BokehBias;
+    int CameraType;
+    float OrthoHeight;
+    float FisheyeFov;
+    float NearPlane;
+    float FarPlane;
 };
 
 struct SceneSettingsDataGpu

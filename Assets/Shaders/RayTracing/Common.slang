@@ -9,10 +9,13 @@
 #include "../Core/Payload.slang"
 #include "../Geometry/Intersection.slang"
 #include "../Geometry/SurfaceData.slang"
-#include "DirectLighting.slang"
 #include "../Bxdfs/Brdf.slang"
+#include "../Bxdfs/PbrBxdf.slang"
+#include "../Lights/DirectionalLight.slang"
 #include "../Cameras/PerspectiveCamera.slang"
 #include "../Cameras/ThinLensCamera.slang"
+#include "../Cameras/OrthographicCamera.slang"
+#include "../Cameras/FisheyeCamera.slang"
 #include "../Samplers/R2Sampler.slang"
 #include "../Materials/PbrMaterial.slang"
 #include "../Lights/EnvironmentLight.slang"
@@ -363,12 +366,16 @@ void queueDirectionalShadowRay(
     float specular,
     float metallic,
     float roughness,
-    float swSpecular)
+    float swSpecular,
+    inout uint rngState)
 {
     if (!hasDirectionalLight(sceneSettings.Environment))
         return;
 
-    float3 sunDir = getDirectionalLightDirection(sceneSettings.Environment);
+    // Sample within the sun's soft-angle cone so the shadow penumbra widens with the
+    // configured angle. A zero angle returns the exact direction (hard shadows).
+    float3 sunDir = sampleDirectionalLightDirection(
+        sceneSettings.Environment, float2(rand(rngState), rand(rngState)));
     float NdotLGeom = max(dot(geometricNormal, sunDir), 0.0);
     if (NdotLGeom <= 0.0)
         return;

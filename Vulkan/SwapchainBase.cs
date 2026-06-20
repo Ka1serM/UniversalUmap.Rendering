@@ -7,10 +7,6 @@ using Avalonia.Rendering.Composition;
 
 namespace UniversalUmap.Rendering.Vulkan;
 
-/// <summary>
-/// Minimal swapchain base class for image pool management.
-/// This is a local copy to avoid depending on internal Avalonia APIs.
-/// </summary>
 internal abstract class SwapchainBase<TImage> : IAsyncDisposable where TImage : class, ISwapchainImage
 {
     protected ICompositionGpuInterop Interop { get; }

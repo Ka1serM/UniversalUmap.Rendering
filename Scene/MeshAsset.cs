@@ -9,12 +9,13 @@ using CUE4Parse_Conversion.Meshes.PSK;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using UniversalUmap.Rendering.Inspector;
 using UniversalUmap.Rendering.Raytracing;
 using UniversalUmap.Rendering.Vulkan;
 
 namespace UniversalUmap.Rendering.Scenes;
 
-public sealed class MeshAsset : IDisposable
+public sealed class MeshAsset : IDisposable, IInspectable
 {
     private const float UnrealToRendererScale = 0.01f;
     private static readonly Matrix4x4 UnrealToRendererBasis = new()
@@ -45,6 +46,22 @@ public sealed class MeshAsset : IDisposable
 
     public string Name { get; }
     public uint MeshIndex { get; internal set; } = uint.MaxValue;
+    public Vector3 BoundingMin { get; }
+    public Vector3 BoundingMax { get; }
+
+    public string InspectorTitle => Name;
+
+    [Detail("Name", Group = "Mesh", Order = 0)]
+    public string DisplayName => Name;
+
+    [Detail("Triangles", Group = "Mesh", Order = 1)]
+    public int TriangleCount { get; }
+
+    [Detail("Vertices", Group = "Mesh", Order = 2)]
+    public int VertexCount { get; }
+
+    [DetailRef("Materials", Order = 0)]
+    public IReadOnlyList<InspectableMaterial> Materials { get; }
 
     internal VulkanBuffer VertexBuffer { get; }
     internal VulkanBuffer IndexBuffer { get; }
@@ -68,6 +85,16 @@ public sealed class MeshAsset : IDisposable
 
         var vertexArray = vertices.ToArray();
         var indexArray = indices.ToArray();
+
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+        foreach (var v in vertexArray)
+        {
+            min = Vector3.Min(min, v.Position);
+            max = Vector3.Max(max, v.Position);
+        }
+        BoundingMin = min;
+        BoundingMax = max;
 
         var faceArray = faces?.ToArray();
         if (faceArray is null || faceArray.Length == 0)
@@ -102,8 +129,14 @@ public sealed class MeshAsset : IDisposable
         IndexBuffer = indexBuffer;
         FaceBuffer = faceBuffer;
         MaterialBuffer = materialBuffer;
+        TriangleCount = indexArray.Length / 3;
+        VertexCount = vertexArray.Length;
 
-        // Compute traversal path uses a CPU-built BVH with GPU addresses.
+        var inspectableMaterials = new InspectableMaterial[materialArray.Length];
+        for (var i = 0; i < materialArray.Length; i++)
+            inspectableMaterials[i] = new InspectableMaterial(i, materialArray[i]);
+        Materials = inspectableMaterials;
+
         BvhBuilder.Build(vertexArray, indexArray, out var bvhNodes, out var bvhIndices);
         if (bvhNodes.Length > 0 && bvhIndices.Length > 0)
         {
@@ -136,8 +169,6 @@ public sealed class MeshAsset : IDisposable
                 vertexStride: (ulong)System.Runtime.InteropServices.Marshal.SizeOf<Vertex>(),
                 maxVertex: (uint)Math.Max(0, vertexArray.Length - 1),
                 indexAddress: indexBuffer.DeviceAddress);
-            // Finish BLAS creation here instead of leaving a long tail of queued GPU work
-            // that can make the viewer feel "stuck" until some later state change.
             context.SubmitAndWait(buildCommandBuffer);
             blasRtx = accel;
         }
