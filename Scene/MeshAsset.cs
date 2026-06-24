@@ -402,11 +402,159 @@ public sealed class MeshAsset : IDisposable, IInspectable
         return new MeshAsset(context, name, vertices, indices, faces, [material ?? new MaterialData()]);
     }
 
+    public static MeshAsset CreateDisc(Context context, string name, float radius, MaterialData material, int segments = 32)
+    {
+        var vertices = new List<Vertex>();
+        var indices = new List<uint>();
+        var faces = new List<Face>();
+
+        vertices.Add(new Vertex
+        {
+            Position = new Vector3(0, 0, 0),
+            Normal = new Vector3(0, 0, 1),
+            Tangent = new Vector3(1, 0, 0),
+            TangentSign = 1.0f,
+            UV = new Vector2(0.5f, 0.5f)
+        });
+
+        for (var i = 0; i < segments; i++)
+        {
+            var angle = 2f * MathF.PI * i / segments;
+            var x = MathF.Cos(angle) * radius;
+            var y = MathF.Sin(angle) * radius;
+            vertices.Add(new Vertex
+            {
+                Position = new Vector3(x, y, 0),
+                Normal = new Vector3(0, 0, 1),
+                Tangent = new Vector3(1, 0, 0),
+                TangentSign = 1.0f,
+                UV = new Vector2(x / radius * 0.5f + 0.5f, y / radius * 0.5f + 0.5f)
+            });
+        }
+
+        for (var i = 1; i <= segments; i++)
+        {
+            var i0 = i % segments + 1;
+            var i1 = i;
+            indices.Add(0);
+            indices.Add((uint)i0);
+            indices.Add((uint)i1);
+            faces.Add(new Face { MaterialIndex = 0 });
+        }
+
+        return new MeshAsset(context, name, vertices, indices, faces, [material]);
+    }
+
+    public static MeshAsset CreateCone(Context context, string name, float radius, float height, MaterialData material, int segments = 32)
+    {
+        var vertices = new List<Vertex>();
+        var indices = new List<uint>();
+        var faces = new List<Face>();
+
+        vertices.Add(new Vertex
+        {
+            Position = new Vector3(0, 0, height),
+            Normal = new Vector3(0, 0, 1),
+            Tangent = new Vector3(1, 0, 0),
+            TangentSign = 1.0f,
+            UV = new Vector2(0.5f, 0.5f)
+        });
+
+        for (var i = 0; i < segments; i++)
+        {
+            var angle = 2f * MathF.PI * i / segments;
+            var x = MathF.Cos(angle) * radius;
+            var y = MathF.Sin(angle) * radius;
+            var n = new Vector3(x, y, radius / height);
+            var nl = n.Length();
+            if (nl > 1e-8f) n /= nl;
+
+            vertices.Add(new Vertex
+            {
+                Position = new Vector3(x, y, 0),
+                Normal = n,
+                Tangent = new Vector3(1, 0, 0),
+                TangentSign = 1.0f,
+                UV = new Vector2((float)i / segments, 0)
+            });
+        }
+
+        for (var i = 0; i < segments; i++)
+        {
+            var i0 = i;
+            var i1 = (i + 1) % segments;
+            indices.Add(0);
+            indices.Add((uint)i0 + 1);
+            indices.Add((uint)i1 + 1);
+            faces.Add(new Face { MaterialIndex = 0 });
+        }
+
+        return new MeshAsset(context, name, vertices, indices, faces, [material]);
+    }
+
+    public static MeshAsset CreateQuad(Context context, string name, float width, float height, MaterialData material)
+    {
+        var hw = width * 0.5f;
+        var hh = height * 0.5f;
+        var vertices = new List<Vertex>
+        {
+            new() { Position = new Vector3(-hw, -hh, 0), Normal = new Vector3(0, 0, 1), Tangent = new Vector3(1, 0, 0), TangentSign = 1.0f, UV = new Vector2(0, 0) },
+            new() { Position = new Vector3(hw, -hh, 0), Normal = new Vector3(0, 0, 1), Tangent = new Vector3(1, 0, 0), TangentSign = 1.0f, UV = new Vector2(1, 0) },
+            new() { Position = new Vector3(hw, hh, 0), Normal = new Vector3(0, 0, 1), Tangent = new Vector3(1, 0, 0), TangentSign = 1.0f, UV = new Vector2(1, 1) },
+            new() { Position = new Vector3(-hw, hh, 0), Normal = new Vector3(0, 0, 1), Tangent = new Vector3(1, 0, 0), TangentSign = 1.0f, UV = new Vector2(0, 1) }
+        };
+        var indices = new List<uint> { 0, 1, 2, 0, 2, 3 };
+        var faces = new List<Face> { new() { MaterialIndex = 0 }, new() { MaterialIndex = 0 } };
+        return new MeshAsset(context, name, vertices, indices, faces, [material]);
+    }
+
     public static bool TryCreateCube(Context context, string name, out MeshAsset? mesh, MaterialData material)
     {
         try
         {
             mesh = CreateCube(context, name, material);
+            return true;
+        }
+        catch
+        {
+            mesh = null;
+            return false;
+        }
+    }
+
+    public static bool TryCreateDisc(Context context, string name, float radius, out MeshAsset? mesh, MaterialData? material = null)
+    {
+        try
+        {
+            mesh = CreateDisc(context, name, radius, material ?? new MaterialData());
+            return true;
+        }
+        catch
+        {
+            mesh = null;
+            return false;
+        }
+    }
+
+    public static bool TryCreateCone(Context context, string name, float radius, float height, out MeshAsset? mesh, MaterialData? material = null)
+    {
+        try
+        {
+            mesh = CreateCone(context, name, radius, height, material ?? new MaterialData());
+            return true;
+        }
+        catch
+        {
+            mesh = null;
+            return false;
+        }
+    }
+
+    public static bool TryCreateQuad(Context context, string name, float width, float height, out MeshAsset? mesh, MaterialData? material = null)
+    {
+        try
+        {
+            mesh = CreateQuad(context, name, width, height, material ?? new MaterialData());
             return true;
         }
         catch

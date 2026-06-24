@@ -75,15 +75,19 @@ internal sealed unsafe class ComputeRaytracer : GpuRaytracer
     protected override void UpdateSceneResources(Context.CommandBuffer commandBuffer, bool force)
     {
         var revisions = Scene.GetResourceRevisions();
-        if (!force &&
-            uploadedMeshesRevision == revisions.Meshes &&
-            uploadedTlasRevision == revisions.Tlas)
+        var meshesDirty = force || uploadedMeshesRevision != revisions.Meshes;
+        var tlasDirty = force || uploadedTlasRevision != revisions.Tlas;
+        if (!meshesDirty && !tlasDirty && uploadedLightsRevision == revisions.Lights)
             return;
 
-        UpdateMeshSceneBuffers(commandBuffer, ref instancesBuffer, ref meshBuffer, descriptorSet);
+        if (meshesDirty || tlasDirty)
+        {
+            UpdateMeshSceneBuffers(commandBuffer, ref instancesBuffer, ref meshBuffer, descriptorSet);
+            uploadedMeshesRevision = revisions.Meshes;
+            uploadedTlasRevision = revisions.Tlas;
+        }
 
-        uploadedMeshesRevision = revisions.Meshes;
-        uploadedTlasRevision = revisions.Tlas;
+        UpdateLightBindings(commandBuffer);
         Log.Information(
             "Compute scene resources updated: instancesBytes={InstancesBytes}, meshBytes={MeshBytes}.",
             instancesBuffer.Size,

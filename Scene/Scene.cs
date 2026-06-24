@@ -49,6 +49,7 @@ public sealed class Scene : IDisposable, IScene
     private readonly Dictionary<int, SceneHierarchyNode> hierarchyById = [];
     private readonly object sync = new();
     private readonly List<MeshInstance> meshInstances = [];
+    private readonly List<LightSceneObject> lightObjects = [];
     private readonly Dictionary<string, TextureAsset> texturesByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MeshAsset> meshAssetsByName = new(StringComparer.OrdinalIgnoreCase);
     private SceneDirtyFlags dirtyFlags;
@@ -59,6 +60,7 @@ public sealed class Scene : IDisposable, IScene
     private ulong tlasRevision;
     private ulong texturesRevision;
     private ulong settingsRevision;
+    private ulong lightsRevision;
     private int nextHierarchyNodeId;
     private Func<Func<object?>, object?>? gpuDispatcher;
     public int SelectedInstanceIndex { get; private set; } = -1;
@@ -93,7 +95,8 @@ public sealed class Scene : IDisposable, IScene
         ulong Meshes,
         ulong Tlas,
         ulong Textures,
-        ulong Settings);
+        ulong Settings,
+        ulong Lights);
 
     internal Scene(Context context, Input input)
     {
@@ -324,6 +327,30 @@ public sealed class Scene : IDisposable, IScene
             SetDirty(SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
             return instance;
         });
+    }
+
+    public LightSceneObject Add(LightSceneObject light)
+    {
+        return Synchronize(() =>
+        {
+            if (string.IsNullOrWhiteSpace(light.Name))
+                throw new ArgumentException("Light name is empty", nameof(light));
+
+            light.SceneIndex = lightObjects.Count;
+            lightObjects.Add(light);
+            SetDirty(SceneDirtyFlags.Lights | SceneDirtyFlags.Accumulation);
+            return light;
+        });
+    }
+
+    public IReadOnlyList<LightSceneObject> GetLightObjects()
+    {
+        return Synchronize(() => lightObjects.ToArray());
+    }
+
+    public int GetLightCount()
+    {
+        return Synchronize(() => lightObjects.Count);
     }
 
     public MeshAsset? FindMeshAsset(string name)
@@ -786,7 +813,7 @@ public sealed class Scene : IDisposable, IScene
 
     internal ResourceRevisions GetResourceRevisions()
     {
-        return Synchronize(() => new ResourceRevisions(meshesRevision, tlasRevision, texturesRevision, settingsRevision));
+        return Synchronize(() => new ResourceRevisions(meshesRevision, tlasRevision, texturesRevision, settingsRevision, lightsRevision));
     }
 
     public void ClearHierarchy()
@@ -989,6 +1016,7 @@ public sealed class Scene : IDisposable, IScene
 
             context.WaitForSubmittedCommandBuffers();
             meshInstances.Clear();
+            lightObjects.Clear();
             hierarchyRoots.Clear();
             hierarchyById.Clear();
             nextHierarchyNodeId = 0;
@@ -1000,7 +1028,7 @@ public sealed class Scene : IDisposable, IScene
 
             meshAssetsByName.Clear();
 
-            SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Accumulation);
+            SetDirty(SceneDirtyFlags.Meshes | SceneDirtyFlags.Tlas | SceneDirtyFlags.Lights | SceneDirtyFlags.Accumulation);
         });
     }
 
@@ -1207,6 +1235,8 @@ public sealed class Scene : IDisposable, IScene
             texturesRevision++;
         if ((flags & SceneDirtyFlags.Settings) != 0)
             settingsRevision++;
+        if ((flags & SceneDirtyFlags.Lights) != 0)
+            lightsRevision++;
     }
 
     private void EndDeferredUpdates()
@@ -1309,6 +1339,21 @@ public sealed class Scene : IDisposable, IScene
         return StructPacking.ToBytes(addresses);
     }
 
+    internal byte[] BuildLightData()
+    {
+        return Synchronize(() =>
+        {
+            if (lightObjects.Count == 0)
+                return [];
+
+            var lights = new LightGpu[lightObjects.Count];
+            for (var i = 0; i < lightObjects.Count; i++)
+                lights[i] = lightObjects[i].BuildGpuData();
+
+            return StructPacking.ToBytes(lights);
+        });
+    }
+
     internal byte[] BuildRtxInstanceData()
     {
         var instances = Synchronize(() =>
@@ -1375,6 +1420,7 @@ public sealed class Scene : IDisposable, IScene
             mesh.Dispose();
 
         meshInstances.Clear();
+        lightObjects.Clear();
         meshAssetsByName.Clear();
         texturesByName.Clear();
         hierarchyRoots.Clear();

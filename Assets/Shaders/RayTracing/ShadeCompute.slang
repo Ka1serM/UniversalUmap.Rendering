@@ -40,6 +40,7 @@ void main(
             state.PrimaryObjectIndex = hitWorkItem.InstanceIndex;
 
         integratorShadeSurface(surface, hitWorkItem.RayDirection, sampleIndex, state, payload);
+        pathStates[sampleIndex] = state;
     }
 }
 

@@ -12,6 +12,7 @@
 #include "../Bxdfs/Brdf.slang"
 #include "../Bxdfs/PbrBxdf.slang"
 #include "../Lights/DirectionalLight.slang"
+#include "../Lights/SceneLight.slang"
 #include "../Cameras/PerspectiveCamera.slang"
 #include "../Cameras/ThinLensCamera.slang"
 #include "../Cameras/OrthographicCamera.slang"
@@ -452,6 +453,61 @@ void queueEnvironmentShadowRay(
     item.Contribution = bxdfEval.f * Li * (NdotLGeom * wLight / max(lightPdf, EPSILON));
     item.SampleIndex = sampleIndex;
     appendShadow(item);
+}
+
+void queueSceneLightShadowRays(
+    uint sampleIndex,
+    float3 worldPosition,
+    float3 shadingNormal,
+    float3 geometricNormal,
+    float3 viewDir,
+    float3 albedo,
+    float specular,
+    float metallic,
+    float roughness,
+    float swSpecular,
+    inout uint rngState)
+{
+    uint lightCount, lightStride;
+    sceneLightsBuffer.GetDimensions(lightCount, lightStride);
+    for (uint i = 0; i < lightCount; ++i) {
+        LightGpu light = sceneLightsBuffer[i];
+        if (!isSceneLightActive(i))
+            continue;
+
+        float2 u = float2(rand(rngState), rand(rngState));
+        LightLiSample lightSample = sampleSceneLight(i, worldPosition, u);
+        if (lightSample.pdf <= EPSILON || dot(lightSample.Li, lightSample.Li) <= EPSILON)
+            continue;
+
+        float NdotLGeom = max(dot(geometricNormal, lightSample.wi), 0.0);
+        if (NdotLGeom <= 0.0)
+            continue;
+
+        PbrBxdf bxdf;
+        BxdfEval bxdfEval = bxdf.evalOpaque(
+            viewDir,
+            shadingNormal,
+            geometricNormal,
+            lightSample.wi,
+            albedo,
+            specular,
+            metallic,
+            roughness,
+            swSpecular);
+        if (bxdfEval.pdf <= 0.0)
+            continue;
+
+        float shadowBias = computeShadowBias(worldPosition, NdotLGeom) * 2.0;
+        ShadowWorkItem item;
+        item.Origin = worldPosition + geometricNormal * shadowBias;
+        item.TMin = shadowBias;
+        item.Direction = lightSample.wi;
+        item.TMax = max(light.Range, 1000.0);
+        item.Contribution = bxdfEval.f * lightSample.Li * NdotLGeom / max(lightSample.pdf, EPSILON);
+        item.SampleIndex = sampleIndex;
+        appendShadow(item);
+    }
 }
 
 void enqueueContinuationRay(uint sampleIndex, PathState state)

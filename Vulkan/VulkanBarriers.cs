@@ -73,4 +73,40 @@ internal static unsafe class VulkanBarriers
             1,
             in barrier);
     }
+
+    public static void Buffer(
+        Vk api,
+        CommandBuffer commandBuffer,
+        Silk.NET.Vulkan.Buffer buffer,
+        AccessFlags sourceAccessMask,
+        AccessFlags destinationAccessMask,
+        ulong offset = 0,
+        ulong size = ulong.MaxValue,
+        PipelineStageFlags sourceStageMask = PipelineStageFlags.ComputeShaderBit,
+        PipelineStageFlags destinationStageMask = PipelineStageFlags.ComputeShaderBit)
+    {
+        var barrier = new BufferMemoryBarrier
+        {
+            SType = StructureType.BufferMemoryBarrier,
+            SrcAccessMask = sourceAccessMask,
+            DstAccessMask = destinationAccessMask,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = buffer,
+            Offset = offset,
+            Size = size
+        };
+
+        api.CmdPipelineBarrier(
+            commandBuffer,
+            sourceStageMask,
+            destinationStageMask,
+            0,
+            0,
+            null,
+            1,
+            in barrier,
+            0,
+            null);
+    }
 }

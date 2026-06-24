@@ -12,7 +12,8 @@
 [[vk::binding(7, 0)]] StructuredBuffer<MeshAddressesGpu, Std430DataLayout> meshes;
 [[vk::binding(8, 0)]] StructuredBuffer<SceneSettingsDataGpu, ScalarDataLayout> sceneSettingsBuffer;
 #define sceneSettings sceneSettingsBuffer[0]
-[[vk::binding(9, 0)]] Sampler2D textureSamplers[];
+[[vk::binding(9, 0)]] StructuredBuffer<LightGpu, Std430DataLayout> sceneLightsBuffer;
+[[vk::binding(10, 0)]] Sampler2D textureSamplers[];
 
 // Pointer wrappers
 struct VertexBuffer { Vertex data[]; };

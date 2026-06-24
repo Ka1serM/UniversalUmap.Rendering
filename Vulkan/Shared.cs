@@ -25,7 +25,8 @@ public enum SceneDirtyFlags : byte
     Meshes = 1 << 1,
     Textures = 1 << 2,
     Accumulation = 1 << 3,
-    Settings = 1 << 4
+    Settings = 1 << 4,
+    Lights = 1 << 5
 }
 
 // Read on the GPU via buffer-reference pointers (reinterpret<VertexBuffer*>) under
@@ -265,6 +266,33 @@ internal struct SceneSettingsDataGpu
 {
     public RenderSettingsDataGpu RenderSettings;
     public EnvironmentDataGpu Environment;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct LightGpu
+{
+    public Vector3 Position;
+    public int Type;
+    public Vector3 Direction;
+    public int Pad0;
+    public Vector3 Color;
+    public float Intensity;
+    public float Range;
+    public float InnerConeAngle;
+    public float OuterConeAngle;
+    public float SourceRadius;
+    public float SoftSourceRadius;
+    public float SourceLength;
+    public float SourceWidth;
+    public float SourceHeight;
+    public float LightSourceAngle;
+    public float LightSourceSoftAngle;
+    public float LightFalloffExponent;
+    public int UseInverseSquaredFalloff;
+    public int Pad1;
+    public int Pad2;
+    public int Pad3;
+    public int Pad4;
 }
 
 internal static class StructPacking

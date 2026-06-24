@@ -176,6 +176,18 @@ struct PathTracingIntegrator : IPathIntegrator
                 roughness,
                 swSpecular,
                 payload.RngState);
+            queueSceneLightShadowRays(
+                sampleIndex,
+                surface.WorldPosition,
+                facingNormal,
+                geometricFacingNormal,
+                viewDir,
+                albedo,
+                specular,
+                metallic,
+                roughness,
+                swSpecular,
+                payload.RngState);
 
             handleOpaqueBSDF(viewDir, facingNormal, geometricFacingNormal, albedo, metallic, specular, roughness, payload);
             payload.Attenuation /= opaqueProbability;

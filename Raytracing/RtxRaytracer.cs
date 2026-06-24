@@ -119,7 +119,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
         var revisions = Scene.GetResourceRevisions();
         var meshesDirty = force || uploadedMeshesRevision != revisions.Meshes;
         var tlasDirty = force || uploadedTlasRevision != revisions.Tlas || uploadedMeshesRevision != revisions.Meshes;
-        if (!meshesDirty && !tlasDirty)
+        var lightsDirty = uploadedLightsRevision != revisions.Lights;
+        if (!force && !meshesDirty && !tlasDirty && !lightsDirty)
             return;
 
         if (meshesDirty)
@@ -127,6 +128,8 @@ internal sealed unsafe class RtxRaytracer : GpuRaytracer
             UpdateMeshSceneBuffers(commandBuffer, ref instancesBuffer, ref meshBuffer, descriptorSet);
             uploadedMeshesRevision = revisions.Meshes;
         }
+
+        UpdateLightBindings(commandBuffer);
 
         if (tlasDirty)
         {

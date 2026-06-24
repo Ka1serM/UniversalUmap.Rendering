@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Platform;
 using Serilog;
@@ -69,6 +69,8 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
     private ulong lastBoundColorImageViewHandle;
     private ulong uploadedTexturesRevision = ulong.MaxValue;
+    protected ulong uploadedLightsRevision = ulong.MaxValue;
+    private VulkanBuffer? sceneLightsBuffer;
     protected uint FrameIndex;
     private bool hasLoggedFirstRender;
     protected VulkanBuffer WavefrontCountersBuffer = null!;
@@ -154,7 +156,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     {
         EnsureRenderImages(renderSize, commandBuffer);
         UpdateSceneResources(commandBuffer, force: false);
-        if (settingsDirty || Scene.IsDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings))
+        if (settingsDirty || Scene.IsDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings | SceneDirtyFlags.Lights))
             FrameIndex = 0;
 
         if (lastBoundColorImageViewHandle != outputColorImage?.ViewHandle)
@@ -195,7 +197,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
 
         ExecuteRaytracing(commandBuffer, outputColorImage, CreatePushConstants(FrameIndex, renderData));
         FrameIndex++;
-        Scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings);
+        Scene.ClearDirty(SceneDirtyFlags.Accumulation | SceneDirtyFlags.Settings | SceneDirtyFlags.Lights);
     }
 
     protected abstract void ExecuteRaytracing(Context.CommandBuffer commandBuffer, VulkanImage image, PushDataGpu pushConstants);
@@ -204,7 +206,7 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     protected abstract DescriptorSetLayout GetDescriptorSetLayout();
     protected virtual uint OutputImageBindingBase => 1;
     protected virtual uint SceneSettingsBinding => 8;
-    protected virtual uint TextureArrayBinding => 9;
+    protected virtual uint TextureArrayBinding => 10;
     protected virtual uint RtxInstanceBufferBinding => 1;
 
     protected RenderMode EffectiveRenderMode
@@ -289,6 +291,32 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         CopyBuffer(commandBuffer.InternalHandle, sceneSettingsUploadBuffer, sceneSettingsBuffer, (ulong)Unsafe.SizeOf<SceneSettingsDataGpu>());
         lastUploadedSettings = settings;
         settingsDirty = false;
+    }
+
+    protected void UpdateLightBindings(Context.CommandBuffer commandBuffer)
+    {
+        var revisions = Scene.GetResourceRevisions();
+        if (uploadedLightsRevision == revisions.Lights)
+            return;
+
+        var lightBytes = Scene.BuildLightData();
+        var lightGpuSize = Marshal.SizeOf<LightGpu>();
+        if (lightBytes.Length % lightGpuSize != 0)
+            Array.Resize(ref lightBytes, ((lightBytes.Length + lightGpuSize - 1) / lightGpuSize) * lightGpuSize);
+
+        if (sceneLightsBuffer is not null)
+            Context.RetainForExecution(commandBuffer, sceneLightsBuffer);
+
+        sceneLightsBuffer = UploadDeviceLocalBuffer(
+            commandBuffer,
+            lightBytes.Length == 0 ? new byte[lightGpuSize] : lightBytes,
+            BufferUsageFlags.StorageBufferBit);
+
+        new VulkanDescriptorWriter()
+            .StorageBuffer(9, sceneLightsBuffer)
+            .Update(Context, GetDescriptorSet());
+
+        uploadedLightsRevision = revisions.Lights;
     }
 
     private void UpdateTextureBindings()
@@ -454,8 +482,9 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             .Add(6, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit)
             .Add(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
             .Add(8, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
+            .Add(9, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit)
             .Add(
-                9,
+                10,
                 DescriptorType.CombinedImageSampler,
                 MaxTextures,
                 ShaderStageFlags.ComputeBit | ShaderStageFlags.FragmentBit,
@@ -632,14 +661,15 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
     {
         var shadingSize = ComputeWavefrontShadingSize(imageSize, pushConstants);
         var sampleCount = (uint)GetWavefrontSamplesPerFrame(pushConstants);
-        return (uint)Math.Max(shadingSize.Width * shadingSize.Height, 1) * Math.Max(sampleCount, 1u);
+        var maxBounces = (uint)ComputeWavefrontDispatchBounceCount(pushConstants);
+        var primaryRays = (uint)Math.Max(shadingSize.Width * shadingSize.Height, 1) * Math.Max(sampleCount, 1u);
+        return primaryRays * (maxBounces + 1u);
     }
 
     protected uint ComputeWavefrontWorkerCount(PixelSize imageSize, PushDataGpu pushConstants)
     {
-        var shadingSize = ComputeWavefrontShadingSize(imageSize, pushConstants);
-        var shadingPixelCount = (uint)Math.Max(shadingSize.Width * shadingSize.Height, 1);
-        var desiredWorkerCount = Math.Min(shadingPixelCount, MaxWavefrontWorkers);
+        var queueCapacity = ComputeWavefrontQueueCapacity(imageSize, pushConstants);
+        var desiredWorkerCount = Math.Min(queueCapacity, MaxWavefrontWorkers);
         return Math.Max(desiredWorkerCount, WavefrontQueueGroupSize);
     }
 
@@ -706,6 +736,16 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             PipelineStageFlags.ComputeShaderBit);
     }
 
+    protected void InsertBufferBarrier(CommandBuffer commandBuffer, VulkanBuffer buffer)
+    {
+        VulkanBarriers.Buffer(
+            Context.Api,
+            commandBuffer,
+            buffer.Handle,
+            AccessFlags.ShaderWriteBit,
+            AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
+    }
+
     protected PipelineBundle CreatePipelineBundle(string prefix, string variantSuffix, PipelineLayout layout, ByteString mainName)
     {
         _ = mainName;
@@ -766,9 +806,10 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         Context.Api.CmdBindDescriptorSets(vkCommandBuffer, PipelineBindPoint.Compute, pipelineLayout, 0, descriptorSetCount, boundDescriptorSets, 0, null);
 
         Dispatch2D(vkCommandBuffer, pipelines.Generate, pipelineLayout, pushConstants, ComputeWavefrontShadingSize(image.Size, pushConstants), 16);
-        InsertMemoryBarrier(vkCommandBuffer);
+        InsertBufferBarrier(vkCommandBuffer, RayQueueABuffer);
+        InsertBufferBarrier(vkCommandBuffer, WavefrontCountersBuffer);
         DispatchSingle(vkCommandBuffer, pipelines.Advance, pipelineLayout, pushConstants);
-        InsertMemoryBarrier(vkCommandBuffer);
+        InsertBufferBarrier(vkCommandBuffer, WavefrontCountersBuffer);
 
         var inputQueue = RayQueueABuffer;
         var outputQueue = RayQueueBBuffer;
@@ -780,19 +821,25 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
             Context.Api.CmdBindDescriptorSets(vkCommandBuffer, PipelineBindPoint.Compute, pipelineLayout, 0, descriptorSetCount, boundDescriptorSets, 0, null);
 
             Dispatch1D(vkCommandBuffer, pipelines.Extend, pipelineLayout, pushConstants, workerCount);
-            InsertMemoryBarrier(vkCommandBuffer);
+            InsertBufferBarrier(vkCommandBuffer, outputQueue);
+            InsertBufferBarrier(vkCommandBuffer, HitQueueBuffer);
+            InsertBufferBarrier(vkCommandBuffer, ShadowQueueBuffer);
+            InsertBufferBarrier(vkCommandBuffer, WavefrontCountersBuffer);
+            InsertBufferBarrier(vkCommandBuffer, PathStateBuffer);
 
             Dispatch1D(vkCommandBuffer, pipelines.Shade, pipelineLayout, pushConstants, workerCount);
-            InsertMemoryBarrier(vkCommandBuffer);
+            InsertBufferBarrier(vkCommandBuffer, HitQueueBuffer);
+            InsertBufferBarrier(vkCommandBuffer, PathStateBuffer);
 
             if (usesQueuedShadowRays)
             {
                 Dispatch1D(vkCommandBuffer, pipelines.Connect, pipelineLayout, pushConstants, workerCount);
-                InsertMemoryBarrier(vkCommandBuffer);
+                InsertBufferBarrier(vkCommandBuffer, ShadowQueueBuffer);
+                InsertBufferBarrier(vkCommandBuffer, PathStateBuffer);
             }
 
             DispatchSingle(vkCommandBuffer, pipelines.Advance, pipelineLayout, pushConstants);
-            InsertMemoryBarrier(vkCommandBuffer);
+            InsertBufferBarrier(vkCommandBuffer, WavefrontCountersBuffer);
 
             (inputQueue, outputQueue) = (outputQueue, inputQueue);
         }
@@ -948,6 +995,8 @@ internal abstract unsafe class GpuRaytracer : IGpuRenderPath
         sceneSettingsUploadBuffer = null;
         sceneSettingsBuffer?.Dispose();
         sceneSettingsBuffer = null;
+        sceneLightsBuffer?.Dispose();
+        sceneLightsBuffer = null;
     }
 
     public abstract void Dispose();

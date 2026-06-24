@@ -175,5 +175,31 @@ struct SceneSettingsDataGpu
     EnvironmentDataGpu Environment;
 };
 
+struct LightGpu
+{
+    float3 Position;
+    int Type;
+    float3 Direction;
+    int Pad0;
+    float3 Color;
+    float Intensity;
+    float Range;
+    float InnerConeAngle;
+    float OuterConeAngle;
+    float SourceRadius;
+    float SoftSourceRadius;
+    float SourceLength;
+    float SourceWidth;
+    float SourceHeight;
+    float LightSourceAngle;
+    float LightSourceSoftAngle;
+    float LightFalloffExponent;
+    int UseInverseSquaredFalloff;
+    int Pad1;
+    int Pad2;
+    int Pad3;
+    int Pad4;
+};
+
 
 #endif // SHARED_SLANG
