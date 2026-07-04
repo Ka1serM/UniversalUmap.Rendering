@@ -1,80 +1,19 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:viewModels="clr-namespace:UniversalUmap.Rendering.ViewModels;assembly=UniversalUmap.Rendering"
              x:Class="UniversalUmap.Rendering.Views.DetailsPanel"
              x:DataType="viewModels:DetailsPanelViewModel"
              x:CompileBindings="False">
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel HorizontalAlignment="Stretch" Spacing="12">
-
-            <TextBlock Classes="renderLabel" IsVisible="{Binding !HasDetails}"
-                       TextWrapping="Wrap"
-                       Text="Select an object in the Outliner to view its details." />
-
-            <ItemsControl ItemsSource="{Binding Groups}">
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <StackPanel Spacing="16" />
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <StackPanel Spacing="12">
-                            <TextBlock FontSize="13" FontWeight="SemiBold" Text="{Binding Name}" />
-
-                            <ItemsControl ItemsSource="{Binding Items}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <StackPanel Spacing="12" />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <StackPanel>
-
-                                            <StackPanel Spacing="3" IsVisible="{Binding IsSlider}">
-                                                <TextBlock Classes="renderLabel" Text="{Binding Label}" />
-                                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                                                    <Slider Grid.Column="0" HorizontalAlignment="Stretch"
-                                                            Minimum="{Binding Min}" Maximum="{Binding Max}"
-                                                            TickFrequency="{Binding Step}"
-                                                            Value="{Binding DoubleValue, Mode=TwoWay}" />
-                                                    <TextBlock Grid.Column="1" Classes="renderValue"
-                                                               Text="{Binding DisplayValue}" />
-                                                </Grid>
-                                            </StackPanel>
-
-                                            <StackPanel Spacing="3" IsVisible="{Binding IsEnum}">
-                                                <TextBlock Classes="renderLabel" Text="{Binding Label}" />
-                                                <ComboBox HorizontalAlignment="Stretch"
-                                                          ItemsSource="{Binding EnumValues}"
-                                                          SelectedItem="{Binding EnumValue, Mode=TwoWay}" />
-                                            </StackPanel>
-
-                                            <CheckBox IsVisible="{Binding IsToggle}" VerticalAlignment="Center"
-                                                      Content="{Binding Label}"
-                                                      IsChecked="{Binding BoolValue, Mode=TwoWay}" />
-
-                                            <StackPanel Spacing="3" IsVisible="{Binding IsTextEditable}">
-                                                <TextBlock Classes="renderLabel" Text="{Binding Label}" />
-                                                <TextBox Text="{Binding TextValue, Mode=TwoWay}" />
-                                            </StackPanel>
-
-                                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6"
-                                                  IsVisible="{Binding IsReadOnly}">
-                                                <TextBlock Grid.Column="0" Classes="renderLabel" Text="{Binding Label}" />
-                                                <TextBlock Grid.Column="1" Classes="renderValue" Text="{Binding DisplayValue}" />
-                                            </Grid>
-                                        </StackPanel>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-
-        </StackPanel>
-    </ScrollViewer>
+    <Grid>
+        <TextBlock x:Name="PlaceholderText" Classes="renderLabel"
+                   TextWrapping="Wrap"
+                   Text="Select an object in the Outliner to view its details."
+                   IsVisible="True" />
+        <ScrollViewer x:Name="ScrollViewer"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      IsVisible="False">
+            <StackPanel x:Name="Container" Spacing="10" />
+        </ScrollViewer>
+    </Grid>
 </UserControl>

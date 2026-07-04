@@ -1,0 +1,13 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.SliderDetailControl"
+             x:CompileBindings="False">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+        <Slider Grid.Column="0" HorizontalAlignment="Stretch"
+                Minimum="{Binding Min}" Maximum="{Binding Max}"
+                TickFrequency="{Binding Step}"
+                Value="{Binding DoubleValue, Mode=TwoWay}" />
+        <TextBlock Grid.Column="1" Classes="renderValue"
+                   Text="{Binding DisplayValue}" />
+    </Grid>
+</UserControl>

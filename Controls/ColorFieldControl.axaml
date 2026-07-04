@@ -1,0 +1,53 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.ColorFieldControl"
+             x:CompileBindings="False">
+    <StackPanel>
+        <Button x:Name="SwatchButton"
+                Width="52" Height="22"
+                Padding="0"
+                HorizontalAlignment="Left"
+                Background="Transparent"
+                BorderThickness="0"
+                CornerRadius="{StaticResource radius-sm}"
+                IsEnabled="{Binding !IsReadOnlyValue}"
+                Click="SwatchButton_OnClick">
+            <Border x:Name="Swatch"
+                    CornerRadius="{StaticResource radius-sm}"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource Border}" />
+        </Button>
+
+        <Popup x:Name="PickerPopup"
+               PlacementTarget="{Binding #SwatchButton}"
+               Placement="BottomEdgeAlignedLeft"
+               IsLightDismissEnabled="True">
+            <Border Background="{DynamicResource Surface}"
+                    CornerRadius="{StaticResource radius-md}"
+                    BoxShadow="{StaticResource shadow-surface-rest}"
+                    Padding="10">
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Classes="renderLabel" VerticalAlignment="Center" Text="R" />
+                    <NumericUpDown x:Name="RedField" Grid.Row="0" Grid.Column="1" Width="90"
+                                   Minimum="0" Maximum="255" Increment="1" FormatString="0"
+                                   ValueChanged="ColorField_OnValueChanged" />
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Classes="renderLabel" VerticalAlignment="Center" Text="G" />
+                    <NumericUpDown x:Name="GreenField" Grid.Row="1" Grid.Column="1" Width="90"
+                                   Minimum="0" Maximum="255" Increment="1" FormatString="0"
+                                   ValueChanged="ColorField_OnValueChanged" />
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Classes="renderLabel" VerticalAlignment="Center" Text="B" />
+                    <NumericUpDown x:Name="BlueField" Grid.Row="2" Grid.Column="1" Width="90"
+                                   Minimum="0" Maximum="255" Increment="1" FormatString="0"
+                                   ValueChanged="ColorField_OnValueChanged" />
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Classes="renderLabel" VerticalAlignment="Center" Text="A" />
+                    <NumericUpDown x:Name="AlphaField" Grid.Row="3" Grid.Column="1" Width="90"
+                                   Minimum="0" Maximum="255" Increment="1" FormatString="0"
+                                   ValueChanged="ColorField_OnValueChanged" />
+                </Grid>
+            </Border>
+        </Popup>
+    </StackPanel>
+</UserControl>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Objects.Core.Math;
 
 namespace UniversalUmap.Rendering.Scenes;
@@ -62,6 +63,7 @@ public sealed class SceneHierarchyNode : INotifyPropertyChanged
     public SceneHierarchyNodeKind Kind { get; }
     public int InstanceCount { get; }
     public bool IsActor { get; }
+    public UObject? Source { get; }
     public List<SceneHierarchyNode> Children { get; } = [];
     public bool HasChildren => Children.Count > 0;
     public FTransform LocalTransform { get; }
@@ -111,7 +113,7 @@ public sealed class SceneHierarchyNode : INotifyPropertyChanged
         bool isActor = false,
         int instanceCount = 1)
         : this(-1, -1, name, type, ownerName, string.Empty, null, isActor ? SceneNodeRole.Actor : SceneNodeRole.Component,
-            kind, FTransform.Identity, FTransform.Identity, isActor, instanceCount)
+            kind, FTransform.Identity, FTransform.Identity, isActor, instanceCount, null)
     {
     }
 
@@ -128,7 +130,8 @@ public sealed class SceneHierarchyNode : INotifyPropertyChanged
         FTransform localTransform,
         FTransform worldTransform,
         bool isActor = false,
-        int instanceCount = 1)
+        int instanceCount = 1,
+        UObject? source = null)
     {
         Id = id;
         ParentId = parentId;
@@ -143,6 +146,7 @@ public sealed class SceneHierarchyNode : INotifyPropertyChanged
         InstanceCount = Math.Max(1, instanceCount);
         LocalTransform = localTransform;
         WorldTransform = worldTransform;
+        Source = source;
     }
 
     public void SetInstanceRange(int startIndex, int count)

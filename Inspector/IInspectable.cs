@@ -12,5 +12,8 @@ public enum DetailEditorKind
     Number,
     Slider,
     Toggle,
-    Enum
+    Enum,
+    Color,
+    Vector,
+    ObjectReference
 }

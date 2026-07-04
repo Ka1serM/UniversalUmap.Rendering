@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
 using Avalonia;
+using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Objects.Core.Math;
 using Serilog;
 using Silk.NET.Vulkan;
@@ -115,6 +116,8 @@ public sealed class Scene : IDisposable, IScene
     {
         return Synchronize<IInspectable?>(() =>
         {
+            if (hierarchyById.TryGetValue(SelectedHierarchyNodeId, out var node))
+                return new SceneNodeInspectable(node);
             if (SelectedInstance is { } instance)
                 return instance;
             return null;
@@ -853,9 +856,10 @@ public sealed class Scene : IDisposable, IScene
         SceneHierarchyNodeKind kind,
         FTransform localTransform,
         FTransform worldTransform,
-        int instanceCount = 1)
+        int instanceCount = 1,
+        UObject? source = null)
     {
-        return AddHierarchyNode(SceneHierarchyHandle.Invalid, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount);
+        return AddHierarchyNode(SceneHierarchyHandle.Invalid, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount, source);
     }
 
     public void AddHierarchyChild(SceneHierarchyNode parent, SceneHierarchyNode child)
@@ -885,9 +889,10 @@ public sealed class Scene : IDisposable, IScene
         SceneHierarchyNodeKind kind,
         FTransform localTransform,
         FTransform worldTransform,
-        int instanceCount = 1)
+        int instanceCount = 1,
+        UObject? source = null)
     {
-        return AddHierarchyNode(parent, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount);
+        return AddHierarchyNode(parent, name, type, ownerName, sourcePath, assetPath, role, kind, localTransform, worldTransform, instanceCount, source);
     }
 
     private SceneHierarchyHandle AddHierarchyNode(
@@ -901,7 +906,8 @@ public sealed class Scene : IDisposable, IScene
         SceneHierarchyNodeKind kind,
         FTransform localTransform,
         FTransform worldTransform,
-        int instanceCount)
+        int instanceCount,
+        UObject? source = null)
     {
         return Synchronize(() =>
         {
@@ -920,7 +926,8 @@ public sealed class Scene : IDisposable, IScene
                 localTransform,
                 worldTransform,
                 role == SceneNodeRole.Actor,
-                instanceCount);
+                instanceCount,
+                source);
             hierarchyById[id] = node;
             if (parent.IsValid && hierarchyById.TryGetValue(parent.Id, out var parentNode))
                 parentNode.Children.Add(node);

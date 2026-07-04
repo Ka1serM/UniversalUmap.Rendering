@@ -1,0 +1,11 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.NumberDetailControl"
+             x:CompileBindings="False">
+    <NumericUpDown HorizontalAlignment="Stretch"
+                   Value="{Binding DoubleValue, Mode=TwoWay}"
+                   Minimum="{Binding Min}" Maximum="{Binding Max}"
+                   Increment="{Binding Step}"
+                   FormatString="0.###"
+                   IsEnabled="{Binding !IsReadOnlyValue}" />
+</UserControl>

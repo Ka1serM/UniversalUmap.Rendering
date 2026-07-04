@@ -1,0 +1,24 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.VectorFieldControl"
+             x:CompileBindings="False">
+    <ItemsControl ItemsSource="{Binding VectorComponents}">
+        <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="8" />
+            </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+            <DataTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Classes="renderLabel" Text="{Binding Label}" VerticalAlignment="Center" Width="16" />
+                    <NumericUpDown Value="{Binding Value, Mode=TwoWay}"
+                                   IsEnabled="{Binding !IsReadOnly}"
+                                   FormatString="0.###"
+                                   Increment="0.1"
+                                   Width="80" />
+                </StackPanel>
+            </DataTemplate>
+        </ItemsControl.ItemTemplate>
+    </ItemsControl>
+</UserControl>

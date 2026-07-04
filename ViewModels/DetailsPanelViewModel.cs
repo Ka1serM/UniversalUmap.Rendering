@@ -67,11 +67,22 @@ public sealed partial class DetailsPanelViewModel : ViewModelBase
         foreach (var group in InspectorBuilder.Build(source))
         {
             newGroups.Add(group);
-            liveItems.AddRange(group.Items);
+            CollectItems(group.Entries, liveItems);
         }
 
         Groups = newGroups;
         HasDetails = newGroups.Count > 0;
         Title = (source as IInspectable)?.InspectorTitle ?? "Nothing selected";
+    }
+
+    private static void CollectItems(IReadOnlyList<object> entries, List<DetailItem> result)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry is DetailItem item)
+                result.Add(item);
+            else if (entry is DetailGroup group)
+                CollectItems(group.Entries, result);
+        }
     }
 }

@@ -12,7 +12,14 @@ public static class InspectorBuilder
 
     public static IReadOnlyList<DetailGroup> Build(object? root)
     {
-        return root is null ? [] : BuildGroups(root, depth: 0);
+        if (root is null)
+            return [];
+
+        var groups = new List<DetailGroup>(BuildGroups(root, depth: 0));
+        if (root is IDynamicDetails dynamicDetails)
+            groups.AddRange(dynamicDetails.BuildDynamicGroups());
+
+        return groups;
     }
 
     private static List<DetailGroup> BuildGroups(object target, int depth)
@@ -31,7 +38,7 @@ public static class InspectorBuilder
                 .ThenBy(x => x.index)
                 .Select(x => x.entry.Item)
                 .ToList();
-            result.Add(new DetailGroup(grouped.Key, items));
+            result.Add(new DetailGroup(grouped.Key, items.Cast<object>().ToList()));
         }
 
         if (depth >= MaxRefDepth)
@@ -71,7 +78,7 @@ public static class InspectorBuilder
             var name = string.IsNullOrEmpty(childGroup.Name) || childGroup.Name == "General"
                 ? title
                 : $"{title} · {childGroup.Name}";
-            result.Add(new DetailGroup(name, childGroup.Items));
+            result.Add(new DetailGroup(name, childGroup.Entries.ToList()));
         }
     }
 

@@ -1,0 +1,14 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.EnumDetailControl"
+             x:CompileBindings="False">
+    <Grid>
+        <ComboBox x:Name="EnumCombo" HorizontalAlignment="Stretch"
+                  ItemsSource="{Binding EnumValues}"
+                  SelectedItem="{Binding EnumValue, Mode=TwoWay}"
+                  IsVisible="True" />
+        <TextBlock x:Name="EnumText" Classes="renderValue"
+                   VerticalAlignment="Center"
+                   IsVisible="False" />
+    </Grid>
+</UserControl>

@@ -4,12 +4,12 @@ namespace UniversalUmap.Rendering.Inspector;
 
 public sealed class DetailGroup
 {
-    public DetailGroup(string name, IReadOnlyList<DetailItem> items)
+    public DetailGroup(string name, IReadOnlyList<object> entries)
     {
         Name = name;
-        Items = items;
+        Entries = entries;
     }
 
     public string Name { get; }
-    public IReadOnlyList<DetailItem> Items { get; }
+    public IReadOnlyList<object> Entries { get; }
 }

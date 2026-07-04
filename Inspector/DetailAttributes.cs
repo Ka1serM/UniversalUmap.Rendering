@@ -28,6 +28,9 @@ public sealed class DetailAttribute : Attribute
 
     public bool ReadOnly { get; set; }
 
+    /// <summary>Marks a Vector2/Vector3/Vector4 property as a color swatch instead of a set of number fields.</summary>
+    public bool IsColor { get; set; }
+
     public bool HasRange => !double.IsNaN(Min) && !double.IsNaN(Max);
 }
 

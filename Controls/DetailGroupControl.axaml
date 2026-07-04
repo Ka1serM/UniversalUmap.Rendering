@@ -1,0 +1,14 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="UniversalUmap.Rendering.Controls.DetailGroupControl"
+             x:CompileBindings="False">
+    <Expander Name="GroupExpander" ExpandDirection="Down"
+              BorderThickness="0" Background="Transparent"
+              Padding="0" Margin="0,0,0,0">
+        <Expander.Header>
+            <TextBlock Name="HeaderText" FontSize="13" FontWeight="SemiBold"
+                       Padding="4,6" />
+        </Expander.Header>
+        <StackPanel Name="ItemsPanel" Spacing="10" Margin="0,6,0,0" />
+    </Expander>
+</UserControl>

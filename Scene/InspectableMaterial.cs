@@ -18,7 +18,7 @@ public sealed class InspectableMaterial : IInspectable
 
     public string InspectorTitle => $"Material {Index}";
 
-    [Detail("Albedo", Group = "Surface", Order = 0)]
+    [Detail("Albedo", Group = "Surface", Order = 0, IsColor = true)]
     public Vector3 Albedo => data.Albedo;
 
     [Detail("Metallic", Group = "Surface", Order = 1, Format = "0.00")]
@@ -33,7 +33,7 @@ public sealed class InspectableMaterial : IInspectable
     [Detail("IOR", Group = "Surface", Order = 4, Format = "0.00")]
     public float Ior => data.Ior;
 
-    [Detail("Emission", Group = "Emission", Order = 0)]
+    [Detail("Emission", Group = "Emission", Order = 0, IsColor = true)]
     public Vector3 Emission => data.Emission;
 
     [Detail("Emission Strength", Group = "Emission", Order = 1, Format = "0.00")]
